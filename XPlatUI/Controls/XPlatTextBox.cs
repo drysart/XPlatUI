@@ -44,6 +44,12 @@ public class XPlatTextBox : XPlatControl
         CornerRadius = 6f;
         Padding = new XPlatThickness(8f, 6f);
         MinimumSize = new SKSize(0f, 30f);
+
+        // A text box is always part of a selection: its own caret and anchor answer for a drag
+        // that starts inside it, and the control-level contract answers for a selection that
+        // merely passes through it. The two never fight - claiming a selection is exclusive.
+        Selectable = true;
+        SelectionStyle = XPlatSelectionStyle.Partial;
     }
 
     public XPlatTextBox(string text)
@@ -239,11 +245,92 @@ public class XPlatTextBox : XPlatControl
         ReplaceRange(SelectionStart, SelectionLength, text);
     }
 
+    /// <summary>
+    /// Copies the box's own selection, or the host's selection when the box is only part of one.
+    /// </summary>
+    private void CopySelection()
+    {
+        if (!Copy())
+        {
+            Host?.CopySelection();
+        }
+    }
+
     protected override SKSize MeasureContent(SKSize availableSize)
     {
         var sample = Text.Length == 0 ? "W" : Text;
         float width = MathF.Min(MathF.Ceiling(_font.MeasureWidth(sample)) + 4f, 320f);
         return new SKSize(width, MathF.Ceiling(_font.LineHeight) + 2f);
+    }
+
+    /// <summary>
+    /// Maps a point to the nearest character boundary rather than a proportion of the width, so
+    /// a selection dragged into the box lands between two characters.
+    /// </summary>
+    public override float GetSelectionOffset(SKPoint pointInLocal) => IndexFromX(pointInLocal.X);
+
+    /// <summary>
+    /// Adds the run of characters covered by the selection, using the same geometry as the box's
+    /// own highlight so a control-level selection looks identical to an internal one.
+    /// </summary>
+    public override void GetSelectionRects(int start, int length, List<SKRect> output)
+    {
+        ArgumentNullException.ThrowIfNull(output);
+
+        var content = ContentRect;
+        if (length <= 0 || content.Width <= 0f || content.Height <= 0f)
+        {
+            return;
+        }
+
+        var display = DisplayText;
+        float lineHeight = _font.LineHeight;
+        float top = content.Top + MathF.Max(0f, (content.Height - lineHeight) / 2f);
+        float originX = content.Left - _scrollX;
+
+        float left = MathF.Max(originX + MeasureX(display, Math.Clamp(start, 0, display.Length)), content.Left);
+        float right = MathF.Min(originX + MeasureX(display, Math.Clamp(start + length, 0, display.Length)), content.Right);
+        if (right > left)
+        {
+            output.Add(new SKRect(left, top, right, top + lineHeight));
+        }
+    }
+
+    /// <summary>
+    /// Offers the editing commands the box supports - Cut, Copy, Paste and Select All - instead
+    /// of the generic menu. Copy falls back to the host's selection when the box is only part of
+    /// a larger selection, which is what the generic menu would have offered.
+    /// </summary>
+    protected internal override XPlatContextMenu? BuildContextMenu()
+    {
+        if (ContextMenu is not null || !Enabled)
+        {
+            return base.BuildContextMenu();
+        }
+
+        bool hasSelection = HasSelection;
+        return new XPlatContextMenu()
+            .Add(new XPlatMenuItem("Cut", () => Cut())
+            {
+                ShortcutText = "Ctrl+X",
+                Enabled = !ReadOnly && hasSelection,
+            })
+            .Add(new XPlatMenuItem("Copy", CopySelection)
+            {
+                ShortcutText = "Ctrl+C",
+                Enabled = hasSelection || IsSelected,
+            })
+            .Add(new XPlatMenuItem("Paste", () => Paste())
+            {
+                ShortcutText = "Ctrl+V",
+                Enabled = !ReadOnly,
+            })
+            .AddSeparator()
+            .Add(new XPlatMenuItem("Select All", SelectAll)
+            {
+                ShortcutText = "Ctrl+A",
+                Enabled = Text.Length > 0,
+            });
     }
 
     protected override void OnPaintBackground(SKCanvas canvas, SKRect rect)
