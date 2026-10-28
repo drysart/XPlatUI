@@ -30,10 +30,12 @@ so work can stop after any step with the tree in a working state.
 | 1 | Selection primitives and control contract | `XPlatSelectionStyle`, `XPlatSelectionPosition`, `XPlatSelectionRange`; `Selectable`, `SelectionStyle`, `SelectionUnitCount`, `GetSelectionOffset`, `GetSelectionRects`, `GetSelectionText`, `SelectionRange` on `XPlatControl` | A selectable button reports one unit, its text, and paints a highlight |
 | 2 | Host selection state and drag selection | `XPlatSelection` (anchor/focus, ranges, `Changed`), press/drag/release handling, drag threshold, mouse capture reuse | Dragging inside a selectable control highlights it and `Selection.Ranges` is correct |
 | 3 | Rich label offsets and partial selection | `Fragment.Start` (each fragment's offset in `Text`, so `Text.Length` is the unit count), nearest-offset hit testing, per-line selection rects, text slices | Positions land on character boundaries, rects are per line, slices match the source |
+| 3b | Label offsets and partial selection | `XPlatTextRenderer.BuildTextLines`/`XPlatTextLine` (line text is always a slice of the source), `GetBlockTop`/`GetLineLeft` shared with `Draw`, `XPlatLabel` overrides | Labels select character by character, including wrapped and multi-line text |
+| 4 | Cross-control selection | Visual-order clamping while dragging outside a control; boundary rules for whole controls | Dragging from the middle of label 1 to the middle of label 3 selects partial/whole/partial |
 | 5 | Clipboard assembly | `XPlatSelection.GetText()`, `XPlatUiHost.CopySelection()` through `XPlatClipboard` | The clipboard receives the expected multi-control string |
 | 6 | Context menu model and presenter API | `XPlatContextMenu`, `XPlatMenuItem`, `IXPlatContextMenuPresenter`, `XPlatContextMenuPresenter.Current`, `XPlatControl.ContextMenu`, default Copy menu on right-click | A fake presenter captures the menu and Copy fills the clipboard |
 | 7 | Win32 native menu in the harness | `TrackPopupMenuEx` presenter, `WM_CONTEXTMENU` routing, install in `Program.cs` | Right-clicking a selection shows a native menu that copies |
-| 8 | Built-in controls adopt selection | `XPlatLabel` (partial), `XPlatTextBox` (partial, bridged to its caret/anchor), `XPlatButton`/`XPlatImage` (whole), containers opt-in | Mixed partial/whole selections paint and copy correctly |
+| 8 | Built-in controls adopt selection | `XPlatTextBox` (partial, bridged to its caret/anchor), `XPlatButton`/`XPlatImage` (whole), containers opt-in. `XPlatLabel` is done (step 3b) | Mixed partial/whole selections paint and copy correctly |
 | 9 | Demo, docs and AOT verification | Selection demo card, README sections, headless assertions, single-file AOT publish | Published exe renders and copies as expected |
 
 ## Verification approach
@@ -51,7 +53,15 @@ AOT single-file publish is repeated.
 | 1 | Done | Control contract lives on `XPlatControl`; `Render` fills the selection between background and content, so every control gets the same look for free. |
 | 2 | Done | `XPlatSelection` normalises anchor/focus into per-control ranges over one global offset axis; `XPlatUiHost` starts a selection on left press and extends it once the pointer passes `SelectionDragThreshold` (3 px). Verified with 28 headless checks (whole, partial, multi-control both directions, threshold, ancestor mapping, painted highlight) plus an unchanged harness render. |
 | 3 | Done | `Fragment.Start` gives every word, space, break and wrapped-word piece its offset in `Text`; points snap to the nearest line and then the nearest character boundary; rects merge per line and per inline control. Verified with 45 headless checks (offsets, slices, merged rects, per-line rects, inline-control coverage, wrapped words, painted highlight, cross-label drag). |
+| 3b | Done | `XPlatTextRenderer.BuildTextLines` returns `XPlatTextLine` (start, length, text) whose `Text` is always a slice of the source, so character offsets stay meaningful across wrapping, hard breaks and line breaks; `GetBlockTop`/`GetLineLeft` are shared with `Draw`. `XPlatLabel` overrides `GetSelectionOffset`/`GetSelectionRects` and defaults to `Partial`. Verified with 42 headless checks (character boundaries, slices, per-line rects, wrapped and hard-broken lines, painted tint, cross-label drag in both directions) plus an unchanged harness render. |
 | 4-9 | Pending | See the step table. |
+
+Step 3b was pulled forward from step 8 because the label is the simplest partial control and
+because the renderer change it needed (line layout that remembers source offsets) is shared:
+`XPlatTextRenderer.BuildTextLines` now returns `XPlatTextLine` values whose `Text` is always a
+slice of the source string, and `GetBlockTop`/`GetLineLeft` hold the alignment maths that both
+`Draw` and the selection code use, so painted text and highlight can never drift apart. As with
+the rich label, `SelectionStyle` is `Partial` but `Selectable` stays opt-in per instance.
 
 Three rules worth remembering when implementing the later steps:
 
