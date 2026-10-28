@@ -63,7 +63,8 @@ AOT single-file publish is repeated.
 | 4 | Done | `XPlatUiHost.ResolveSelectionPosition` maps a pointer location into the selection: over a selectable control it maps straight in, and outside every selectable control it clamps to the nearest one (`FindNearestSelectable`, ties keep the current end) so dragging off the content still selects up to that end. Whole controls now join a selection by overlap instead of by covering their midpoint, so dragging backwards out of a button keeps it selected. Verified with 20 headless checks (past-the-end, single jump, above-the-start, beside-the-text, outside-the-surface, whole-control entry/exit/boundary) plus an unchanged harness render. |
 | 5 | Done | `XPlatSelection.GetText` assembles the per-control contributions in visual order and `XPlatUiHost.CopySelection` writes them through `XPlatClipboard`; `SelectionTextSeparator` (newline by default) is the join. Verified with 14 headless checks (whole and partial pieces, custom separator, no selection, installed clipboard receives the write). |
 | 6 | Done | `XPlatContextMenu`/`XPlatMenuItem` hold the items, `IXPlatContextMenuPresenter` is the platform hook and `XPlatContextMenuPresenter.Current` the process-wide slot; `XPlatControl.ContextMenu` (inherited from the nearest ancestor) and the overridable `BuildContextMenu()` supply the menu, `XPlatUiHost.ContextMenuOpening` lets an application build one on the fly, and a selection with nothing else to offer gets a Copy menu. Verified with 58 headless checks (item invoke/enabled/separator, no presenter, default Copy menu, control and inherited menus, event precedence, off-content right-click, cleared selection, fluent building) plus an unchanged harness render. |
-| 7-9 | Pending | See the step table. |
+| 7 | Done | The harness turns an `XPlatContextMenu` into a real Win32 popup menu: `Win32ContextMenuPresenter` maps each item to a 1-based command id (`AppendMenuW` with `MF_STRING`, plus `MF_GRAYED`/`MF_CHECKED`/`MF_DEFAULT`), trims leading, trailing and doubled separators, escapes `&`, appends `ShortcutText` after a tab, converts the logical host location to screen pixels, and runs `TrackPopupMenuEx` with `TPM_RETURNCMD` so the picked command is known immediately. `HarnessWindow` routes `WM_CONTEXTMENU` into `XPlatUiHost.ProcessContextMenu`, falling back to `DefWindowProc` when no menu opens, and `Program.cs` installs the presenter once the window exists. Verified with 41 checks in a throwaway app (native item text and state read back with `GetMenuStringW`/`GetMenuState`, separator trimming, id mapping, invoke/cancel/disabled, empty and separator-only menus, ampersand escaping, flag assembly, logical/screen round trip on a real window) plus the whole path end to end in the demo tree: a real drag selects text, the host hands a presenter a Copy menu, invoking it puts exactly the selection text on the clipboard, and a live menu keeps the calling thread inside TrackPopupMenuEx. The harness render is unchanged. |
+| 8-9 | Pending | See the step table. |
 
 Step 3c keeps the selection exclusive. `XPlatUiHost` tracks which control, if any, owns a
 selection of its own (`SelectionOwner`); `XPlatControl.ClaimSelection()` is the generic way to
@@ -107,6 +108,27 @@ goes to `IXPlatContextMenuPresenter.Current`, and with no presenter installed me
 not shown, which is what keeps the library platform-free. Adapters call `ProcessContextMenu`
 from the platform's own context menu message rather than from a right button release, because
 that message also covers the keyboard menu key and avoids two menus for one click.
+
+Step 7 puts a real menu on screen. `Win32ContextMenuPresenter` is the entire Windows half of the
+feature and lives in the harness, not the library: it builds an `HMENU` from the menu data, one
+`AppendMenuW` per item with a 1-based command id, and keeps a dictionary from id back to the
+`XPlatMenuItem` so `TPM_RETURNCMD` gives it the picked item directly instead of forcing a
+`WM_COMMAND` round trip. Item state maps onto the native flags, `&` is doubled because Win32
+reads it as a mnemonic, and `ShortcutText` follows a tab so it is right aligned. Separators are
+trimmed first, because a native menu draws a visible line for a leading, trailing or doubled one,
+and a host that appends groups conditionally produces those easily. `SetForegroundWindow` before
+`TrackPopupMenuEx` and a `WM_NULL` afterwards are the two documented fixes for a menu that either
+refuses to close or stays on screen until the next input arrives. The presenter is handed a
+`Func<SKPoint, POINT>` for the logical-to-screen conversion, because only the platform layer knows
+where its surface sits and how it is scaled, and it is installed from `Program.cs` after the window
+exists rather than being constructed lazily, which keeps the `--render` path free of any window.
+
+Two things about showing a menu are worth knowing before touching this code. A posted mouse or key
+message cannot be used to pick an item or dismiss a menu: `TrackPopupMenuEx` runs its own modal
+loop and does not route posted input through it, so a verification has to observe the loop from
+outside - which is what the throwaway app does, by asserting the calling thread is still blocked
+inside the call. And a menu that closes the instant it opens usually means the owner window was not
+foreground, which is why `SetForegroundWindow` is not optional here.
 
 Three rules worth remembering when implementing the later steps:
 

@@ -44,6 +44,10 @@ namespace WinFormsApp3
                 return 1;
             }
 
+            // Context menus are platform native, so the UI library only describes them and the
+            // host draws them. Installed after the window exists because Win32 needs an owner.
+            XPlatContextMenuPresenter.Current = new Win32ContextMenuPresenter(window.Handle, window.LogicalToScreen);
+
             window.Root = new DemoUi().Root;
             return window.Run();
         }

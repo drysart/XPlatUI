@@ -77,6 +77,29 @@ internal sealed class HarnessWindow : IDisposable
     /// <summary>Device pixels per logical pixel.</summary>
     public float DpiScale => _scale;
 
+    /// <summary>The native window handle, needed by platform services such as the menu presenter.</summary>
+    public IntPtr Handle => _hwnd;
+
+    /// <summary>Maps a logical client point to physical screen pixels.</summary>
+    public NativeMethods.POINT LogicalToScreen(SKPoint point)
+    {
+        var screen = new NativeMethods.POINT
+        {
+            X = (int)MathF.Round(point.X * _scale),
+            Y = (int)MathF.Round(point.Y * _scale),
+        };
+
+        NativeMethods.ClientToScreen(_hwnd, ref screen);
+        return screen;
+    }
+
+    /// <summary>Maps physical screen pixels to a logical client point.</summary>
+    public SKPoint ScreenToLogical(NativeMethods.POINT point)
+    {
+        NativeMethods.ScreenToClient(_hwnd, ref point);
+        return new SKPoint(point.X / _scale, point.Y / _scale);
+    }
+
     /// <summary>Registers the window class and creates and shows the window.</summary>
     public bool Create()
     {
@@ -323,6 +346,11 @@ internal sealed class HarnessWindow : IDisposable
 
                 break;
 
+            case NativeMethods.WmContextMenu:
+                // Let the default handler run when nothing opened a menu, so a missing menu still
+                // behaves like an ordinary window instead of silently swallowing the message.
+                return OnContextMenu(lParam) ? IntPtr.Zero : NativeMethods.DefWindowProcW(hwnd, message, wParam, lParam);
+
             case NativeMethods.WmClose:
                 NativeMethods.DestroyWindow(hwnd);
                 return IntPtr.Zero;
@@ -457,6 +485,29 @@ internal sealed class HarnessWindow : IDisposable
         {
             _host.ProcessKeyUp(key, CurrentModifiers());
         }
+    }
+
+    /// <summary>
+    /// Windows asks for a context menu through its own message, after the right button release or
+    /// when the keyboard menu key is pressed, which is exactly the single entry point the UI
+    /// library expects. The location is in screen pixels; the host works in logical client pixels.
+    /// </summary>
+    private bool OnContextMenu(IntPtr lParam)
+    {
+        var screen = new NativeMethods.POINT
+        {
+            X = NativeMethods.LowWord(lParam),
+            Y = NativeMethods.HighWord(lParam),
+        };
+
+        // (-1, -1) means the keyboard asked for the menu. The harness has no per-control anchor
+        // to hang it off, so it opens at the pointer, which is where the user is looking.
+        if (screen.X == -1 && screen.Y == -1 && !NativeMethods.GetCursorPos(out screen))
+        {
+            return false;
+        }
+
+        return _host.ProcessContextMenu(ScreenToLogical(screen));
     }
 
     private void OnChar(IntPtr wParam)
