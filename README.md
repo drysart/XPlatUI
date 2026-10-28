@@ -206,11 +206,40 @@ var readOnly = new XPlatTextBox { Dock = DockStyle.Top, ReadOnly = true, Text = 
 
 The library itself stays platform free, so two things remain the adapter's job:
 
-* **Clipboard** - implement `IXPlatClipboard` (`GetText`/`SetText`) and assign an instance to
-  `XPlatClipboard.Current` once at startup; without one an in-process fallback is used. The
-  Win32 harness installs `Win32Clipboard` (`Native/Win32Clipboard.cs`).
+* **Clipboard** - implement `IXPlatClipboard` (`GetText`/`SetText`, plus the optional
+  `GetHtml`/`SetHtml` pair) and assign an instance to `XPlatClipboard.Current` once at startup;
+  without one an in-process fallback is used. The Win32 harness installs `Win32Clipboard`
+  (`Native/Win32Clipboard.cs`), which publishes a real `HTML Format` payload.
 * **Caret blink** - call `host.ProcessTick(elapsed)` from a timer (the Win32 harness uses a
   250 ms `WM_TIMER`) so the caret blinks. Tests can call `host.ProcessTick(...)` directly.
+
+### Selection and the clipboard
+
+`Selectable` opts a control into pointer selection; `SelectionStyle` chooses between selecting
+the control as a whole (`Whole`) and selecting the text inside it (`Partial`). A drag can start
+in one control and finish in another, so the selection lives on the host
+(`host.Selection`) rather than in a control, and `host.ClearSelection()` plus
+`control.ClaimSelection()` keep exactly one selection - of any kind, including a text box's own
+caret and selection - alive at a time.
+
+When a selection is copied, every control it touches contributes its own piece in visual order:
+
+| Member | Behaviour |
+| --- | --- |
+| `GetSelectionText(start, length)` | The plain-text piece for a slice; override to control what a copy pastes into a text target |
+| `GetSelectionHtml(start, length)` | The HTML piece for the same slice, or `null` (default) to fall back to the escaped plain text |
+| `host.CopySelection()` | Writes both flavours to `XPlatClipboard`; `host.SelectionTextSeparator` joins the pieces |
+| `host.ProcessContextMenu(point)` | Builds the menu: the control's own `ContextMenu`, then `ContextMenuOpening`, then a default **Copy** item |
+
+`XPlatRichLabel` overrides `GetSelectionHtml` so a copy keeps its formatting: `<b>`, `<i>`,
+`<u>`, `<s>` and a `<span style="...">` for colour and size overrides, wrapped around the
+*selected slice* of each span - a selection that starts mid-span gets markup for just those
+characters. A selection spanning several controls joins their pieces with a line break.
+
+```csharp
+var html = rich.GetSelectionHtml(12, 4);   // "<b>bold</b>"
+XPlatClipboard.SetHtml(rich.GetSelectionText(12, 4), html);   // both flavours at once
+```
 
 ## Writing a backend
 

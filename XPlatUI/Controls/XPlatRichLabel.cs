@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text;
 using SkiaSharp;
 
 namespace XPlatUI;
@@ -579,6 +581,158 @@ public class XPlatRichLabel : XPlatControl
 
             Flush();
         }
+    }
+
+    /// <summary>
+    /// The selected text with the tags its spans call for, so a copy carries the formatting:
+    /// <c>&lt;b&gt;</c>, <c>&lt;i&gt;</c>, <c>&lt;u&gt;</c>, <c>&lt;s&gt;</c> and a
+    /// <c>&lt;span style="..."&gt;</c> for colour and size overrides. A selection can start or
+    /// end part way through a span, so only the selected slice of each span is wrapped; spans are
+    /// contiguous in <see cref="Text"/>, which is exactly how the selection offsets are counted.
+    /// Inline controls contribute no text and so no markup.
+    /// </summary>
+    public override string? GetSelectionHtml(int start, int length)
+    {
+        if (length <= 0)
+        {
+            return null;
+        }
+
+        var text = Text;
+        if (string.IsNullOrEmpty(text))
+        {
+            return null;
+        }
+
+        start = Math.Clamp(start, 0, text.Length);
+        length = Math.Clamp(length, 0, text.Length - start);
+        if (length <= 0)
+        {
+            return null;
+        }
+
+        int end = start + length;
+        int offset = 0;
+        var builder = new StringBuilder();
+
+        foreach (var span in _spans)
+        {
+            if (span.Control is not null)
+            {
+                continue;
+            }
+
+            var spanText = span.Text;
+            int spanStart = offset;
+            offset += spanText.Length;
+
+            int from = Math.Max(start, spanStart);
+            int to = Math.Min(end, spanStart + spanText.Length);
+            if (to <= from)
+            {
+                continue;
+            }
+
+            builder.Append(WrapInTags(span, XPlatHtml.Escape(spanText.Substring(from - spanStart, to - from))));
+        }
+
+        return builder.Length == 0 ? null : builder.ToString();
+    }
+
+    /// <summary>Wraps already-escaped content in the tags that reproduce a span's formatting.</summary>
+    private static string WrapInTags(XPlatTextSpan span, string content)
+    {
+        if (content.Length == 0)
+        {
+            return content;
+        }
+
+        var builder = new StringBuilder(content.Length + 48);
+
+        if (span.Bold)
+        {
+            builder.Append("<b>");
+        }
+
+        if (span.Italic)
+        {
+            builder.Append("<i>");
+        }
+
+        if (span.Underline)
+        {
+            builder.Append("<u>");
+        }
+
+        if (span.Strikethrough)
+        {
+            builder.Append("<s>");
+        }
+
+        var style = StyleOf(span);
+        if (style is not null)
+        {
+            builder.Append("<span style=\"").Append(style).Append("\">");
+        }
+
+        builder.Append(content);
+
+        if (style is not null)
+        {
+            builder.Append("</span>");
+        }
+
+        if (span.Strikethrough)
+        {
+            builder.Append("</s>");
+        }
+
+        if (span.Underline)
+        {
+            builder.Append("</u>");
+        }
+
+        if (span.Italic)
+        {
+            builder.Append("</i>");
+        }
+
+        if (span.Bold)
+        {
+            builder.Append("</b>");
+        }
+
+        return builder.ToString();
+    }
+
+    /// <summary>The CSS a span's colour and size overrides need, or null when it overrides neither.</summary>
+    private static string? StyleOf(XPlatTextSpan span)
+    {
+        StringBuilder? builder = null;
+
+        if (span.ForeColor is { } color)
+        {
+            builder = new StringBuilder();
+            builder.Append("color:#")
+                .Append(color.Red.ToString("X2", CultureInfo.InvariantCulture))
+                .Append(color.Green.ToString("X2", CultureInfo.InvariantCulture))
+                .Append(color.Blue.ToString("X2", CultureInfo.InvariantCulture));
+        }
+
+        if (span.FontSize is { } size)
+        {
+            builder ??= new StringBuilder();
+            if (builder.Length > 0)
+            {
+                builder.Append(';');
+            }
+
+            builder.Append("font-size:")
+                .Append(size.ToString("0.##", CultureInfo.InvariantCulture))
+                .Append("px");
+        }
+
+        return builder?.ToString();
     }
 
     /// <summary>Returns the laid-out text, placing fragments when the content size changed.</summary>

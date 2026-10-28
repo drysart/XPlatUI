@@ -412,6 +412,9 @@ internal static class NativeMethods
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern bool IsClipboardFormatAvailable(uint format);
 
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    internal static extern uint RegisterClipboardFormatW(string lpszFormat);
+
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern IntPtr GetClipboardData(uint uFormat);
 
@@ -429,6 +432,9 @@ internal static class NativeMethods
 
     [DllImport("kernel32.dll")]
     internal static extern IntPtr GlobalFree(IntPtr hMem);
+
+    [DllImport("kernel32.dll")]
+    internal static extern nuint GlobalSize(IntPtr hMem);
 
     /// <summary>Opts the process into per-monitor DPI awareness so the UI is crisp at any scale.</summary>
     internal static bool TryEnablePerMonitorDpi() => SetProcessDpiAwarenessContext(DpiAwarenessPerMonitorV2);

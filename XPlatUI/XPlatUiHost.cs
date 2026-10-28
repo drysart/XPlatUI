@@ -380,7 +380,9 @@ public sealed class XPlatUiHost
     /// <summary>
     /// Copies the current selection to the clipboard. Every control the selection touches
     /// contributes its own piece of the text, in visual order, joined with
-    /// <see cref="SelectionTextSeparator"/>. Returns true when text was copied.
+    /// <see cref="SelectionTextSeparator"/>. Controls that can describe their formatting also
+    /// contribute an HTML flavour, so rich targets paste the formatting.
+    /// Returns true when text was copied.
     /// </summary>
     public bool CopySelection()
     {
@@ -390,7 +392,7 @@ public sealed class XPlatUiHost
             return false;
         }
 
-        XPlatClipboard.SetText(text);
+        XPlatClipboard.SetHtml(text, _selection.GetHtml(SelectionTextSeparator));
         return true;
     }
 

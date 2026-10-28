@@ -447,6 +447,14 @@ public class XPlatControl : IDisposable
     }
 
     /// <summary>
+    /// The HTML this control contributes to the clipboard for the given selection slice, so that
+    /// formatted text survives a copy into a rich target. Returning null - the default - means
+    /// this control has nothing richer to say than <see cref="GetSelectionText"/> and the plain
+    /// text is used instead, escaped.
+    /// </summary>
+    public virtual string? GetSelectionHtml(int start, int length) => null;
+
+    /// <summary>
     /// Declares that this control is starting a selection of its own - a caret or an internal
     /// text selection, for example. Only one selection may exist at a time, so this clears the
     /// host's control-level selection and tells any other control to drop its internal selection

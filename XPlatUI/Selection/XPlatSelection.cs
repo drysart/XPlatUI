@@ -85,6 +85,43 @@ public sealed class XPlatSelection
         return builder.ToString();
     }
 
+    /// <summary>
+    /// The selection as an HTML fragment: each control's own markup for its slice, in visual
+    /// order, joined with <paramref name="separator"/>. Controls that have no markup of their
+    /// own contribute their text, escaped.
+    /// </summary>
+    public string GetHtml(string separator = "\n")
+    {
+        if (_ranges.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        var builder = new StringBuilder();
+        foreach (var range in _ranges)
+        {
+            var piece = range.Control!.GetSelectionHtml(range.Start, range.Length);
+            if (string.IsNullOrEmpty(piece))
+            {
+                piece = XPlatHtml.Escape(range.Control.GetSelectionText(range.Start, range.Length));
+            }
+
+            if (piece.Length == 0)
+            {
+                continue;
+            }
+
+            if (builder.Length > 0)
+            {
+                builder.Append(XPlatHtml.Escape(separator));
+            }
+
+            builder.Append(piece);
+        }
+
+        return builder.ToString();
+    }
+
     /// <summary>Clears the selection.</summary>
     public void Clear()
     {

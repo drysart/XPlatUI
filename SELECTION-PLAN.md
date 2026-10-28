@@ -150,3 +150,20 @@ default window procedure for `WM_RBUTTONUP`, so an adapter that handles the righ
 itself has to pass it on to `DefWindowProcW`; returning zero swallows the request, and because the
 library only ever learns about a menu through `ProcessContextMenu` there is nothing to debug - the
 right click simply does nothing. Only the right button needs the fall-through.
+Copying is where a control's influence over the clipboard became visible. The plain text piece a
+control contributes (`GetSelectionText`) is not always the whole story: a rich label knows its text
+is bold or coloured, and a text target cannot carry that. So a control may also answer
+`GetSelectionHtml`, and the selection joins those pieces the same way it joins the text ones, with
+a line break between controls. The base implementation returns null, which means "no markup of my
+own" and the plain text is used instead, escaped - so a control that does not care is unaffected.
+
+Two details make the markup come out right. Because a selection can start or end part way through a
+span, the label wraps only the selected slice of each span rather than the whole span, which is
+also why the tags are derived from the span list (whose texts concatenate into `Text`, exactly the
+axis the selection offsets are counted on) and not from the laid-out fragments. And because the
+markup has to be valid HTML even when the selection cuts a span in half, tags open and close around
+each slice, so adjacent slices of the same span repeat them - which is correct, just not minimal.
+
+On Windows the markup travels in the `HTML Format` clipboard format, which has to be registered at
+runtime and needs a small header of byte offsets before the fragment. The offsets are written as
+fixed-width numbers so filling them in does not move the content they point at.
