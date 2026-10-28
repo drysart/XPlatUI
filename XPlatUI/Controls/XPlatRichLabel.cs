@@ -54,6 +54,7 @@ public class XPlatRichLabel : XPlatControl
         _spans = new XPlatTextSpanCollection(this);
         AutoSize = true;
         ForeColor = XPlatTheme.Foreground;
+        SelectionStyle = XPlatSelectionStyle.Partial;
     }
 
     /// <summary>Creates a label from a set of spans.</summary>
@@ -458,6 +459,217 @@ public class XPlatRichLabel : XPlatControl
         return null;
     }
 
+    /// <summary>
+    /// Maps a point to the nearest character boundary in <see cref="XPlatControl.Text"/>. The point
+    /// snaps to the closest line first, so dragging above or below the text clamps to its ends.
+    /// </summary>
+    public override float GetSelectionOffset(SKPoint pointInLocal)
+    {
+        var layout = EnsurePlaced();
+        if (layout is null)
+        {
+            return 0f;
+        }
+
+        Line? nearest = null;
+        float nearestDistance = float.MaxValue;
+
+        foreach (var line in layout.Lines)
+        {
+            if (!TryGetLineBounds(line, out var bounds))
+            {
+                continue;
+            }
+
+            float distance = pointInLocal.Y < bounds.Top
+                ? bounds.Top - pointInLocal.Y
+                : pointInLocal.Y > bounds.Bottom
+                    ? pointInLocal.Y - bounds.Bottom
+                    : 0f;
+
+            if (distance < nearestDistance)
+            {
+                nearestDistance = distance;
+                nearest = line;
+            }
+        }
+
+        return nearest is null ? 0f : OffsetInLine(nearest, pointInLocal.X);
+    }
+
+    /// <summary>
+    /// Adds one rectangle per line for the selected text, plus the bounds of inline controls the
+    /// selection reaches past on both sides.
+    /// </summary>
+    public override void GetSelectionRects(int start, int length, List<SKRect> output)
+    {
+        ArgumentNullException.ThrowIfNull(output);
+
+        if (length <= 0)
+        {
+            return;
+        }
+
+        var layout = EnsurePlaced();
+        if (layout is null)
+        {
+            return;
+        }
+
+        int end = start + length;
+
+        foreach (var line in layout.Lines)
+        {
+            float runLeft = 0f;
+            float runRight = 0f;
+            SKRect runBounds = default;
+            bool inRun = false;
+
+            void Flush()
+            {
+                if (inRun)
+                {
+                    output.Add(new SKRect(runLeft, runBounds.Top, runRight, runBounds.Bottom));
+                    inRun = false;
+                }
+            }
+
+            foreach (var fragment in line.Fragments)
+            {
+                if (fragment.Kind == FragmentKind.Control)
+                {
+                    // A control carries no text, so it only counts as selected when the selection
+                    // starts before it and ends after it.
+                    Flush();
+                    if (fragment.Start > start && fragment.Start < end)
+                    {
+                        output.Add(fragment.Bounds);
+                    }
+
+                    continue;
+                }
+
+                int from = Math.Max(start, fragment.Start) - fragment.Start;
+                int to = Math.Min(end, fragment.Start + fragment.Text.Length) - fragment.Start;
+
+                if (to <= from)
+                {
+                    Flush();
+                    continue;
+                }
+
+                float left = fragment.Bounds.Left + MeasurePrefix(fragment, from);
+                float right = fragment.Bounds.Left + MeasurePrefix(fragment, to);
+
+                // Adjacent fragments on a line form one continuous highlight instead of one box
+                // per word and space.
+                if (inRun && MathF.Abs(left - runRight) <= 0.5f)
+                {
+                    runRight = MathF.Max(runRight, right);
+                }
+                else
+                {
+                    Flush();
+                    runLeft = left;
+                    runRight = right;
+                    runBounds = fragment.Bounds;
+                    inRun = true;
+                }
+            }
+
+            Flush();
+        }
+    }
+
+    /// <summary>Returns the laid-out text, placing fragments when the content size changed.</summary>
+    private Layout? EnsurePlaced()
+    {
+        var content = ContentRect;
+        if (content.Width <= 0f || content.Height <= 0f)
+        {
+            return null;
+        }
+
+        var layout = EnsureLayout(content.Width);
+        if (layout is null)
+        {
+            return null;
+        }
+
+        Place(layout, content);
+        return layout;
+    }
+
+    private static float OffsetInLine(Line line, float x)
+    {
+        var fragments = line.Fragments;
+        if (fragments.Count == 0)
+        {
+            return 0f;
+        }
+
+        for (int i = 0; i < fragments.Count; i++)
+        {
+            var fragment = fragments[i];
+            if (x <= fragment.Bounds.Right || i == fragments.Count - 1)
+            {
+                return OffsetInFragment(fragment, x);
+            }
+        }
+
+        return 0f;
+    }
+
+    private static float OffsetInFragment(Fragment fragment, float x)
+    {
+        if (fragment.Kind == FragmentKind.Control || fragment.Text.Length == 0)
+        {
+            return fragment.Start;
+        }
+
+        var text = fragment.Text;
+        float left = fragment.Bounds.Left;
+        int best = 0;
+        float bestDistance = MathF.Abs(x - left);
+
+        for (int i = 1; i <= text.Length; i++)
+        {
+            float boundary = left + (i == text.Length ? fragment.Width : fragment.Font.MeasureWidth(text[..i]));
+            float distance = MathF.Abs(x - boundary);
+            if (distance < bestDistance)
+            {
+                bestDistance = distance;
+                best = i;
+            }
+        }
+
+        return fragment.Start + best;
+    }
+
+    private static float MeasurePrefix(Fragment fragment, int count)
+    {
+        if (count <= 0)
+        {
+            return 0f;
+        }
+
+        return count >= fragment.Text.Length ? fragment.Width : fragment.Font.MeasureWidth(fragment.Text[..count]);
+    }
+
+    private static bool TryGetLineBounds(Line line, out SKRect bounds)
+    {
+        bounds = default;
+        bool any = false;
+
+        foreach (var fragment in line.Fragments)
+        {
+            bounds = any ? SKRect.Union(bounds, fragment.Bounds) : fragment.Bounds;
+            any = true;
+        }
+
+        return any;
+    }
+
     private void SetHoverSpan(XPlatTextSpan? span)
     {
         if (ReferenceEquals(span, _hoverSpan))
@@ -731,6 +943,7 @@ public class XPlatRichLabel : XPlatControl
                         if (fragment.Width > wrapWidth)
                         {
                             var remaining = fragment.Text;
+                            int consumed = 0;
                             while (remaining.Length > 0)
                             {
                                 int take = FitPrefix(remaining, fragment.Font, wrapWidth);
@@ -744,6 +957,7 @@ public class XPlatRichLabel : XPlatControl
                                     Span = fragment.Span,
                                     Kind = FragmentKind.Word,
                                     Font = fragment.Font,
+                                    Start = fragment.Start + consumed,
                                     Text = remaining[..take],
                                 };
                                 piece.Width = fragment.Font.MeasureWidth(piece.Text);
@@ -751,6 +965,7 @@ public class XPlatRichLabel : XPlatControl
                                 line.Fragments.Add(piece);
                                 x += piece.Width;
                                 remaining = remaining[take..];
+                                consumed += take;
 
                                 if (remaining.Length > 0)
                                 {
@@ -793,6 +1008,8 @@ public class XPlatRichLabel : XPlatControl
     private List<Fragment> BuildFragments(float wrapWidth)
     {
         var fragments = new List<Fragment>();
+        int offset = 0;
+
         foreach (var span in _spans)
         {
             if (span.Control is { } control)
@@ -802,19 +1019,24 @@ public class XPlatRichLabel : XPlatControl
                 {
                     Span = span,
                     Kind = FragmentKind.Control,
+                    Start = offset,
                     Width = size.Width,
                     Height = size.Height,
                 });
                 continue;
             }
 
-            Tokenize(span, ResolveFont(span), fragments);
+            Tokenize(span, ResolveFont(span), fragments, ref offset);
         }
 
         return fragments;
     }
 
-    private static void Tokenize(XPlatTextSpan span, XPlatFont font, List<Fragment> output)
+    /// <summary>
+    /// Splits a span's text into word, space and break fragments, assigning each its offset in the
+    /// label's <see cref="Text"/> so selection can map between characters and geometry.
+    /// </summary>
+    private static void Tokenize(XPlatTextSpan span, XPlatFont font, List<Fragment> output, ref int offset)
     {
         var text = span.Text;
         int index = 0;
@@ -825,13 +1047,15 @@ public class XPlatRichLabel : XPlatControl
             if (c == '\r')
             {
                 index++;
+                offset++;
                 continue;
             }
 
             if (c == '\n')
             {
-                output.Add(new Fragment { Span = span, Kind = FragmentKind.Break, Font = font });
+                output.Add(new Fragment { Span = span, Kind = FragmentKind.Break, Font = font, Start = offset });
                 index++;
+                offset++;
                 continue;
             }
 
@@ -849,9 +1073,11 @@ public class XPlatRichLabel : XPlatControl
                     Span = span,
                     Kind = FragmentKind.Space,
                     Font = font,
+                    Start = offset,
                     Text = run,
                     Width = font.MeasureWidth(run),
                 });
+                offset += run.Length;
                 continue;
             }
 
@@ -866,9 +1092,11 @@ public class XPlatRichLabel : XPlatControl
                 Span = span,
                 Kind = FragmentKind.Word,
                 Font = font,
+                Start = offset,
                 Text = word,
                 Width = font.MeasureWidth(word),
             });
+            offset += word.Length;
         }
     }
 
@@ -1000,6 +1228,9 @@ public class XPlatRichLabel : XPlatControl
         public float Height;
         public float OffsetY;
         public SKRect Bounds;
+
+        /// <summary>Offset of <see cref="Text"/> in the label's <see cref="Text"/>.</summary>
+        public int Start;
     }
 
     private sealed class Line
