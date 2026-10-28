@@ -75,6 +75,19 @@ public class XPlatControl : IDisposable
     public object? Tag { get; set; }
 
     /// <summary>
+    /// Menu shown when the control is right-clicked. When null the nearest ancestor's menu is
+    /// used, so a container can give every child the same menu without repeating itself.
+    /// </summary>
+    public XPlatContextMenu? ContextMenu { get; set; }
+
+    /// <summary>
+    /// The menu to show when this control is right-clicked. The default returns
+    /// <see cref="ContextMenu"/>, falling back to the parent's menu; controls that build their
+    /// menu from their own state (an editable text box, say) override it.
+    /// </summary>
+    protected internal virtual XPlatContextMenu? BuildContextMenu() => ContextMenu ?? Parent?.BuildContextMenu();
+
+    /// <summary>
     /// Child controls in z-order. Containers such as <see cref="XPlatPanel"/> arrange
     /// them; leaf controls leave the collection empty.
     /// </summary>

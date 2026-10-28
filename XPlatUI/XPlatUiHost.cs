@@ -29,6 +29,12 @@ public sealed class XPlatUiHost
     /// <summary>Raised when the control under the pointer requests a different cursor.</summary>
     public event EventHandler? CursorChanged;
 
+    /// <summary>
+    /// Raised before a context menu is shown, so an application can supply one for a control
+    /// that carries no <see cref="XPlatControl.ContextMenu"/> of its own.
+    /// </summary>
+    public event EventHandler<XPlatContextMenuEventArgs>? ContextMenuOpening;
+
     /// <summary>The root of the control tree.</summary>
     public XPlatControl? Root
     {
@@ -230,6 +236,39 @@ public sealed class XPlatUiHost
         _hovered?.RaiseMouseLeave();
         _hovered = null;
         SetCursor(XPlatCursor.Default);
+    }
+
+    /// <summary>
+    /// Shows the context menu for <paramref name="location"/>. Adapters call this from the
+    /// platform's own context menu event (on Windows, <c>WM_CONTEXTMENU</c>), which is why the
+    /// host does not raise it from a right button release: the platform message already covers
+    /// both the mouse and the keyboard menu key. Returns true when a menu was handed to a
+    /// presenter.
+    /// </summary>
+    /// <remarks>
+    /// The menu comes from the hit control's <see cref="XPlatControl.ContextMenu"/> (or the
+    /// nearest ancestor that has one), then from <see cref="ContextMenuOpening"/>, and finally
+    /// from the current selection, which offers Copy. Right-clicking never changes the
+    /// selection, so a menu can act on what the user already selected.
+    /// </remarks>
+    public bool ProcessContextMenu(SKPoint location)
+    {
+        var hit = HitTest(location);
+        var menu = hit?.BuildContextMenu();
+
+        if (menu is null || menu.IsEmpty)
+        {
+            var args = new XPlatContextMenuEventArgs(hit, location);
+            ContextMenuOpening?.Invoke(this, args);
+            menu = args.Menu;
+        }
+
+        if (menu is null || menu.IsEmpty)
+        {
+            menu = _selection.IsEmpty ? null : XPlatContextMenu.CreateCopyMenu(this);
+        }
+
+        return menu is not null && menu.Show(this, hit, location);
     }
 
     /// <summary>

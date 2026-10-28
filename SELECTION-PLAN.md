@@ -24,6 +24,8 @@ so work can stop after any step with the tree in a working state.
 | Keyboard | None. Selection is pointer-driven only | Explicit scope decision: there is no caret to move. |
 | Single selection | Only one selection may exist at a time. `XPlatControl.ClaimSelection()` is the declaration point: the host clears its control-level selection and tells every other control to drop its internal one before the caller proceeds | A caret and a control-level selection must never be visible together, and no control should have to know about any other control's selection state. |
 | Context menus | Native only; a no-op fallback when the platform installs no presenter | Keeps the library free of platform code and adds no menu renderer to the binary. |
+| Menu trigger | The adapter calls `XPlatUiHost.ProcessContextMenu` from the platform's context menu message, not from a right button release | One code path covers the mouse and the keyboard menu key, and a right click never opens two menus. |
+| Menu lookup | Hit control's `ContextMenu`, inherited from the nearest ancestor, then the `ContextMenuOpening` event, then a Copy menu built from the selection | A container can give every child the same menu, an application can build menus from state, and a selection is always copyable. |
 
 ## Steps
 
@@ -60,7 +62,8 @@ AOT single-file publish is repeated.
 | 3c | Done | `XPlatUiHost.SelectionOwner`/`ClaimSelection`/`ClearSelection` arbitrate a single selection; `XPlatControl.ClaimSelection()` is the declaration point and `OnSelectionCleared` the hook. `XPlatTextBox` claims on caret activity and collapses its anchor/caret when another control claims; losing focus also ends its internal selection. Verified with 41 headless checks (click and typing claims, collapse on external claim, caret pixels appearing and disappearing, text box to text box, focus loss, `ClearSelection`, whole controls) plus an unchanged harness render. |
 | 4 | Done | `XPlatUiHost.ResolveSelectionPosition` maps a pointer location into the selection: over a selectable control it maps straight in, and outside every selectable control it clamps to the nearest one (`FindNearestSelectable`, ties keep the current end) so dragging off the content still selects up to that end. Whole controls now join a selection by overlap instead of by covering their midpoint, so dragging backwards out of a button keeps it selected. Verified with 20 headless checks (past-the-end, single jump, above-the-start, beside-the-text, outside-the-surface, whole-control entry/exit/boundary) plus an unchanged harness render. |
 | 5 | Done | `XPlatSelection.GetText` assembles the per-control contributions in visual order and `XPlatUiHost.CopySelection` writes them through `XPlatClipboard`; `SelectionTextSeparator` (newline by default) is the join. Verified with 14 headless checks (whole and partial pieces, custom separator, no selection, installed clipboard receives the write). |
-| 6-9 | Pending | See the step table. |
+| 6 | Done | `XPlatContextMenu`/`XPlatMenuItem` hold the items, `IXPlatContextMenuPresenter` is the platform hook and `XPlatContextMenuPresenter.Current` the process-wide slot; `XPlatControl.ContextMenu` (inherited from the nearest ancestor) and the overridable `BuildContextMenu()` supply the menu, `XPlatUiHost.ContextMenuOpening` lets an application build one on the fly, and a selection with nothing else to offer gets a Copy menu. Verified with 58 headless checks (item invoke/enabled/separator, no presenter, default Copy menu, control and inherited menus, event precedence, off-content right-click, cleared selection, fluent building) plus an unchanged harness render. |
+| 7-9 | Pending | See the step table. |
 
 Step 3c keeps the selection exclusive. `XPlatUiHost` tracks which control, if any, owns a
 selection of its own (`SelectionOwner`); `XPlatControl.ClaimSelection()` is the generic way to
@@ -94,6 +97,16 @@ Step 5 turns a selection into text. Every control contributes through its own
 `GetSelectionText(start, length)`, the pieces are joined in visual order with
 `XPlatUiHost.SelectionTextSeparator`, and `CopySelection` writes the result through
 `XPlatClipboard`, which the platform layer installs. The step-6 context menu only has to call it.
+
+Step 6 adds the menu model and the platform hook. A menu is plain data - `XPlatContextMenu`
+holds `XPlatMenuItem` values with a text, a command, an enabled flag and a separator singleton -
+so the library never renders one. `XPlatUiHost.ProcessContextMenu` resolves the menu in three
+steps: the hit control's `ContextMenu`, inherited from the nearest ancestor that has one, then
+the `ContextMenuOpening` event, then a Copy menu built from the current selection. The result
+goes to `IXPlatContextMenuPresenter.Current`, and with no presenter installed menus are simply
+not shown, which is what keeps the library platform-free. Adapters call `ProcessContextMenu`
+from the platform's own context menu message rather than from a right button release, because
+that message also covers the keyboard menu key and avoids two menus for one click.
 
 Three rules worth remembering when implementing the later steps:
 
