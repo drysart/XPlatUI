@@ -433,6 +433,29 @@ public class XPlatControl : IDisposable
         return length <= 0 ? string.Empty : text.Substring(start, length);
     }
 
+    /// <summary>
+    /// Declares that this control is starting a selection of its own - a caret or an internal
+    /// text selection, for example. Only one selection may exist at a time, so this clears the
+    /// host's control-level selection and tells any other control to drop its internal selection
+    /// before the caller proceeds.
+    /// </summary>
+    public void ClaimSelection() => Host?.ClaimSelection(this);
+
+    /// <summary>
+    /// Called when another control (or the host) takes over the selection, so this control can
+    /// drop whatever selection state it keeps to itself. The host's selection is already cleared
+    /// by the time this runs.
+    /// </summary>
+    protected virtual void OnSelectionCleared(EventArgs e)
+    {
+    }
+
+    internal void RaiseSelectionCleared()
+    {
+        OnSelectionCleared(EventArgs.Empty);
+        Invalidate();
+    }
+
     /// <summary>Background fill. Null means transparent.</summary>
     public SKColor? BackColor { get; set; }
 

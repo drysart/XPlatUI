@@ -21,6 +21,7 @@ so work can stop after any step with the tree in a working state.
 | Drag threshold | A press becomes a selection after ~3 logical pixels of movement | Plain clicks still reach links, buttons and text boxes inside selectable controls. |
 | Text join | Per-control contributions joined with `\n` (configurable) | "end of label 1\nwhole label 2\nstart of label 3". |
 | Keyboard | None. Selection is pointer-driven only | Explicit scope decision: there is no caret to move. |
+| Single selection | Only one selection may exist at a time. `XPlatControl.ClaimSelection()` is the declaration point: the host clears its control-level selection and tells every other control to drop its internal one before the caller proceeds | A caret and a control-level selection must never be visible together, and no control should have to know about any other control's selection state. |
 | Context menus | Native only; a no-op fallback when the platform installs no presenter | Keeps the library free of platform code and adds no menu renderer to the binary. |
 
 ## Steps
@@ -31,6 +32,7 @@ so work can stop after any step with the tree in a working state.
 | 2 | Host selection state and drag selection | `XPlatSelection` (anchor/focus, ranges, `Changed`), press/drag/release handling, drag threshold, mouse capture reuse | Dragging inside a selectable control highlights it and `Selection.Ranges` is correct |
 | 3 | Rich label offsets and partial selection | `Fragment.Start` (each fragment's offset in `Text`, so `Text.Length` is the unit count), nearest-offset hit testing, per-line selection rects, text slices | Positions land on character boundaries, rects are per line, slices match the source |
 | 3b | Label offsets and partial selection | `XPlatTextRenderer.BuildTextLines`/`XPlatTextLine` (line text is always a slice of the source), `GetBlockTop`/`GetLineLeft` shared with `Draw`, `XPlatLabel` overrides | Labels select character by character, including wrapped and multi-line text |
+| 3c | One selection at a time | `XPlatUiHost.ClaimSelection`/`ClearSelection`/`SelectionOwner`, `XPlatControl.ClaimSelection`, `OnSelectionCleared` hook, `XPlatTextBox` claims on caret activity and collapses on release, focus loss ends an internal selection | A caret, a text selection and a control-level selection can never coexist |
 | 4 | Cross-control selection | Visual-order clamping while dragging outside a control; boundary rules for whole controls | Dragging from the middle of label 1 to the middle of label 3 selects partial/whole/partial |
 | 5 | Clipboard assembly | `XPlatSelection.GetText()`, `XPlatUiHost.CopySelection()` through `XPlatClipboard` | The clipboard receives the expected multi-control string |
 | 6 | Context menu model and presenter API | `XPlatContextMenu`, `XPlatMenuItem`, `IXPlatContextMenuPresenter`, `XPlatContextMenuPresenter.Current`, `XPlatControl.ContextMenu`, default Copy menu on right-click | A fake presenter captures the menu and Copy fills the clipboard |
@@ -54,7 +56,19 @@ AOT single-file publish is repeated.
 | 2 | Done | `XPlatSelection` normalises anchor/focus into per-control ranges over one global offset axis; `XPlatUiHost` starts a selection on left press and extends it once the pointer passes `SelectionDragThreshold` (3 px). Verified with 28 headless checks (whole, partial, multi-control both directions, threshold, ancestor mapping, painted highlight) plus an unchanged harness render. |
 | 3 | Done | `Fragment.Start` gives every word, space, break and wrapped-word piece its offset in `Text`; points snap to the nearest line and then the nearest character boundary; rects merge per line and per inline control. Verified with 45 headless checks (offsets, slices, merged rects, per-line rects, inline-control coverage, wrapped words, painted highlight, cross-label drag). |
 | 3b | Done | `XPlatTextRenderer.BuildTextLines` returns `XPlatTextLine` (start, length, text) whose `Text` is always a slice of the source, so character offsets stay meaningful across wrapping, hard breaks and line breaks; `GetBlockTop`/`GetLineLeft` are shared with `Draw`. `XPlatLabel` overrides `GetSelectionOffset`/`GetSelectionRects` and defaults to `Partial`. Verified with 42 headless checks (character boundaries, slices, per-line rects, wrapped and hard-broken lines, painted tint, cross-label drag in both directions) plus an unchanged harness render. |
+| 3c | Done | `XPlatUiHost.SelectionOwner`/`ClaimSelection`/`ClearSelection` arbitrate a single selection; `XPlatControl.ClaimSelection()` is the declaration point and `OnSelectionCleared` the hook. `XPlatTextBox` claims on caret activity and collapses its anchor/caret when another control claims; losing focus also ends its internal selection. Verified with 41 headless checks (click and typing claims, collapse on external claim, caret pixels appearing and disappearing, text box to text box, focus loss, `ClearSelection`, whole controls) plus an unchanged harness render. |
 | 4-9 | Pending | See the step table. |
+
+Step 3c keeps the selection exclusive. `XPlatUiHost` tracks which control, if any, owns a
+selection of its own (`SelectionOwner`); `XPlatControl.ClaimSelection()` is the generic way to
+declare "I am starting a selection", which clears the host's selection and notifies the previous
+owner through the `OnSelectionCleared` hook so it can drop its own state. `XPlatTextBox` claims
+whenever its caret becomes active (focus, mouse press, `Select`, caret moves, edits) and
+collapses its `anchor`/`caret` when someone else claims, so a caret never lingers next to a
+label selection. Losing focus also ends an internal selection, which is what stops two text
+boxes from showing highlights at once. Verified with 41 headless checks (claim on click, claim
+on typing, collapse on external claim, caret pixels appearing and disappearing, text box to text
+box, focus loss, `ClearSelection`, whole controls) plus an unchanged harness render.
 
 Step 3b was pulled forward from step 8 because the label is the simplest partial control and
 because the renderer change it needed (line layout that remembers source offsets) is shared:
@@ -72,3 +86,6 @@ Three rules worth remembering when implementing the later steps:
 - Inline controls inside a rich label carry no text, so they are only highlighted when the
   selection reaches past them on both sides; a selection that stops at the control's position
   does not include it.
+- A control that keeps a selection of its own calls `ClaimSelection()` when that selection
+  becomes live and overrides `OnSelectionCleared` to drop it, so the UI never shows two
+  selections at once.

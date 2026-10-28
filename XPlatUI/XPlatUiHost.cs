@@ -15,6 +15,7 @@ public sealed class XPlatUiHost
     private XPlatControl? _hovered;
     private XPlatControl? _captured;
     private XPlatControl? _focused;
+    private XPlatControl? _selectionOwner;
     private XPlatCursor _cursor = XPlatCursor.Default;
     private SKPoint _selectionOrigin;
     private bool _selecting;
@@ -49,7 +50,7 @@ public sealed class XPlatUiHost
             _captured = null;
             _selecting = false;
             _draggingSelection = false;
-            _selection.Clear();
+            ClearSelection();
 
             _root?.AttachHost(null);
             _root = value;
@@ -67,6 +68,12 @@ public sealed class XPlatUiHost
     public SKColor ClearColor { get; set; } = SKColors.White;
 
     public XPlatControl? FocusedControl => _focused;
+
+    /// <summary>
+    /// The control that currently owns a selection of its own, such as a text box with a caret,
+    /// or null when the host's own <see cref="Selection"/> is the only selection.
+    /// </summary>
+    public XPlatControl? SelectionOwner => _selectionOwner;
 
     public XPlatControl? HoveredControl => _hovered;
 
@@ -141,7 +148,7 @@ public sealed class XPlatUiHost
         target?.RaiseMouseMove(new XPlatMouseEventArgs(ToLocal(target, location)));
         SetCursor(hit is null ? XPlatCursor.Default : hit.GetCursorAt(ToLocal(hit, location)));
 
-        if (_selecting)
+        if (_selecting && _selectionOwner is null)
         {
             if (!_draggingSelection)
             {
@@ -173,7 +180,7 @@ public sealed class XPlatUiHost
             {
                 _selecting = false;
                 _draggingSelection = false;
-                _selection.Clear();
+                ClearSelection();
             }
             else
             {
@@ -259,7 +266,16 @@ public sealed class XPlatUiHost
             return;
         }
 
-        _focused?.RaiseLostFocus();
+        var previous = _focused;
+        previous?.RaiseLostFocus();
+
+        // A control's internal selection only lives while it holds focus, so leaving the
+        // control ends it - that keeps a caret from lingering next to another selection.
+        if (previous is not null && ReferenceEquals(_selectionOwner, previous))
+        {
+            ReleaseSelectionOwner();
+        }
+
         _focused = control;
         _focused?.RaiseGotFocus();
         Invalidate();
@@ -279,10 +295,62 @@ public sealed class XPlatUiHost
         }
     }
 
+    /// <summary>
+    /// Declares that <paramref name="owner"/> is starting a selection of its own - a text box
+    /// caret or selection, for example. Only one selection may exist at a time, so the host's
+    /// control-level selection is cleared and any other control's internal selection is dropped
+    /// before the caller proceeds.
+    /// </summary>
+    public void ClaimSelection(XPlatControl owner)
+    {
+        ArgumentNullException.ThrowIfNull(owner);
+
+        var previous = _selectionOwner;
+        _selectionOwner = owner;
+        _selecting = false;
+        _draggingSelection = false;
+
+        bool changed = !_selection.IsEmpty;
+        _selection.Clear();
+
+        if (!ReferenceEquals(previous, owner))
+        {
+            changed = true;
+            previous?.RaiseSelectionCleared();
+        }
+
+        if (changed)
+        {
+            Invalidate();
+        }
+    }
+
+    /// <summary>Clears every selection: the control-level selection and any control's internal one.</summary>
+    public void ClearSelection()
+    {
+        _selection.Clear();
+        ReleaseSelectionOwner();
+    }
+
+    private void ReleaseSelectionOwner()
+    {
+        var previous = _selectionOwner;
+        if (previous is null)
+        {
+            return;
+        }
+
+        _selectionOwner = null;
+        previous.RaiseSelectionCleared();
+    }
+
     private XPlatControl? HitTest(SKPoint location) => _root?.HitTest(location);
 
-    private void BeginSelection(XPlatControl control, SKPoint location) =>
+    private void BeginSelection(XPlatControl control, SKPoint location)
+    {
+        ReleaseSelectionOwner();
         _selection.Begin(new XPlatSelectionPosition(control, control.GetSelectionOffset(ToLocal(control, location))));
+    }
 
     private void ExtendSelection(SKPoint location)
     {

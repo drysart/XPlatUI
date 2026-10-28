@@ -26,6 +26,7 @@ public class XPlatTextBox : XPlatControl
     private int _anchor;
     private float _scrollX;
     private bool _caretVisible = true;
+    private bool _caretActive;
     private bool _selecting;
     private TimeSpan _blinkElapsed;
     private int _maxLength;
@@ -162,6 +163,8 @@ public class XPlatTextBox : XPlatControl
     /// <summary>Selects <paramref name="length"/> characters starting at <paramref name="start"/>.</summary>
     public void Select(int start, int length)
     {
+        ActivateCaret();
+
         start = Math.Clamp(start, 0, Text.Length);
         int end = Math.Clamp(start + Math.Max(0, length), start, Text.Length);
 
@@ -303,7 +306,7 @@ public class XPlatTextBox : XPlatControl
             canvas.DrawText(text, originX, baseline, SKTextAlign.Left, _font.SkFont, paint);
         }
 
-        if (IsFocused && Enabled && _caretVisible)
+        if (IsFocused && Enabled && _caretActive && _caretVisible)
         {
             float caretX = originX + MeasureX(display, _caret);
             paint.Color = XPlatTheme.Caret;
@@ -327,6 +330,7 @@ public class XPlatTextBox : XPlatControl
             return;
         }
 
+        ActivateCaret();
         Focus();
         _selecting = true;
         CaptureMouse();
@@ -516,7 +520,7 @@ public class XPlatTextBox : XPlatControl
     protected override void OnGotFocus(EventArgs e)
     {
         base.OnGotFocus(e);
-        ResetCaretBlink();
+        ActivateCaret();
         EnsureCaretVisible();
         Invalidate();
     }
@@ -528,6 +532,13 @@ public class XPlatTextBox : XPlatControl
         _caretVisible = true;
         _blinkElapsed = TimeSpan.Zero;
         Invalidate();
+    }
+
+    protected override void OnSelectionCleared(EventArgs e)
+    {
+        base.OnSelectionCleared(e);
+        _caretActive = false;
+        _anchor = _caret;
     }
 
     protected override void OnBoundsChanged(EventArgs e)
@@ -556,6 +567,8 @@ public class XPlatTextBox : XPlatControl
         {
             return;
         }
+
+        ActivateCaret();
 
         start = Math.Clamp(start, 0, Text.Length);
         length = Math.Clamp(length, 0, Text.Length - start);
@@ -589,6 +602,8 @@ public class XPlatTextBox : XPlatControl
 
     private void MoveCaretTo(int index, bool extendSelection)
     {
+        ActivateCaret();
+
         _caret = Math.Clamp(index, 0, Text.Length);
         if (!extendSelection)
         {
@@ -604,6 +619,17 @@ public class XPlatTextBox : XPlatControl
     {
         _caretVisible = true;
         _blinkElapsed = TimeSpan.Zero;
+    }
+
+    /// <summary>
+    /// Marks the caret as live and tells the host that this text box is taking over the
+    /// selection, so any selection elsewhere in the UI is cleared first.
+    /// </summary>
+    private void ActivateCaret()
+    {
+        _caretActive = true;
+        ClaimSelection();
+        ResetCaretBlink();
     }
 
     private void EnsureCaretVisible()
