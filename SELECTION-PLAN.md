@@ -144,3 +144,9 @@ Three rules worth remembering when implementing the later steps:
   selections at once.
 - Whole controls join a selection by overlap, so a drag that stops exactly on the boundary of one
   leaves it out, but a drag that enters it and comes back out keeps it selected.
+
+Step 7 has one platform trap worth writing down. Windows generates `WM_CONTEXTMENU` inside the
+default window procedure for `WM_RBUTTONUP`, so an adapter that handles the right button release
+itself has to pass it on to `DefWindowProcW`; returning zero swallows the request, and because the
+library only ever learns about a menu through `ProcessContextMenu` there is nothing to debug - the
+right click simply does nothing. Only the right button needs the fall-through.

@@ -323,7 +323,10 @@ internal sealed class HarnessWindow : IDisposable
 
             case NativeMethods.WmRButtonUp:
                 OnMouseUp(lParam, XPlatMouseButtons.Right);
-                return IntPtr.Zero;
+
+                // Windows turns a right button release into WM_CONTEXTMENU inside the default
+                // handler, so this message has to reach it or no menu is ever requested.
+                return NativeMethods.DefWindowProcW(hwnd, message, wParam, lParam);
 
             case NativeMethods.WmMButtonUp:
                 OnMouseUp(lParam, XPlatMouseButtons.Middle);
