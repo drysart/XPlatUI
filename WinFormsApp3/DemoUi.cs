@@ -437,6 +437,7 @@ public sealed class DemoUi
             ForeColor = XPlatTheme.MutedForeground,
             TextAlign = XPlatContentAlignment.TopLeft,
             Margin = new XPlatThickness(0f, 0f, 0f, 10f),
+            Selectable = true,
         });
 
         _counterLabel = new XPlatLabel("Button clicks: 0")
@@ -448,6 +449,7 @@ public sealed class DemoUi
             ForeColor = XPlatTheme.Accent,
             TextAlign = XPlatContentAlignment.MiddleLeft,
             Margin = new XPlatThickness(0f, 0f, 0f, 6f),
+            Selectable = true,
         };
         card.Controls.Add(_counterLabel);
 
@@ -459,6 +461,7 @@ public sealed class DemoUi
             Font = XPlatTheme.CaptionFont,
             ForeColor = XPlatTheme.MutedForeground,
             TextAlign = XPlatContentAlignment.TopLeft,
+            Selectable = true,
         });
 
         return card;
@@ -485,6 +488,7 @@ public sealed class DemoUi
             WrapText = true,
             Font = XPlatTheme.DefaultFont,
             ForeColor = XPlatTheme.Foreground,
+            Selectable = true,
         };
 
         rich.AddText("One flow of ");

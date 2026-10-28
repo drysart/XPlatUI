@@ -9,12 +9,18 @@ namespace XPlatUI;
 /// </summary>
 public sealed class XPlatUiHost
 {
+    private readonly XPlatSelection _selection;
     private XPlatControl? _root;
     private SKSize _clientSize;
     private XPlatControl? _hovered;
     private XPlatControl? _captured;
     private XPlatControl? _focused;
     private XPlatCursor _cursor = XPlatCursor.Default;
+    private SKPoint _selectionOrigin;
+    private bool _selecting;
+    private bool _draggingSelection;
+
+    public XPlatUiHost() => _selection = new XPlatSelection(this);
 
     /// <summary>Raised when the UI needs to be repainted.</summary>
     public event EventHandler? Invalidated;
@@ -41,6 +47,9 @@ public sealed class XPlatUiHost
             _hovered?.RaiseMouseLeave();
             _hovered = null;
             _captured = null;
+            _selecting = false;
+            _draggingSelection = false;
+            _selection.Clear();
 
             _root?.AttachHost(null);
             _root = value;
@@ -64,6 +73,18 @@ public sealed class XPlatUiHost
     public XPlatControl? CapturedControl => _captured;
 
     public XPlatCursor Cursor => _cursor;
+
+    /// <summary>
+    /// The selection driven by pointer input. It can span several controls, so it lives here
+    /// rather than in a control.
+    /// </summary>
+    public XPlatSelection Selection => _selection;
+
+    /// <summary>
+    /// Distance in logical pixels the pointer must travel after a press before the press turns
+    /// into a selection. Keeps plain clicks reaching links, buttons and text boxes.
+    /// </summary>
+    public float SelectionDragThreshold { get; set; } = 3f;
 
     /// <summary>Updates the logical client size and re-runs layout when it changed.</summary>
     public void SetClientSize(float width, float height)
@@ -119,6 +140,21 @@ public sealed class XPlatUiHost
         var target = _captured ?? hit;
         target?.RaiseMouseMove(new XPlatMouseEventArgs(ToLocal(target, location)));
         SetCursor(hit is null ? XPlatCursor.Default : hit.GetCursorAt(ToLocal(hit, location)));
+
+        if (_selecting)
+        {
+            if (!_draggingSelection)
+            {
+                var dx = location.X - _selectionOrigin.X;
+                var dy = location.Y - _selectionOrigin.Y;
+                _draggingSelection = (dx * dx) + (dy * dy) >= SelectionDragThreshold * SelectionDragThreshold;
+            }
+
+            if (_draggingSelection)
+            {
+                ExtendSelection(location);
+            }
+        }
     }
 
     public void ProcessMouseDown(
@@ -129,6 +165,24 @@ public sealed class XPlatUiHost
     {
         var hit = HitTest(location);
         _captured = hit;
+
+        if (button == XPlatMouseButtons.Left)
+        {
+            var selectionTarget = FindSelectionTarget(hit);
+            if (selectionTarget is null)
+            {
+                _selecting = false;
+                _draggingSelection = false;
+                _selection.Clear();
+            }
+            else
+            {
+                _selectionOrigin = location;
+                _selecting = true;
+                _draggingSelection = false;
+                BeginSelection(selectionTarget, location);
+            }
+        }
 
         if (hit is null)
         {
@@ -146,6 +200,12 @@ public sealed class XPlatUiHost
 
     public void ProcessMouseUp(SKPoint location, XPlatMouseButtons button = XPlatMouseButtons.Left, XPlatModifiers modifiers = XPlatModifiers.None)
     {
+        if (button == XPlatMouseButtons.Left)
+        {
+            _selecting = false;
+            _draggingSelection = false;
+        }
+
         var target = _captured ?? HitTest(location);
         _captured = null;
         target?.RaiseMouseUp(new XPlatMouseEventArgs(ToLocal(target, location), button, modifiers));
@@ -220,6 +280,38 @@ public sealed class XPlatUiHost
     }
 
     private XPlatControl? HitTest(SKPoint location) => _root?.HitTest(location);
+
+    private void BeginSelection(XPlatControl control, SKPoint location) =>
+        _selection.Begin(new XPlatSelectionPosition(control, control.GetSelectionOffset(ToLocal(control, location))));
+
+    private void ExtendSelection(SKPoint location)
+    {
+        var target = FindSelectionTarget(HitTest(location)) ?? _selection.Focus.Control;
+        if (target is null)
+        {
+            return;
+        }
+
+        _selection.SetFocus(new XPlatSelectionPosition(target, target.GetSelectionOffset(ToLocal(target, location))));
+    }
+
+    /// <summary>
+    /// Returns the control that should own a selection position for <paramref name="control"/>:
+    /// the control itself when it is selectable, otherwise its nearest selectable ancestor (so
+    /// clicking a link or a chip inside a selectable label selects the label).
+    /// </summary>
+    private static XPlatControl? FindSelectionTarget(XPlatControl? control)
+    {
+        for (var current = control; current is not null; current = current.Parent)
+        {
+            if (current.SelectionUnitCount > 0)
+            {
+                return current;
+            }
+        }
+
+        return null;
+    }
 
     private void SetCursor(XPlatCursor cursor)
     {
