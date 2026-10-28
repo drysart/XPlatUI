@@ -241,6 +241,24 @@ var html = rich.GetSelectionHtml(12, 4);   // "<b>bold</b>"
 XPlatClipboard.SetHtml(rich.GetSelectionText(12, 4), html);   // both flavours at once
 ```
 
+#### Built-in controls
+
+| Control | Defaults | Notes |
+| --- | --- | --- |
+| `XPlatLabel`, `XPlatRichLabel` | `Selectable = false`, `Partial` | Set `Selectable`; a drag selects character by character |
+| `XPlatTextBox` | `Selectable = true`, `Partial` | Its own caret and anchor answer for a drag that *starts* inside it; a drag that merely passes through it selects its text and drops the caret |
+| `XPlatButton`, `XPlatImage` | `Selectable = false`, `Whole` | Set `Selectable`; a drag over the control selects it as one unit |
+| `XPlatPanel` and other containers | `Selectable = false`, `Whole` | A selectable container hides its children from the selection, so leave containers off unless the container itself is what should be selected |
+
+A text box is selectable by default and does not paint a second overlay: `GetSelectionOffset` and
+`GetSelectionRects` bridge the host's selection into the same `IndexFromX`/`MeasureX` axis the
+caret already uses, so the single-selection rule above still holds.
+
+A text box also builds its own menu - **Cut**, **Copy**, **Paste** and **Select All**, with their
+shortcuts and per-item `Enabled` states - so a right-click inside one always opens a menu. Its
+**Copy** falls back to `host.CopySelection()` when the box has no selection of its own, which is
+what makes copying a multi-control selection work no matter which control was right-clicked.
+
 ## Writing a backend
 
 Implement the small surface that `Native/HarnessWindow.cs` implements for Win32:
@@ -305,10 +323,12 @@ messages to the `XPlatUiHost`. `Program.cs` wires up `DemoUi` and runs the messa
 To render the same sample UI headlessly (useful for visual checks in CI):
 
 ```
-WinFormsApp3.exe --render out.png 1040 760
+WinFormsApp3.exe --render out.png 1280 760
 ```
 
-The sample UI is laid out for a 1040 x 760 client area. The host lays out in *logical* (96 DPI)
+The sample UI is laid out for a 1280 x 760 client area. The host lays out in *logical* (96 DPI)
 points and the harness scales the Skia canvas by `GetDpiForWindow(hwnd) / 96`, sizing its client
-area to `1040 x 760` multiplied by that scale (clamped to the monitor work area) so the demo is
-never cropped on a high-DPI monitor.
+area to `1280 x 760` multiplied by that scale (clamped to the monitor work area) so the demo is
+never cropped on a high-DPI monitor. The **Selection and clipboard** card is the one to try:
+drag down from its label, over the whole-control button and into the text box, then right-click
+the selection.

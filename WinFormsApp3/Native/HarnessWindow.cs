@@ -17,7 +17,7 @@ internal sealed class HarnessWindow : IDisposable
     private const string WindowTitle = "XPlat UI - SkiaSharp test harness";
 
     /// <summary>The sample UI is designed against this logical (96 DPI) client size.</summary>
-    private const int DesignClientWidth = 1040;
+    private const int DesignClientWidth = 1280;
     private const int DesignClientHeight = 760;
     private const int DesignMinimumWidth = 820;
     private const int DesignMinimumHeight = 660;

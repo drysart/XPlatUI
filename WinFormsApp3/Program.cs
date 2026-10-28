@@ -30,7 +30,7 @@ namespace WinFormsApp3
             if (args.Length > 0 && args[0] == "--render")
             {
                 var path = args.Length > 1 ? args[1] : "xplatui.png";
-                var width = args.Length > 2 && int.TryParse(args[2], out var w) ? w : 1040;
+                var width = args.Length > 2 && int.TryParse(args[2], out var w) ? w : 1280;
                 var height = args.Length > 3 && int.TryParse(args[3], out var h) ? h : 760;
                 DemoUi.RenderToPng(path, width, height);
                 Console.WriteLine($"Rendered {width}x{height} sample UI to {path}");
