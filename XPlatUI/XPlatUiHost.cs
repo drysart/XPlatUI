@@ -88,6 +88,12 @@ public sealed class XPlatUiHost
     public XPlatSelection Selection => _selection;
 
     /// <summary>
+    /// Text inserted between the pieces that different controls contribute when a selection is
+    /// copied. Defaults to a newline, so a selection spanning three labels copies as three lines.
+    /// </summary>
+    public string SelectionTextSeparator { get; set; } = "\n";
+
+    /// <summary>
     /// Distance in logical pixels the pointer must travel after a press before the press turns
     /// into a selection. Keeps plain clicks reaching links, buttons and text boxes.
     /// </summary>
@@ -332,6 +338,23 @@ public sealed class XPlatUiHost
         ReleaseSelectionOwner();
     }
 
+    /// <summary>
+    /// Copies the current selection to the clipboard. Every control the selection touches
+    /// contributes its own piece of the text, in visual order, joined with
+    /// <see cref="SelectionTextSeparator"/>. Returns true when text was copied.
+    /// </summary>
+    public bool CopySelection()
+    {
+        var text = _selection.GetText(SelectionTextSeparator);
+        if (text.Length == 0)
+        {
+            return false;
+        }
+
+        XPlatClipboard.SetText(text);
+        return true;
+    }
+
     private void ReleaseSelectionOwner()
     {
         var previous = _selectionOwner;
@@ -354,13 +377,115 @@ public sealed class XPlatUiHost
 
     private void ExtendSelection(SKPoint location)
     {
-        var target = FindSelectionTarget(HitTest(location)) ?? _selection.Focus.Control;
-        if (target is null)
+        var position = ResolveSelectionPosition(location);
+        if (position.IsEmpty)
         {
             return;
         }
 
-        _selection.SetFocus(new XPlatSelectionPosition(target, target.GetSelectionOffset(ToLocal(target, location))));
+        _selection.SetFocus(position);
+    }
+
+    /// <summary>
+    /// Resolves a pointer location to a selection position. A location over a selectable control
+    /// maps straight into that control; a location outside every selectable control - the gap
+    /// between two controls, the padding of a panel, or beyond the surface - clamps to the
+    /// nearest one, so dragging off the end of the content selects up to that end instead of
+    /// freezing wherever the pointer last happened to be over a control.
+    /// </summary>
+    private XPlatSelectionPosition ResolveSelectionPosition(SKPoint location)
+    {
+        var target = FindSelectionTarget(HitTest(location));
+        if (target is not null)
+        {
+            return new XPlatSelectionPosition(target, target.GetSelectionOffset(ToLocal(target, location)));
+        }
+
+        var nearest = FindNearestSelectable(location) ?? _selection.Focus.Control ?? _selection.Anchor.Control;
+        return nearest is null
+            ? default
+            : new XPlatSelectionPosition(nearest, nearest.GetSelectionOffset(ToLocal(nearest, location)));
+    }
+
+    /// <summary>
+    /// The selectable control whose client area is closest to <paramref name="location"/>. Ties
+    /// keep the control that currently holds the moving end of the selection, so a drag along an
+    /// edge between two neighbours does not flicker between them.
+    /// </summary>
+    private XPlatControl? FindNearestSelectable(SKPoint location)
+    {
+        var current = _selection.Focus.Control;
+        XPlatControl? best = current is { } control && control.SelectionUnitCount > 0 ? control : null;
+        float bestDistance = best is null
+            ? float.MaxValue
+            : DistanceToRect(location, ToHost(best, best.ClientRect));
+
+        CollectNearestSelectable(_root, location, ref best, ref bestDistance);
+        return best;
+    }
+
+    private static void CollectNearestSelectable(
+        XPlatControl? control,
+        SKPoint location,
+        ref XPlatControl? best,
+        ref float bestDistance)
+    {
+        if (control is null || !control.Visible || !control.Enabled)
+        {
+            return;
+        }
+
+        if (control.SelectionUnitCount > 0)
+        {
+            // Matches the selection's own walk: a selectable control hides its children.
+            float distance = DistanceToRect(location, ToHost(control, control.ClientRect));
+            if (distance < bestDistance)
+            {
+                bestDistance = distance;
+                best = control;
+            }
+
+            return;
+        }
+
+        if (!control.HasChildren)
+        {
+            return;
+        }
+
+        foreach (var child in control.Controls)
+        {
+            CollectNearestSelectable(child, location, ref best, ref bestDistance);
+        }
+    }
+
+    private static float DistanceToRect(SKPoint point, SKRect rect)
+    {
+        float dx = point.X < rect.Left ? rect.Left - point.X : point.X > rect.Right ? point.X - rect.Right : 0f;
+        float dy = point.Y < rect.Top ? rect.Top - point.Y : point.Y > rect.Bottom ? point.Y - rect.Bottom : 0f;
+        return MathF.Sqrt((dx * dx) + (dy * dy));
+    }
+
+    /// <summary>Maps a point from a control's coordinate space to the host's.</summary>
+    private static SKPoint ToHost(XPlatControl control, SKPoint point)
+    {
+        for (var current = control; current is not null; current = current.Parent)
+        {
+            point = new SKPoint(point.X + current.Left, point.Y + current.Top);
+        }
+
+        return point;
+    }
+
+    /// <summary>Maps a rectangle from a control's coordinate space to the host's.</summary>
+    private static SKRect ToHost(XPlatControl control, SKRect rect)
+    {
+        var origin = ToHost(control, SKPoint.Empty);
+        return new SKRect(
+            rect.Left + origin.X,
+            rect.Top + origin.Y,
+            rect.Right + origin.X,
+            rect.Bottom + origin.Y);
     }
 
     /// <summary>

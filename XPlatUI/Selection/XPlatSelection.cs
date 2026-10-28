@@ -160,10 +160,10 @@ public sealed class XPlatSelection
 
             if (control.SelectionStyle == XPlatSelectionStyle.Whole)
             {
-                // A whole control is selected as a unit, so it is in or out as a whole: it counts
-                // when the selection covers the middle of its single unit.
-                float middle = baseOffset + (units / 2f);
-                if (start <= middle && middle <= end)
+                // A whole control is in or out as a whole, and it joins the selection as soon as
+                // the selection reaches into it from either side. Touching an edge is not enough,
+                // so a drag that stops exactly on the boundary leaves the control unselected.
+                if (start < baseOffset + units && end > baseOffset)
                 {
                     _ranges.Add(new XPlatSelectionRange(control, 0, units));
                 }

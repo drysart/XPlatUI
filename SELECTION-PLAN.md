@@ -14,12 +14,13 @@ so work can stop after any step with the tree in a working state.
 | --- | --- | --- |
 | Where selection lives | One `XPlatSelection` owned by `XPlatUiHost` | A selection can span controls, so it cannot live in a control. The host already owns capture, focus and input routing. |
 | Anchor model | `XPlatSelectionPosition` = `(XPlatControl Control, float Offset)` pair; an anchor and a focus | Offsets are per-control "selection units", so one type covers whole controls (`0..1`) and text (`0..Length`). Fractional offsets keep the whole model on one axis. |
-| Unit inclusion | A whole control counts when the selection covers the middle of its unit; a partial unit counts when the selection covers its middle | Pressing a whole control maps to `0.5`, so it selects immediately and drags in either direction; a press that does not move selects nothing. |
+| Unit inclusion | A partial unit counts when the selection covers its middle; a whole control counts as soon as the selection reaches into it from either side, but not when the selection merely touches its edge | Pressing a whole control maps to `0.5`, so it selects immediately and drags in either direction; a press that does not move selects nothing on text. Overlap (rather than covering the middle) is what keeps a whole control selected while the pointer is still inside it, even when the drag runs backwards. |
+| Off-content drag | A pointer outside every selectable control clamps to the nearest selectable control, ties keeping the control that already holds the moving end | Otherwise a drag that leaves the content freezes wherever it last was over a control, so running off the end of the last label never selects up to that end. |
 | Ordering | Depth-first walk of the control tree, z-order aware | Gives a total order for normalising anchor/focus into ranges without any geometry maths. |
 | Control contract | Virtual members on `XPlatControl` (no interface) | Every control derives from `XPlatControl`; avoids casts and interface dispatch, and is AOT friendly. |
 | Selection painting | Uniform: `XPlatControl.Render` fills the rects returned by `GetSelectionRects` between the background and the content | One look everywhere; controls only supply geometry. |
 | Drag threshold | A press becomes a selection after ~3 logical pixels of movement | Plain clicks still reach links, buttons and text boxes inside selectable controls. |
-| Text join | Per-control contributions joined with `\n` (configurable) | "end of label 1\nwhole label 2\nstart of label 3". |
+| Text join | Per-control contributions joined with `XPlatUiHost.SelectionTextSeparator`, a newline by default | "end of label 1\nwhole label 2\nstart of label 3". |
 | Keyboard | None. Selection is pointer-driven only | Explicit scope decision: there is no caret to move. |
 | Single selection | Only one selection may exist at a time. `XPlatControl.ClaimSelection()` is the declaration point: the host clears its control-level selection and tells every other control to drop its internal one before the caller proceeds | A caret and a control-level selection must never be visible together, and no control should have to know about any other control's selection state. |
 | Context menus | Native only; a no-op fallback when the platform installs no presenter | Keeps the library free of platform code and adds no menu renderer to the binary. |
@@ -57,7 +58,9 @@ AOT single-file publish is repeated.
 | 3 | Done | `Fragment.Start` gives every word, space, break and wrapped-word piece its offset in `Text`; points snap to the nearest line and then the nearest character boundary; rects merge per line and per inline control. Verified with 45 headless checks (offsets, slices, merged rects, per-line rects, inline-control coverage, wrapped words, painted highlight, cross-label drag). |
 | 3b | Done | `XPlatTextRenderer.BuildTextLines` returns `XPlatTextLine` (start, length, text) whose `Text` is always a slice of the source, so character offsets stay meaningful across wrapping, hard breaks and line breaks; `GetBlockTop`/`GetLineLeft` are shared with `Draw`. `XPlatLabel` overrides `GetSelectionOffset`/`GetSelectionRects` and defaults to `Partial`. Verified with 42 headless checks (character boundaries, slices, per-line rects, wrapped and hard-broken lines, painted tint, cross-label drag in both directions) plus an unchanged harness render. |
 | 3c | Done | `XPlatUiHost.SelectionOwner`/`ClaimSelection`/`ClearSelection` arbitrate a single selection; `XPlatControl.ClaimSelection()` is the declaration point and `OnSelectionCleared` the hook. `XPlatTextBox` claims on caret activity and collapses its anchor/caret when another control claims; losing focus also ends its internal selection. Verified with 41 headless checks (click and typing claims, collapse on external claim, caret pixels appearing and disappearing, text box to text box, focus loss, `ClearSelection`, whole controls) plus an unchanged harness render. |
-| 4-9 | Pending | See the step table. |
+| 4 | Done | `XPlatUiHost.ResolveSelectionPosition` maps a pointer location into the selection: over a selectable control it maps straight in, and outside every selectable control it clamps to the nearest one (`FindNearestSelectable`, ties keep the current end) so dragging off the content still selects up to that end. Whole controls now join a selection by overlap instead of by covering their midpoint, so dragging backwards out of a button keeps it selected. Verified with 20 headless checks (past-the-end, single jump, above-the-start, beside-the-text, outside-the-surface, whole-control entry/exit/boundary) plus an unchanged harness render. |
+| 5 | Done | `XPlatSelection.GetText` assembles the per-control contributions in visual order and `XPlatUiHost.CopySelection` writes them through `XPlatClipboard`; `SelectionTextSeparator` (newline by default) is the join. Verified with 14 headless checks (whole and partial pieces, custom separator, no selection, installed clipboard receives the write). |
+| 6-9 | Pending | See the step table. |
 
 Step 3c keeps the selection exclusive. `XPlatUiHost` tracks which control, if any, owns a
 selection of its own (`SelectionOwner`); `XPlatControl.ClaimSelection()` is the generic way to
@@ -77,6 +80,21 @@ slice of the source string, and `GetBlockTop`/`GetLineLeft` hold the alignment m
 `Draw` and the selection code use, so painted text and highlight can never drift apart. As with
 the rich label, `SelectionStyle` is `Partial` but `Selectable` stays opt-in per instance.
 
+Step 4 makes the drag behave the same whether or not the pointer stays on content. A pointer over a
+selectable control maps straight into it; a pointer over a gap, a panel's padding or beyond the
+surface clamps to the nearest selectable control, so a drag that runs off the end of the last
+label selects up to that end instead of freezing. Ties keep the control that already holds the
+moving end, so a drag along the edge between two neighbours does not flicker. The same step
+changed the whole-control rule from "the selection must cover its midpoint" to "the selection
+must reach into it": pressing a whole control maps to `0.5`, so any drag direction now keeps it
+selected while the pointer is still inside it, while a drag that stops exactly on its edge leaves
+it out.
+
+Step 5 turns a selection into text. Every control contributes through its own
+`GetSelectionText(start, length)`, the pieces are joined in visual order with
+`XPlatUiHost.SelectionTextSeparator`, and `CopySelection` writes the result through
+`XPlatClipboard`, which the platform layer installs. The step-6 context menu only has to call it.
+
 Three rules worth remembering when implementing the later steps:
 
 - The visual-order walk does not descend into a selectable control, so a selectable container
@@ -89,3 +107,5 @@ Three rules worth remembering when implementing the later steps:
 - A control that keeps a selection of its own calls `ClaimSelection()` when that selection
   becomes live and overrides `OnSelectionCleared` to drop it, so the UI never shows two
   selections at once.
+- Whole controls join a selection by overlap, so a drag that stops exactly on the boundary of one
+  leaves it out, but a drag that enters it and comes back out keeps it selected.
