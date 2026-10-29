@@ -15,11 +15,10 @@
     <RootNamespace>MacHarness</RootNamespace>
     <!-- The Skia raster buffer is handed to CoreGraphics through a raw pointer. -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <!-- The workload always trims a RID publish, but by default it only trims the BCL
-         (LinkMode=SdkOnly) and keeps every application assembly whole. This application is a leaf:
-         nothing reflects over its own types, so the harness, XPlatUI and XPlatUIDemo can be trimmed
-         as well, which is where most of the size is. -->
-    <LinkMode>Full</LinkMode>
+    <!-- The workload trims every RID build; LinkMode keeps its default of SdkOnly, which trims the
+         BCL and leaves the application's own assemblies whole. Nothing here reflects over its own
+         types, so LinkMode=Full is safe too - it was measured and is a net loss (it drops three tiny
+         facades but rewrites Microsoft.macOS.dll 473 KB larger). See README.md, "Bundle size". -->
     <!-- The bundle identity lives in the checked in Info.plist next to this file, so the SDK must
          not generate one of its own (ApplicationId would do exactly that and then collide). -->
   </PropertyGroup>
