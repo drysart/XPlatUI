@@ -78,7 +78,10 @@ jobs:
           if [ "${SKIP_XCODE_CHECK:-}" = "true" ]; then
             skip="-p:ValidateXcodeVersion=false"
           fi
-          dotnet build MacHarness/MacHarness.csproj -c Release --nologo $skip 2>&1 | tee "$RUNNER_TEMP/build.log"
+          # -r matches the publishes below: the macOS SDK otherwise defaults to osx-x64, and the
+          # rendered pixels then differ from an osx-arm64 build for reasons that have nothing to do
+          # with trimming.
+          dotnet build MacHarness/MacHarness.csproj -c Release -r osx-arm64 --nologo $skip 2>&1 | tee "$RUNNER_TEMP/build.log"
 
       # MSBuild diagnostics are not workflow annotations, so lift the first few into the job
       # summary and into annotations: those are readable without downloading the raw log.
@@ -118,25 +121,141 @@ jobs:
             exit 1
           fi
           echo "app: $APP"
+          echo "BUILD_BUNDLE=$(dirname "$(dirname "$(dirname "$APP")")")" >> "$GITHUB_ENV"
           "$APP" --render "$RUNNER_TEMP/xplatui.png"
 
+      # Only `dotnet publish` runs the trimmer - a plain `dotnet build` leaves the bundle at ~137 MB -
+      # and the link mode decides how much it takes away. Publishing the three modes side by side
+      # shows what each one buys, and each bundle renders the sample UI: a render that differs means
+      # the trimmer removed something the UI needs.
+      - name: Compare link modes
+        run: |
+          set -euo pipefail
+          # Apparent size, because du counts a block shared by several files only once and the SDK
+          # copies many of these files from the same sources.
+          apparent_mb() { find "$1" -type f -exec stat -f %z {} + | awk '{ s += $1 } END { printf "%.1f MB", s / 1048576 }'; }
+          file_count() { find "$1" -type f | wc -l | tr -d ' '; }
+          dll_count() { find "$1" -name '*.dll' | wc -l | tr -d ' '; }
+          largest() { find "$1" -type f -exec stat -f "%z %N" {} + | sort -rn | head -n 3 | awk '{ printf "%s (%.1f MB), ", $2, $1 / 1048576 }'; }
+          skia() { stat -f %z "$1/Contents/MonoBundle/libSkiaSharp.dylib" 2>/dev/null || echo '?'; }
+          # "size path" for every file in the bundle, relative to it, sorted by path so two manifests
+          # can be joined.
+          manifest() { ( cd "$1" && find . -type f -exec stat -f "%z %N" {} + | sort -k2 ); }
+          names() { awk '{ print $2 }' "$1" | sort; }
+          dims() { sips -g pixelWidth -g pixelHeight "$1" | awk '/pixelWidth/ { w = $2 } /pixelHeight/ { h = $2 } END { printf "%sx%s", w, h }'; }
+          # Deflate makes a one pixel change rewrite most of a PNG, so comparing the encoded bytes
+          # says nothing about what is on screen. Decode both and compare the raw bitmaps instead.
+          pixel_diff() {
+            sips -s format bmp "$1" --out "$RUNNER_TEMP/left.bmp" > /dev/null 2>&1
+            sips -s format bmp "$2" --out "$RUNNER_TEMP/right.bmp" > /dev/null 2>&1
+            if cmp -s "$RUNNER_TEMP/left.bmp" "$RUNNER_TEMP/right.bmp"; then
+              return 0
+            fi
+            printf '%s of %s pixel bytes differ' \
+              "$(cmp -l "$RUNNER_TEMP/left.bmp" "$RUNNER_TEMP/right.bmp" 2>/dev/null | wc -l | tr -d ' ')" \
+              "$(stat -f %z "$RUNNER_TEMP/left.bmp")"
+          }
+
+          # The build bundle is measured before anything is published, because a publish writes to the
+          # same directory: measuring it afterwards would just measure the last publish again.
+          "$BUILD_BUNDLE/Contents/MacOS/MacHarness" --render "$RUNNER_TEMP/xplatui-build.png" > /dev/null 2>&1
+          manifest "$BUILD_BUNDLE" > "$RUNNER_TEMP/files-build.txt"
+          build_mb="$(apparent_mb "$BUILD_BUNDLE")"
+          build_files="$(file_count "$BUILD_BUNDLE")"
+          build_dlls="$(dll_count "$BUILD_BUNDLE")"
+          build_skia="$(skia "$BUILD_BUNDLE")"
+          build_largest="$(largest "$BUILD_BUNDLE")"
+
+          {
+            echo '### Bundle size by link mode'
+            echo '| bundle | size | files | dlls | libSkiaSharp | render |'
+            echo '| --- | --- | --- | --- | --- | --- |'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          pubdir="MacHarness/bin/Release/net10.0-macos/osx-arm64"
+          ref=""
+          for link in None SdkOnly Full; do
+            # The bundle is written next to the build output, not into the publish directory, so it
+            # has to be removed between variants to be sure the one measured is the fresh one.
+            rm -rf "$pubdir"
+            extra=""
+            if [ "$link" = "None" ]; then
+              # The only way to turn the trimmer off is LinkMode=None together with TrimMode=copy.
+              extra="-p:TrimMode=copy"
+            fi
+            dotnet publish MacHarness/MacHarness.csproj -c Release -r osx-arm64 --nologo \
+              -p:LinkMode=$link -p:CreatePackage=false $extra 2>&1 | tee "$RUNNER_TEMP/publish-$link.log"
+            app="$pubdir/MacHarness.app"
+            if [ ! -d "$app" ]; then
+              echo "::error::publish with LinkMode=$link produced no .app bundle in $pubdir"
+              find "$pubdir" -maxdepth 1 | head -n 20
+              exit 1
+            fi
+            "$app/Contents/MacOS/MacHarness" --render "$RUNNER_TEMP/xplatui-$link.png" \
+              > "$RUNNER_TEMP/render-$link.log" 2>&1
+            if [ -z "$ref" ]; then
+              ref="$RUNNER_TEMP/xplatui-$link.png"
+              # Rendering the same bundle twice says whether this is a usable reference at all.
+              "$app/Contents/MacOS/MacHarness" --render "$RUNNER_TEMP/refcheck.png" > /dev/null 2>&1
+              if cmp -s "$ref" "$RUNNER_TEMP/refcheck.png"; then
+                verdict="reference (stable)"
+              else
+                verdict="reference (**unstable**: two renders differ)"
+              fi
+            else
+              px="$(pixel_diff "$ref" "$RUNNER_TEMP/xplatui-$link.png")"
+              if [ -z "$px" ]; then
+                verdict="pixel identical to LinkMode=None"
+              else
+                verdict="**differs** from LinkMode=None ($px)"
+              fi
+            fi
+            mb="$(apparent_mb "$app")"
+            echo "| LinkMode=$link | $mb | $(file_count "$app") | $(dll_count "$app") | $(skia "$app") | $verdict |" >> "$GITHUB_STEP_SUMMARY"
+            echo "- \`LinkMode=$link\` largest files: $(largest "$app")" >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::LinkMode=$link: $mb, $(file_count "$app") files, $(dll_count "$app") dlls, $(dims "$RUNNER_TEMP/xplatui-$link.png"); $verdict; $(grep -h '^Font:' "$RUNNER_TEMP/render-$link.log" || true); largest: $(largest "$app")"
+            manifest "$app" > "$RUNNER_TEMP/files-$link.txt"
+            ditto -c -k --sequesterRsrc --keepParent "$app" "$RUNNER_TEMP/MacHarness-$link.app.zip"
+          done
+
+          px="$(pixel_diff "$ref" "$RUNNER_TEMP/xplatui-build.png")"
+          if [ -z "$px" ]; then
+            build_verdict="pixel identical to LinkMode=None"
+          else
+            build_verdict="**differs** from LinkMode=None ($px)"
+          fi
+          echo "| plain \`dotnet build\` | $build_mb | $build_files | $build_dlls | $build_skia | $build_verdict |" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`dotnet build\` largest files: $build_largest" >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice::Plain \`dotnet build\`: $build_mb, $build_files files, $build_dlls dlls, $(dims "$RUNNER_TEMP/xplatui-build.png"); $build_verdict; largest: $build_largest"
+
+          # SdkOnly trims the BCL only, Full also trims the application's own assemblies. Which files
+          # each mode drops, and what it grows, is the interesting part of the comparison.
+          only_sdk="$(comm -23 <(names "$RUNNER_TEMP/files-SdkOnly.txt") <(names "$RUNNER_TEMP/files-Full.txt") | tr '\n' ' ')"
+          only_full="$(comm -13 <(names "$RUNNER_TEMP/files-SdkOnly.txt") <(names "$RUNNER_TEMP/files-Full.txt") | tr '\n' ' ')"
+          deltas="$(join -j 2 -o 0,1.1,2.1 "$RUNNER_TEMP/files-SdkOnly.txt" "$RUNNER_TEMP/files-Full.txt" \
+            | awk '$2 != $3 { d = $3 - $2; printf "%s %+d\n", $1, d }' | sort -g -k2 -r)"
+          {
+            echo '### What LinkMode=Full changes'
+            echo "\`SdkOnly\` only: ${only_sdk:-(nothing)}"
+            echo
+            echo "\`Full\` only: ${only_full:-(nothing)}"
+            echo '```'
+            echo "${deltas:-(no file changed size)}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice::SdkOnly only: ${only_sdk:-(nothing)}"
+          echo "::notice::Full only: ${only_full:-(nothing)}"
+          echo "::notice::Size changes SdkOnly -> Full: $(echo "$deltas" | head -n 12 | tr '\n' ' ')"
       - name: Upload the rendered UI
         uses: actions/upload-artifact@v4
         with:
           name: macos-render
-          path: ${{ runner.temp }}/xplatui.png
+          path: ${{ runner.temp }}/xplatui*.png
           if-no-files-found: error
 
-      - name: Package the app bundle
-        run: |
-          set -euo pipefail
-          APP="$(find MacHarness/bin/Release -maxdepth 6 -name 'MacHarness.app' -type d | head -n 1)"
-          test -n "$APP"
-          ditto -c -k --sequesterRsrc --keepParent "$APP" "$RUNNER_TEMP/MacHarness.app.zip"
-
-      - name: Upload the app bundle
+      - name: Upload the app bundles
         uses: actions/upload-artifact@v4
         with:
           name: MacHarness-app
-          path: ${{ runner.temp }}/MacHarness.app.zip
+          path: ${{ runner.temp }}/MacHarness-*.app.zip
           if-no-files-found: error

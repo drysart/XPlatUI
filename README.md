@@ -536,3 +536,49 @@ combination that the menu bar did not claim is swallowed instead of typing its l
 to the library through `XPlatTheme.FontFamily`.
 
 Set `XPLATUI_DEBUG=1` to trace frames and buffer reallocation to stderr.
+
+### Bundle size
+
+Only `dotnet publish` runs the trimmer: a plain `dotnet build` leaves a fully untrimmed bundle, and
+`LinkMode` decides how much a publish takes away. All four were measured (`osx-arm64`, apparent size
+on disk) and rendered:
+
+| bundle | size | files | dlls | render |
+| --- | --- | --- | --- | --- |
+| `dotnet build` (nothing trimmed) | 137.2 MB | 197 | 177 | reference |
+| `publish -p:LinkMode=None -p:TrimMode=copy` | 137.8 MB | 197 | 177 | pixel identical |
+| `publish -p:LinkMode=SdkOnly` (the default) | 35.0 MB | 42 | 22 | pixel identical |
+| `publish -p:LinkMode=Full` | 35.4 MB | 39 | 19 | pixel identical |
+
+So publishing with the default settings is worth **102 MB** and changes nothing on screen.
+`LinkMode=None` on its own does *not* switch the trimmer off; it also needs `TrimMode=copy`.
+
+`LinkMode=Full` is not worth turning on. It only drops `System.Runtime`,
+`System.Runtime.InteropServices` and `System.Threading` (the facade assemblies) and then rewrites
+`Microsoft.macOS.dll` 473 KB *larger*, so the bundle ends up 0.4 MB bigger than the default for
+exactly the same pixels. The project leaves `LinkMode` alone.
+
+Publishing therefore needs no extra switches:
+
+```
+dotnet publish MacHarness/MacHarness.csproj -c Release -r osx-arm64 -p:CreatePackage=false
+open MacHarness/bin/Release/net10.0-macos/osx-arm64/MacHarness.app
+```
+
+Two details are easy to trip over:
+
+* The bundle is written **next to the build output**, not into `publish/` - `AppBundleDir` is derived
+  from the build output directory. `-p:CreatePackage=false` stops the SDK additionally producing an
+  installer `.pkg`.
+* Without `-r`, the macOS SDK defaults to **`osx-x64`** even on an Apple Silicon runner. That is not
+  just a different file layout: the rendered pixels differ from an `osx-arm64` build, which looks
+  exactly like a trimming regression. Pass `-r osx-arm64` (or `osx-x64`) explicitly when comparing.
+
+What is left is almost entirely native code that no trimmer can touch: `libSkiaSharp.dylib` is
+15.2 MB, `libcoreclr.dylib` 5.9 MB and `libclrjit.dylib` 3.0 MB out of the ~35 MB. The remaining
+~11 MB of managed assemblies is what a NativeAOT publish would remove; that is not wired up for
+macOS yet (the Windows harness does publish AOT, see above).
+
+The `macOS harness` workflow publishes all three link modes, renders each bundle with `--render`,
+compares the *decoded* bitmaps (`sips` to BMP plus `cmp`, because a one pixel change rewrites most of
+a PNG) and reports the numbers in the job summary.

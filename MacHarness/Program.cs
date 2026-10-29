@@ -158,6 +158,11 @@ internal static class Program
 
         DemoUi.RenderToPng(path, width, height);
         Console.WriteLine($"Rendered {width}x{height} sample UI to {path}");
+        // Printing what the render actually used makes it possible to tell a real visual difference
+        // from a changed font or appearance when comparing renders from two builds.
+        Console.WriteLine(
+            $"Font: {XPlatTheme.FontFamily ?? "<SkiaSharp default>"}; " +
+            $"appearance: {(XPlatTheme.IsDarkMode ? "dark" : "light")}");
         return 0;
     }
 
