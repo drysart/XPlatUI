@@ -28,7 +28,10 @@ concurrency:
 jobs:
   build:
     name: Build MacHarness
-    runs-on: macos-latest
+    # The macOS workload validates that Xcode's major.minor exactly matches the version its bindings
+    # were generated against (27.1 for workload 27.0.10742). macos-latest ships Xcode 26.6, so it can
+    # never satisfy that check; the xcode-27 image carries Xcode 27.1.
+    runs-on: xcode-27
     steps:
       - name: Check out
         uses: actions/checkout@v4
@@ -43,16 +46,39 @@ jobs:
       - name: Install the macOS workload
         run: dotnet workload install macos
 
+      # Pick the Xcode the workload was built against rather than whatever the image defaults to, so
+      # the workload's own version check passes on its own terms.
+      - name: Select the Xcode the macOS workload expects
+        run: |
+          set -euo pipefail
+          chosen=""
+          for candidate in /Applications/Xcode_27.1.app /Applications/Xcode_27.1.0.app; do
+            if [ -d "$candidate" ]; then
+              chosen="$candidate"
+              break
+            fi
+          done
+          if [ -n "$chosen" ]; then
+            echo "Selecting $chosen"
+            sudo xcode-select -s "$chosen/Contents/Developer"
+          else
+            echo "::warning::Xcode 27.1 is not installed on this image; using the default Xcode."
+            echo "SKIP_XCODE_CHECK=true" >> "$GITHUB_ENV"
+          fi
+          xcode-select -p
+          xcodebuild -version
+
       - name: Build
         run: |
           set -o pipefail
-          xcodebuild -version
-          # The macOS workload insists on an Xcode whose major.minor exactly matches the one the
-          # bindings were generated against, and the runner image usually trails the workload by a
-          # release. Nothing in this harness needs a newer Xcode (there is no native code to
-          # compile), so the check is turned off here rather than pinning the workload.
-          dotnet build MacHarness/MacHarness.csproj -c Release --nologo \
-            -p:ValidateXcodeVersion=false 2>&1 | tee "$RUNNER_TEMP/build.log"
+          # Nothing in this harness needs the exact Xcode the bindings were generated against (there
+          # is no native code to compile), so if the image does not carry it the check is skipped
+          # instead of failing the job.
+          skip=""
+          if [ "${SKIP_XCODE_CHECK:-}" = "true" ]; then
+            skip="-p:ValidateXcodeVersion=false"
+          fi
+          dotnet build MacHarness/MacHarness.csproj -c Release --nologo $skip 2>&1 | tee "$RUNNER_TEMP/build.log"
 
       # MSBuild diagnostics are not workflow annotations, so lift the first few into the job
       # summary and into annotations: those are readable without downloading the raw log.
@@ -73,6 +99,8 @@ jobs:
             echo '```'
             dotnet --version
             dotnet workload list
+            xcode-select -p
+            xcodebuild -version
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           # Annotations survive in the check run, which is readable without admin rights.
@@ -84,7 +112,11 @@ jobs:
         run: |
           set -euo pipefail
           APP="$(find MacHarness/bin/Release -path '*MacHarness.app/Contents/MacOS/MacHarness' -type f | head -n 1)"
-          test -n "$APP"
+          if [ -z "$APP" ]; then
+            echo "::error::The build did not produce a MacHarness.app bundle."
+            find MacHarness/bin/Release -maxdepth 6 \( -name '*.app' -o -name 'MacHarness' \) | head -n 20
+            exit 1
+          fi
           echo "app: $APP"
           "$APP" --render "$RUNNER_TEMP/xplatui.png"
 
@@ -98,7 +130,7 @@ jobs:
       - name: Package the app bundle
         run: |
           set -euo pipefail
-          APP="$(find MacHarness/bin/Release -maxdepth 4 -name 'MacHarness.app' -type d | head -n 1)"
+          APP="$(find MacHarness/bin/Release -maxdepth 6 -name 'MacHarness.app' -type d | head -n 1)"
           test -n "$APP"
           ditto -c -k --sequesterRsrc --keepParent "$APP" "$RUNNER_TEMP/MacHarness.app.zip"
 

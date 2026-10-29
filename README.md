@@ -502,8 +502,9 @@ open MacHarness/bin/Debug/net10.0-macos/osx-arm64/MacHarness.app
 
 The macOS workload only accepts an Xcode whose major.minor version matches the one its bindings were
 generated against, and the error it raises (`requires Xcode 27.1`) is easy to mistake for a real
-problem. Nothing here compiles native code, so if your Xcode is a release behind the workload just
-turn the check off:
+problem. Install the Xcode it names - the `macOS harness` workflow runs on the `xcode-27` image and
+switches to `/Applications/Xcode_27.1.app` for exactly this reason. Nothing here compiles native
+code, so as a last resort the check can be turned off instead:
 
 ```
 dotnet build MacHarness/MacHarness.csproj -p:ValidateXcodeVersion=false
