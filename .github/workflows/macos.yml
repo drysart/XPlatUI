@@ -46,7 +46,13 @@ jobs:
       - name: Build
         run: |
           set -o pipefail
-          dotnet build MacHarness/MacHarness.csproj -c Release --nologo 2>&1 | tee "$RUNNER_TEMP/build.log"
+          xcodebuild -version
+          # The macOS workload insists on an Xcode whose major.minor exactly matches the one the
+          # bindings were generated against, and the runner image usually trails the workload by a
+          # release. Nothing in this harness needs a newer Xcode (there is no native code to
+          # compile), so the check is turned off here rather than pinning the workload.
+          dotnet build MacHarness/MacHarness.csproj -c Release --nologo \
+            -p:ValidateXcodeVersion=false 2>&1 | tee "$RUNNER_TEMP/build.log"
 
       # MSBuild diagnostics are not workflow annotations, so lift the first few into the job
       # summary and into annotations: those are readable without downloading the raw log.

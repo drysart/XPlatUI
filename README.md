@@ -500,6 +500,15 @@ dotnet build MacHarness/MacHarness.csproj
 open MacHarness/bin/Debug/net10.0-macos/osx-arm64/MacHarness.app
 ```
 
+The macOS workload only accepts an Xcode whose major.minor version matches the one its bindings were
+generated against, and the error it raises (`requires Xcode 27.1`) is easy to mistake for a real
+problem. Nothing here compiles native code, so if your Xcode is a release behind the workload just
+turn the check off:
+
+```
+dotnet build MacHarness/MacHarness.csproj -p:ValidateXcodeVersion=false
+```
+
 The bundle is produced by the build itself; its identity lives in `MacHarness/Info.plist`. It is
 signed ad-hoc, so a copy downloaded from CI needs `xattr -dr com.apple.quarantine MacHarness.app`
 before it will open. The same headless switches work, and they run before AppKit is initialised, so
