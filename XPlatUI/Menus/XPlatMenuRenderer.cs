@@ -176,6 +176,14 @@ public static class XPlatMenuRenderer
     /// <summary>Opacity of the line between groups of items, applied to the text colour.</summary>
     private const byte SeparatorAlpha = 0x2C;
 
+    /// <summary>
+    /// Opacity of the hover pill, applied to the text colour. A wash rather than a palette fill,
+    /// because a light menu surface is already as bright as the light palette's fills: a fill leaves
+    /// the hover invisible on a light menu while reading well on a dark one. Washing the text colour
+    /// over the surface keeps the step the same size in both palettes.
+    /// </summary>
+    private const byte HoverWashAlpha = 0x1D;
+
     /// <summary>Measures <paramref name="menu"/> and works out where each row sits.</summary>
     /// <param name="menu">The menu to measure.</param>
     /// <param name="metrics">Row metrics, or null for <see cref="XPlatMenuMetrics.Default"/>.</param>
@@ -363,7 +371,13 @@ public static class XPlatMenuRenderer
             bounds.Width - (inset * 2f),
             row.Height - 4f);
 
-        using var paint = new SKPaint { IsAntialias = true, Color = Scale(XPlatTheme.Secondary, MathF.Max(alpha, 0.9f)) };
+        var foreground = XPlatTheme.Foreground;
+        using var paint = new SKPaint
+        {
+            IsAntialias = true,
+            Color = new SKColor(foreground.Red, foreground.Green, foreground.Blue, (byte)(HoverWashAlpha * alpha)),
+        };
+
         canvas.DrawRoundRect(pill, m.ItemCornerRadius, m.ItemCornerRadius, paint);
     }
 
