@@ -543,8 +543,40 @@ public sealed class DemoUi
         rich.AddText(" ");
         rich.AddInlineControl(Chip("bottom"), XPlatInlineAlignment.Bottom);
 
+        // Shown on right-click while nothing is selected; once a range is selected the host swaps
+        // in the Copy menu instead, so both paths are reachable from this one control.
+        rich.ContextMenu = BuildRichTextMenu();
+
         card.Controls.Add(rich);
         return card;
+    }
+
+    private XPlatContextMenu BuildRichTextMenu()
+    {
+        var formatting = new XPlatMenuItem("Show formatting", () =>
+            SetStatus("'Show formatting' picked - a checked item shows a tick."))
+        {
+            Checked = true,
+            ShortcutText = "Ctrl+Shift+F",
+        };
+
+        var menu = new XPlatContextMenu();
+
+        menu.Add(new XPlatMenuItem("Copy rich text", () => SetStatus("'Copy rich text' picked."))
+        {
+            IsDefault = true,
+            ShortcutText = "Ctrl+C",
+        });
+
+        menu.Add(new XPlatMenuItem("Copy as plain text", () => SetStatus("'Copy as plain text' picked."))
+        {
+            ShortcutText = "Ctrl+Shift+C",
+        });
+
+        menu.AddSeparator();
+        menu.Add(formatting);
+        menu.Add(new XPlatMenuItem("Undo formatting", null) { Enabled = false, ShortcutText = "Ctrl+Z" });
+        return menu;
     }
 
     private XPlatButton Chip(string text)
