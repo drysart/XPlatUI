@@ -1,0 +1,142 @@
+name: macOS harness
+
+# MacHarness targets net10.0-macos, so it needs the macOS workload and can only be built on a Mac.
+# This job is the compile check for it: it builds the bundle and then renders the sample UI
+# headlessly, which also proves the library itself runs on the machine.
+
+on:
+  push:
+    # Feature branches are included so a branch that is not a pull request yet is still compiled.
+    branches: [master, 'feature/**']
+    paths:
+      - '.github/workflows/macos.yml'
+      - 'MacHarness/**'
+      - 'XPlatUI/**'
+      - 'XPlatUIDemo/**'
+  pull_request:
+    paths:
+      - '.github/workflows/macos.yml'
+      - 'MacHarness/**'
+      - 'XPlatUI/**'
+      - 'XPlatUIDemo/**'
+  workflow_dispatch:
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build MacHarness
+    # The macOS workload validates that Xcode's major.minor exactly matches the version its bindings
+    # were generated against (27.1 for workload 27.0.10742). macos-latest ships Xcode 26.6, so it can
+    # never satisfy that check; the xcode-27 image carries Xcode 27.1.
+    runs-on: xcode-27
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      # The bindings are an optional workload and the runner image does not always carry the
+      # version the project needs.
+      - name: Install the macOS workload
+        run: dotnet workload install macos
+
+      # Pick the Xcode the workload was built against rather than whatever the image defaults to, so
+      # the workload's own version check passes on its own terms.
+      - name: Select the Xcode the macOS workload expects
+        run: |
+          set -euo pipefail
+          chosen=""
+          for candidate in /Applications/Xcode_27.1.app /Applications/Xcode_27.1.0.app; do
+            if [ -d "$candidate" ]; then
+              chosen="$candidate"
+              break
+            fi
+          done
+          if [ -n "$chosen" ]; then
+            echo "Selecting $chosen"
+            sudo xcode-select -s "$chosen/Contents/Developer"
+          else
+            echo "::warning::Xcode 27.1 is not installed on this image; using the default Xcode."
+            echo "SKIP_XCODE_CHECK=true" >> "$GITHUB_ENV"
+          fi
+          xcode-select -p
+          xcodebuild -version
+
+      - name: Build
+        run: |
+          set -o pipefail
+          # Nothing in this harness needs the exact Xcode the bindings were generated against (there
+          # is no native code to compile), so if the image does not carry it the check is skipped
+          # instead of failing the job.
+          skip=""
+          if [ "${SKIP_XCODE_CHECK:-}" = "true" ]; then
+            skip="-p:ValidateXcodeVersion=false"
+          fi
+          dotnet build MacHarness/MacHarness.csproj -c Release --nologo $skip 2>&1 | tee "$RUNNER_TEMP/build.log"
+
+      # MSBuild diagnostics are not workflow annotations, so lift the first few into the job
+      # summary and into annotations: those are readable without downloading the raw log.
+      - name: Summarise build errors
+        if: failure()
+        run: |
+          set -euo pipefail
+          grep -E ': (error|warning) [A-Z]+[0-9]+' "$RUNNER_TEMP/build.log" | head -n 25 > errors.txt || true
+          if [ ! -s errors.txt ]; then
+            tail -n 20 "$RUNNER_TEMP/build.log" > errors.txt
+          fi
+          {
+            echo '### Build diagnostics'
+            echo '```'
+            cat errors.txt
+            echo '```'
+            echo '### Environment'
+            echo '```'
+            dotnet --version
+            dotnet workload list
+            xcode-select -p
+            xcodebuild -version
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Annotations survive in the check run, which is readable without admin rights.
+          head -n 10 errors.txt | while IFS= read -r line; do
+            echo "::error::$line"
+          done
+
+      - name: Render the sample UI headlessly
+        run: |
+          set -euo pipefail
+          APP="$(find MacHarness/bin/Release -path '*MacHarness.app/Contents/MacOS/MacHarness' -type f | head -n 1)"
+          if [ -z "$APP" ]; then
+            echo "::error::The build did not produce a MacHarness.app bundle."
+            find MacHarness/bin/Release -maxdepth 6 \( -name '*.app' -o -name 'MacHarness' \) | head -n 20
+            exit 1
+          fi
+          echo "app: $APP"
+          "$APP" --render "$RUNNER_TEMP/xplatui.png"
+
+      - name: Upload the rendered UI
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-render
+          path: ${{ runner.temp }}/xplatui.png
+          if-no-files-found: error
+
+      - name: Package the app bundle
+        run: |
+          set -euo pipefail
+          APP="$(find MacHarness/bin/Release -maxdepth 6 -name 'MacHarness.app' -type d | head -n 1)"
+          test -n "$APP"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" "$RUNNER_TEMP/MacHarness.app.zip"
+
+      - name: Upload the app bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: MacHarness-app
+          path: ${{ runner.temp }}/MacHarness.app.zip
+          if-no-files-found: error
