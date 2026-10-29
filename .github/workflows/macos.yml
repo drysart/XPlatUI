@@ -49,18 +49,30 @@ jobs:
           dotnet build MacHarness/MacHarness.csproj -c Release --nologo 2>&1 | tee "$RUNNER_TEMP/build.log"
 
       # MSBuild diagnostics are not workflow annotations, so lift the first few into the job
-      # summary: that is what a reviewer sees without downloading the raw log.
+      # summary and into annotations: those are readable without downloading the raw log.
       - name: Summarise build errors
         if: failure()
         run: |
           set -euo pipefail
           grep -E ': (error|warning) [A-Z]+[0-9]+' "$RUNNER_TEMP/build.log" | head -n 25 > errors.txt || true
+          if [ ! -s errors.txt ]; then
+            tail -n 20 "$RUNNER_TEMP/build.log" > errors.txt
+          fi
           {
             echo '### Build diagnostics'
             echo '```'
             cat errors.txt
             echo '```'
+            echo '### Environment'
+            echo '```'
+            dotnet --version
+            dotnet workload list
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          # Annotations survive in the check run, which is readable without admin rights.
+          head -n 10 errors.txt | while IFS= read -r line; do
+            echo "::error::$line"
+          done
 
       - name: Render the sample UI headlessly
         run: |
