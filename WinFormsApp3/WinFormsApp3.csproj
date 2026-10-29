@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\XPlatUI\XPlatUI.csproj" />
+    <ProjectReference Include="..\XPlatUIDemo\XPlatUIDemo.csproj" />
   </ItemGroup>
 
   <PropertyGroup>

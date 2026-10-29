@@ -1,4 +1,6 @@
 <Solution>
+  <Project Path="GtkHarness/GtkHarness.csproj" />
   <Project Path="WinFormsApp3/WinFormsApp3.csproj" />
+  <Project Path="XPlatUIDemo/XPlatUIDemo.csproj" />
   <Project Path="XPlatUI/XPlatUI.csproj" />
 </Solution>

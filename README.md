@@ -2,9 +2,9 @@
 
 A tiny, AOT-friendly, cross-platform UI layer that borrows the WinForms/WPF programming
 model (controls, docking, table layout, events) but draws everything with
-[SkiaSharp](https://github.com/mono/SkiaSharp). The `WinFormsApp3` project is only a
-**Windows test harness**; the library itself has no Windows dependency and can be hosted
-by any windowing toolkit on macOS/Linux.
+[SkiaSharp](https://github.com/mono/SkiaSharp). The library itself has no OS dependency: two small
+harnesses host it - `WinFormsApp3` on raw Win32 and `GtkHarness` on GTK4 - and both show the same
+sample UI from the shared `XPlatUIDemo` project.
 
 ```
 XPlatUI/                  net10.0 class library (no OS-specific code, IsAotCompatible)
@@ -12,10 +12,16 @@ XPlatUI/                  net10.0 class library (no OS-specific code, IsAotCompa
   Controls/               XPlatPanel, XPlatTableLayoutPanel, XPlatSplitContainer, XPlatLabel, XPlatRichLabel, XPlatButton, XPlatTextBox, XPlatImage
   Layout/                 row/column sizing styles
   XPlatUiHost.cs          platform-neutral host: layout, painting, input routing, focus
-WinFormsApp3/             Windows test harness: raw Win32 + SkiaSharp (no WinForms, no System.Drawing)
+XPlatUIDemo/              the sample control tree, shared by both harnesses
+  DemoUi.cs               the demo layout, plus RenderToPng for headless renders
+WinFormsApp3/             Windows harness: raw Win32 + SkiaSharp (no WinForms, no System.Drawing)
   Native/                 NativeMethods.cs (P/Invoke), HarnessWindow.cs (host), Win32Clipboard.cs
-  DemoUi.cs               the sample control tree
   app.manifest            per-monitor v2 DPI awareness
+GtkHarness/               Linux harness: a GTK4 window that draws the same UI
+  GtkUiSurface.cs         the host: drawing area, Cairo/Skia surface, input forwarding
+  GtkSystemTheme.cs       IXPlatSystemTheme over GSettings and GtkSettings
+  GtkClipboard.cs         IXPlatClipboard over Gdk.Clipboard
+  GtkContextMenuPresenter.cs  IXPlatContextMenuPresenter built on Gtk.Popover
 ```
 
 ## Design
@@ -350,7 +356,8 @@ palette change updates the chrome too.
 
 ## Writing a backend
 
-Implement the small surface that `Native/HarnessWindow.cs` implements for Win32:
+Implement the small surface that `Native/HarnessWindow.cs` implements for Win32 and that
+`GtkHarness/GtkUiSurface.cs` implements for GTK4:
 
 1. Create a native window and an `SKSurface` (or a bitmap-backed surface) of its client size.
 2. On resize: `host.SetClientSize(width / dpiScale, height / dpiScale)` and repaint.
@@ -427,3 +434,43 @@ area to `1280 x 760` multiplied by that scale (clamped to the monitor work area)
 never cropped on a high-DPI monitor. The **Selection and clipboard** card is the one to try:
 drag down from its label, over the whole-control button and into the text box, then right-click
 the selection.
+
+### On Linux (GTK4)
+
+`GtkHarness` is the same harness for Linux. It uses the
+[GirCore](https://github.com/gircore/gircore) GTK4 bindings, so the build needs the GTK4 runtime and
+development headers, plus a font backend for SkiaSharp:
+
+```
+sudo apt install libgtk-4-1 libgtk-4-dev libfontconfig1
+```
+
+The Skia native library comes from the `SkiaSharp.NativeAssets.Linux` package, so nothing has to be
+installed for it. Then:
+
+```
+dotnet run --project GtkHarness
+```
+
+The window is a plain `Gtk.ApplicationWindow` whose child is a `Gtk.DrawingArea`. The drawing area
+owns a Cairo image surface (`Cairo.Format.Argb32`, which is premultiplied BGRA - exactly what
+`SKColorType.Bgra8888` with `SKAlphaType.Premul` expects, so no swizzle is needed) and Skia paints
+directly into that surface's pixels; each frame is then blitted with `cr.SetSourceSurface`. Because
+Skia writes into the buffer behind Cairo's back, the surface is flushed before the paint and marked
+dirty after it - without the mark Cairo keeps serving stale data and the window stays blank.
+
+Everything else mirrors the Win32 harness: `Gtk.GestureClick`, `Gtk.EventControllerMotion` and
+`Gtk.EventControllerKey` feed `XPlatUiHost.Process*`, a 250 ms `GLib` timeout drives
+`ProcessTick` (caret blinking), and the system appearance is read from
+`org.gnome.desktop.interface color-scheme` (falling back to `GTK_THEME` and
+`GtkSettings.GtkApplicationPreferDarkTheme`). Context menus are real `Gtk.Popover`s, and the desktop
+UI font (`GtkSettings.GtkFontName`) is handed to the library through `XPlatTheme.FontFamily`, so the
+controls look native on GNOME.
+
+The same headless switches work:
+
+```
+dotnet GtkHarness.dll --render out.png 1280 760 --dark
+```
+
+Set `XPLATUI_DEBUG=1` to trace host work (frames, buffer reallocation) to stderr.
