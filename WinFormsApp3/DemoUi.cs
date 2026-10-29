@@ -376,10 +376,11 @@ public sealed class DemoUi
             CellPadding = new XPlatThickness(8f),
         };
 
-        table.ColumnStyles.Add(new XPlatColumnStyle(XPlatSizeType.Percent, 25f));
-        table.ColumnStyles.Add(new XPlatColumnStyle(XPlatSizeType.Percent, 25f));
-        table.ColumnStyles.Add(new XPlatColumnStyle(XPlatSizeType.Percent, 25f));
-        table.ColumnStyles.Add(new XPlatColumnStyle(XPlatSizeType.Percent, 25f));
+        for (int column = 0; column < 5; column++)
+        {
+            table.ColumnStyles.Add(new XPlatColumnStyle(XPlatSizeType.Percent, 20f));
+        }
+
         table.RowStyles.Add(new XPlatRowStyle(XPlatSizeType.AutoSize, 0f));
         table.RowStyles.Add(new XPlatRowStyle(XPlatSizeType.Percent, 100f));
 
@@ -387,11 +388,13 @@ public sealed class DemoUi
         table.Add(SectionLabel("Buttons and input"), 1, 0);
         table.Add(SectionLabel("Rich text"), 2, 0);
         table.Add(SectionLabel("Images and layout"), 3, 0);
+        table.Add(SectionLabel("Selection and clipboard"), 4, 0);
 
         table.Add(BuildLabelsCard(), 0, 1);
         table.Add(BuildButtonsCard(), 1, 1);
         table.Add(BuildRichTextCard(), 2, 1);
         table.Add(BuildImagesCard(), 3, 1);
+        table.Add(BuildSelectionCard(), 4, 1);
 
         return table;
     }
@@ -437,6 +440,7 @@ public sealed class DemoUi
             ForeColor = XPlatTheme.MutedForeground,
             TextAlign = XPlatContentAlignment.TopLeft,
             Margin = new XPlatThickness(0f, 0f, 0f, 10f),
+            Selectable = true,
         });
 
         _counterLabel = new XPlatLabel("Button clicks: 0")
@@ -448,6 +452,7 @@ public sealed class DemoUi
             ForeColor = XPlatTheme.Accent,
             TextAlign = XPlatContentAlignment.MiddleLeft,
             Margin = new XPlatThickness(0f, 0f, 0f, 6f),
+            Selectable = true,
         };
         card.Controls.Add(_counterLabel);
 
@@ -459,6 +464,7 @@ public sealed class DemoUi
             Font = XPlatTheme.CaptionFont,
             ForeColor = XPlatTheme.MutedForeground,
             TextAlign = XPlatContentAlignment.TopLeft,
+            Selectable = true,
         });
 
         return card;
@@ -485,6 +491,7 @@ public sealed class DemoUi
             WrapText = true,
             Font = XPlatTheme.DefaultFont,
             ForeColor = XPlatTheme.Foreground,
+            Selectable = true,
         };
 
         rich.AddText("One flow of ");
@@ -529,6 +536,67 @@ public sealed class DemoUi
         };
         chip.Click += (_, _) => SetStatus($"Inline chip '{text}' clicked.");
         return chip;
+    }
+
+    private XPlatPanel BuildSelectionCard()
+    {
+        var card = Card();
+
+        card.Controls.Add(new XPlatLabel("Selection")
+        {
+            Dock = XDock.Top,
+            AutoSize = false,
+            Height = 24f,
+            Font = XPlatTheme.EmphasizedFont,
+            TextAlign = XPlatContentAlignment.BottomLeft,
+            Margin = new XPlatThickness(0f, 0f, 0f, 4f),
+        });
+
+        // A drag starts on the label, passes over the whole-control button and ends in the text
+        // box, so one gesture produces a partial, a whole and another partial range.
+        card.Controls.Add(new XPlatLabel("Drag down from this label to start a selection.")
+        {
+            Dock = XDock.Top,
+            AutoSize = false,
+            Height = 40f,
+            WrapText = true,
+            Font = XPlatTheme.DefaultFont,
+            ForeColor = XPlatTheme.MutedForeground,
+            TextAlign = XPlatContentAlignment.TopLeft,
+            Margin = new XPlatThickness(0f, 0f, 0f, 6f),
+            Selectable = true,
+        });
+
+        var whole = new XPlatButton("Whole control")
+        {
+            Dock = XDock.Top,
+            AutoSize = true,
+            Style = XPlatButtonStyle.Secondary,
+            Margin = new XPlatThickness(0f, 0f, 0f, 6f),
+            Selectable = true,
+        };
+        whole.Click += (_, _) => SetStatus("Whole-control button clicked - a drag over it selects the button as one unit.");
+        card.Controls.Add(whole);
+
+        card.Controls.Add(new XPlatTextBox
+        {
+            Dock = XDock.Top,
+            Height = 32f,
+            Text = "...and finish in this box.",
+            Margin = new XPlatThickness(0f, 0f, 0f, 6f),
+        });
+
+        card.Controls.Add(new XPlatLabel("Right-click the selection for the native Copy menu.")
+        {
+            Dock = XDock.Fill,
+            AutoSize = false,
+            WrapText = true,
+            Font = XPlatTheme.CaptionFont,
+            ForeColor = XPlatTheme.MutedForeground,
+            TextAlign = XPlatContentAlignment.TopLeft,
+        });
+
+        return card;
     }
 
     private XPlatPanel BuildButtonsCard()

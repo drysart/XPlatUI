@@ -41,6 +41,21 @@ internal static class NativeMethods
     internal const uint WmSetCursor = 0x0020;
     internal const uint WmMouseLeave = 0x02A3;
     internal const uint WmDpiChanged = 0x02E0;
+    internal const uint WmContextMenu = 0x007B;
+    internal const uint WmNull = 0x0000;
+
+    // Menus.
+    internal const uint MfString = 0x00000000;
+    internal const uint MfSeparator = 0x00000800;
+    internal const uint MfGrayed = 0x00000001;
+    internal const uint MfChecked = 0x00000008;
+    internal const uint MfDefault = 0x00001000;
+    internal const uint MfByPosition = 0x00000400;
+    internal const uint MfByCommand = 0x00000000;
+    internal const uint TpmLeftAlign = 0x0000;
+    internal const uint TpmTopAlign = 0x0000;
+    internal const uint TpmRightButton = 0x0002;
+    internal const uint TpmReturnCmd = 0x0100;
 
     internal const int HtClient = 1;
     internal const int SwShow = 5;
@@ -303,6 +318,43 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     internal static extern void PostQuitMessage(int nExitCode);
 
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    internal static extern bool PostMessageW(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    internal static extern bool SetForegroundWindow(IntPtr hwnd);
+
+    [DllImport("user32.dll")]
+    internal static extern bool GetCursorPos(out POINT lpPoint);
+
+    [DllImport("user32.dll")]
+    internal static extern bool ScreenToClient(IntPtr hwnd, ref POINT lpPoint);
+
+    [DllImport("user32.dll")]
+    internal static extern bool ClientToScreen(IntPtr hwnd, ref POINT lpPoint);
+
+    // user32 - popup menus.
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern IntPtr CreatePopupMenu();
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    internal static extern bool AppendMenuW(IntPtr hMenu, uint uFlags, IntPtr uIDNewItem, string? lpNewItem);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern bool DestroyMenu(IntPtr hMenu);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern int TrackPopupMenuEx(IntPtr hMenu, uint uFlags, int x, int y, IntPtr hwnd, IntPtr lptpm);
+
+    [DllImport("user32.dll")]
+    internal static extern int GetMenuItemCount(IntPtr hMenu);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    internal static extern int GetMenuStringW(IntPtr hMenu, uint uIDItem, [Out] char[]? lpString, int cchMax, uint flags);
+
+    [DllImport("user32.dll")]
+    internal static extern uint GetMenuState(IntPtr hMenu, uint uId, uint uFlags);
+
     // user32 - painting and GDI.
     [DllImport("user32.dll")]
     internal static extern IntPtr BeginPaint(IntPtr hwnd, out PAINTSTRUCT lpPaint);
@@ -360,6 +412,9 @@ internal static class NativeMethods
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern bool IsClipboardFormatAvailable(uint format);
 
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    internal static extern uint RegisterClipboardFormatW(string lpszFormat);
+
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern IntPtr GetClipboardData(uint uFormat);
 
@@ -377,6 +432,9 @@ internal static class NativeMethods
 
     [DllImport("kernel32.dll")]
     internal static extern IntPtr GlobalFree(IntPtr hMem);
+
+    [DllImport("kernel32.dll")]
+    internal static extern nuint GlobalSize(IntPtr hMem);
 
     /// <summary>Opts the process into per-monitor DPI awareness so the UI is crisp at any scale.</summary>
     internal static bool TryEnablePerMonitorDpi() => SetProcessDpiAwarenessContext(DpiAwarenessPerMonitorV2);

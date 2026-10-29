@@ -24,9 +24,12 @@ public class XPlatControl : IDisposable
     private bool _visible = true;
     private bool _enabled = true;
     private bool _autoSize;
+    private bool _selectable;
+    private XPlatSelectionStyle _selectionStyle = XPlatSelectionStyle.Whole;
     private bool _disposed;
     private XPlatUiHost? _host;
     private XPlatControlCollection? _controls;
+    private List<SKRect>? _selectionRects;
 
     public XPlatControl()
     {
@@ -70,6 +73,19 @@ public class XPlatControl : IDisposable
 
     /// <summary>Arbitrary user data associated with the control.</summary>
     public object? Tag { get; set; }
+
+    /// <summary>
+    /// Menu shown when the control is right-clicked. When null the nearest ancestor's menu is
+    /// used, so a container can give every child the same menu without repeating itself.
+    /// </summary>
+    public XPlatContextMenu? ContextMenu { get; set; }
+
+    /// <summary>
+    /// The menu to show when this control is right-clicked. The default returns
+    /// <see cref="ContextMenu"/>, falling back to the parent's menu; controls that build their
+    /// menu from their own state (an editable text box, say) override it.
+    /// </summary>
+    protected internal virtual XPlatContextMenu? BuildContextMenu() => ContextMenu ?? Parent?.BuildContextMenu();
 
     /// <summary>
     /// Child controls in z-order. Containers such as <see cref="XPlatPanel"/> arrange
@@ -297,6 +313,170 @@ public class XPlatControl : IDisposable
     /// <summary>True while a mouse button is held down on the control.</summary>
     public bool IsPressed { get; internal set; }
 
+    /// <summary>
+    /// True when the control takes part in pointer-driven selections: pressing on it and
+    /// dragging selects it, and it contributes its text to the clipboard. Controls opt in, so
+    /// the default is false.
+    /// </summary>
+    public bool Selectable
+    {
+        get => _selectable;
+        set
+        {
+            if (_selectable == value)
+            {
+                return;
+            }
+
+            _selectable = value;
+            if (!value)
+            {
+                Host?.Selection.Refresh();
+            }
+
+            Invalidate();
+        }
+    }
+
+    /// <summary>
+    /// How the control takes part in a selection. Only meaningful when <see cref="Selectable"/> is
+    /// true; the default, <see cref="XPlatSelectionStyle.Whole"/>, selects the control as a unit.
+    /// </summary>
+    public XPlatSelectionStyle SelectionStyle
+    {
+        get => _selectionStyle;
+        set
+        {
+            if (_selectionStyle == value)
+            {
+                return;
+            }
+
+            _selectionStyle = value;
+            Host?.Selection.Refresh();
+            Invalidate();
+        }
+    }
+
+    /// <summary>
+    /// Number of selectable units in the control: 0 when it is not selectable, 1 for a whole
+    /// control and the content length for a partial one.
+    /// </summary>
+    public virtual int SelectionUnitCount => !_selectable
+        ? 0
+        : _selectionStyle == XPlatSelectionStyle.Whole ? 1 : Text.Length;
+
+    /// <summary>The slice of this control covered by the host's selection, or an empty range.</summary>
+    public XPlatSelectionRange SelectionRange => Host?.Selection.RangeOf(this) ?? default;
+
+    /// <summary>True when at least part of the control is selected.</summary>
+    public bool IsSelected => !SelectionRange.IsEmpty;
+
+    /// <summary>
+    /// Maps a point in this control's coordinate space to the nearest selection offset, in the
+    /// range 0..<see cref="SelectionUnitCount"/>. A whole control returns the middle of its single
+    /// unit (0.5) for any point inside it. Controls with internal content override this.
+    /// </summary>
+    public virtual float GetSelectionOffset(SKPoint pointInLocal)
+    {
+        int units = SelectionUnitCount;
+        if (units == 0)
+        {
+            return 0f;
+        }
+
+        if (_selectionStyle == XPlatSelectionStyle.Whole)
+        {
+            return 0.5f;
+        }
+
+        // Fallback for partial controls that do not map their own content: proportional.
+        var content = ContentRect;
+        if (content.Width <= 0f)
+        {
+            return 0f;
+        }
+
+        var ratio = (pointInLocal.X - content.Left) / content.Width;
+        return Math.Clamp(ratio * units, 0f, units);
+    }
+
+    /// <summary>
+    /// Adds the rectangles (in this control's coordinate space) that cover the given selection
+    /// slice. Multi-line controls add one rectangle per line.
+    /// </summary>
+    public virtual void GetSelectionRects(int start, int length, List<SKRect> output)
+    {
+        ArgumentNullException.ThrowIfNull(output);
+
+        if (length <= 0)
+        {
+            return;
+        }
+
+        if (_selectionStyle == XPlatSelectionStyle.Whole || (start <= 0 && length >= SelectionUnitCount))
+        {
+            output.Add(ClientRect);
+        }
+    }
+
+    /// <summary>
+    /// The text this control contributes to the clipboard for the given selection slice.
+    /// </summary>
+    public virtual string GetSelectionText(int start, int length)
+    {
+        if (length <= 0)
+        {
+            return string.Empty;
+        }
+
+        var text = Text;
+        if (string.IsNullOrEmpty(text))
+        {
+            return string.Empty;
+        }
+
+        if (_selectionStyle == XPlatSelectionStyle.Whole)
+        {
+            return text;
+        }
+
+        start = Math.Clamp(start, 0, text.Length);
+        length = Math.Clamp(length, 0, text.Length - start);
+        return length <= 0 ? string.Empty : text.Substring(start, length);
+    }
+
+    /// <summary>
+    /// The HTML this control contributes to the clipboard for the given selection slice, so that
+    /// formatted text survives a copy into a rich target. Returning null - the default - means
+    /// this control has nothing richer to say than <see cref="GetSelectionText"/> and the plain
+    /// text is used instead, escaped.
+    /// </summary>
+    public virtual string? GetSelectionHtml(int start, int length) => null;
+
+    /// <summary>
+    /// Declares that this control is starting a selection of its own - a caret or an internal
+    /// text selection, for example. Only one selection may exist at a time, so this clears the
+    /// host's control-level selection and tells any other control to drop its internal selection
+    /// before the caller proceeds.
+    /// </summary>
+    public void ClaimSelection() => Host?.ClaimSelection(this);
+
+    /// <summary>
+    /// Called when another control (or the host) takes over the selection, so this control can
+    /// drop whatever selection state it keeps to itself. The host's selection is already cleared
+    /// by the time this runs.
+    /// </summary>
+    protected virtual void OnSelectionCleared(EventArgs e)
+    {
+    }
+
+    internal void RaiseSelectionCleared()
+    {
+        OnSelectionCleared(EventArgs.Empty);
+        Invalidate();
+    }
+
     /// <summary>Background fill. Null means transparent.</summary>
     public SKColor? BackColor { get; set; }
 
@@ -391,6 +571,7 @@ public class XPlatControl : IDisposable
         }
 
         OnPaintBackground(canvas, local);
+        PaintSelection(canvas);
         OnPaint(canvas, local);
         RenderChildren(canvas);
         OnPaintBorder(canvas, local);
@@ -554,6 +735,28 @@ public class XPlatControl : IDisposable
         }
     }
 
+    /// <summary>
+    /// Fills the part of the host selection that covers this control, between the background and
+    /// the content, so selected text stays readable.
+    /// </summary>
+    private void PaintSelection(SKCanvas canvas)
+    {
+        var range = SelectionRange;
+        if (range.IsEmpty)
+        {
+            return;
+        }
+
+        var rects = _selectionRects ??= new List<SKRect>(4);
+        rects.Clear();
+        GetSelectionRects(range.Start, range.Length, rects);
+
+        foreach (var rect in rects)
+        {
+            XPlatPainter.Fill(canvas, rect, XPlatTheme.Selection);
+        }
+    }
+
     /// <summary>Paints child controls in z-order.</summary>
     protected virtual void RenderChildren(SKCanvas canvas)
     {
@@ -601,6 +804,7 @@ public class XPlatControl : IDisposable
     protected virtual void OnTextChanged(EventArgs e)
     {
         TextChanged?.Invoke(this, e);
+        Host?.Selection.Refresh();
         PerformLayout();
     }
 

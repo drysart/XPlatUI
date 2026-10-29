@@ -206,11 +206,58 @@ var readOnly = new XPlatTextBox { Dock = DockStyle.Top, ReadOnly = true, Text = 
 
 The library itself stays platform free, so two things remain the adapter's job:
 
-* **Clipboard** - implement `IXPlatClipboard` (`GetText`/`SetText`) and assign an instance to
-  `XPlatClipboard.Current` once at startup; without one an in-process fallback is used. The
-  Win32 harness installs `Win32Clipboard` (`Native/Win32Clipboard.cs`).
+* **Clipboard** - implement `IXPlatClipboard` (`GetText`/`SetText`, plus the optional
+  `GetHtml`/`SetHtml` pair) and assign an instance to `XPlatClipboard.Current` once at startup;
+  without one an in-process fallback is used. The Win32 harness installs `Win32Clipboard`
+  (`Native/Win32Clipboard.cs`), which publishes a real `HTML Format` payload.
 * **Caret blink** - call `host.ProcessTick(elapsed)` from a timer (the Win32 harness uses a
   250 ms `WM_TIMER`) so the caret blinks. Tests can call `host.ProcessTick(...)` directly.
+
+### Selection and the clipboard
+
+`Selectable` opts a control into pointer selection; `SelectionStyle` chooses between selecting
+the control as a whole (`Whole`) and selecting the text inside it (`Partial`). A drag can start
+in one control and finish in another, so the selection lives on the host
+(`host.Selection`) rather than in a control, and `host.ClearSelection()` plus
+`control.ClaimSelection()` keep exactly one selection - of any kind, including a text box's own
+caret and selection - alive at a time.
+
+When a selection is copied, every control it touches contributes its own piece in visual order:
+
+| Member | Behaviour |
+| --- | --- |
+| `GetSelectionText(start, length)` | The plain-text piece for a slice; override to control what a copy pastes into a text target |
+| `GetSelectionHtml(start, length)` | The HTML piece for the same slice, or `null` (default) to fall back to the escaped plain text |
+| `host.CopySelection()` | Writes both flavours to `XPlatClipboard`; `host.SelectionTextSeparator` joins the pieces |
+| `host.ProcessContextMenu(point)` | Builds the menu: the control's own `ContextMenu`, then `ContextMenuOpening`, then a default **Copy** item |
+
+`XPlatRichLabel` overrides `GetSelectionHtml` so a copy keeps its formatting: `<b>`, `<i>`,
+`<u>`, `<s>` and a `<span style="...">` for colour and size overrides, wrapped around the
+*selected slice* of each span - a selection that starts mid-span gets markup for just those
+characters. A selection spanning several controls joins their pieces with a line break.
+
+```csharp
+var html = rich.GetSelectionHtml(12, 4);   // "<b>bold</b>"
+XPlatClipboard.SetHtml(rich.GetSelectionText(12, 4), html);   // both flavours at once
+```
+
+#### Built-in controls
+
+| Control | Defaults | Notes |
+| --- | --- | --- |
+| `XPlatLabel`, `XPlatRichLabel` | `Selectable = false`, `Partial` | Set `Selectable`; a drag selects character by character |
+| `XPlatTextBox` | `Selectable = true`, `Partial` | Its own caret and anchor answer for a drag that *starts* inside it; a drag that merely passes through it selects its text and drops the caret |
+| `XPlatButton`, `XPlatImage` | `Selectable = false`, `Whole` | Set `Selectable`; a drag over the control selects it as one unit |
+| `XPlatPanel` and other containers | `Selectable = false`, `Whole` | A selectable container hides its children from the selection, so leave containers off unless the container itself is what should be selected |
+
+A text box is selectable by default and does not paint a second overlay: `GetSelectionOffset` and
+`GetSelectionRects` bridge the host's selection into the same `IndexFromX`/`MeasureX` axis the
+caret already uses, so the single-selection rule above still holds.
+
+A text box also builds its own menu - **Cut**, **Copy**, **Paste** and **Select All**, with their
+shortcuts and per-item `Enabled` states - so a right-click inside one always opens a menu. Its
+**Copy** falls back to `host.CopySelection()` when the box has no selection of its own, which is
+what makes copying a multi-control selection work no matter which control was right-clicked.
 
 ## Writing a backend
 
@@ -276,10 +323,12 @@ messages to the `XPlatUiHost`. `Program.cs` wires up `DemoUi` and runs the messa
 To render the same sample UI headlessly (useful for visual checks in CI):
 
 ```
-WinFormsApp3.exe --render out.png 1040 760
+WinFormsApp3.exe --render out.png 1280 760
 ```
 
-The sample UI is laid out for a 1040 x 760 client area. The host lays out in *logical* (96 DPI)
+The sample UI is laid out for a 1280 x 760 client area. The host lays out in *logical* (96 DPI)
 points and the harness scales the Skia canvas by `GetDpiForWindow(hwnd) / 96`, sizing its client
-area to `1040 x 760` multiplied by that scale (clamped to the monitor work area) so the demo is
-never cropped on a high-DPI monitor.
+area to `1280 x 760` multiplied by that scale (clamped to the monitor work area) so the demo is
+never cropped on a high-DPI monitor. The **Selection and clipboard** card is the one to try:
+drag down from its label, over the whole-control button and into the text box, then right-click
+the selection.

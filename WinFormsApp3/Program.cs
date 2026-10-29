@@ -30,7 +30,7 @@ namespace WinFormsApp3
             if (args.Length > 0 && args[0] == "--render")
             {
                 var path = args.Length > 1 ? args[1] : "xplatui.png";
-                var width = args.Length > 2 && int.TryParse(args[2], out var w) ? w : 1040;
+                var width = args.Length > 2 && int.TryParse(args[2], out var w) ? w : 1280;
                 var height = args.Length > 3 && int.TryParse(args[3], out var h) ? h : 760;
                 DemoUi.RenderToPng(path, width, height);
                 Console.WriteLine($"Rendered {width}x{height} sample UI to {path}");
@@ -43,6 +43,10 @@ namespace WinFormsApp3
                 Console.Error.WriteLine("Failed to create the harness window.");
                 return 1;
             }
+
+            // Context menus are platform native, so the UI library only describes them and the
+            // host draws them. Installed after the window exists because Win32 needs an owner.
+            XPlatContextMenuPresenter.Current = new Win32ContextMenuPresenter(window.Handle, window.LogicalToScreen);
 
             window.Root = new DemoUi().Root;
             return window.Run();
