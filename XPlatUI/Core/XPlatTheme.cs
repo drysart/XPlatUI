@@ -201,15 +201,56 @@ public static class XPlatTheme
         set => Assign(_palette with { DisabledForeground = value });
     }
 
-    public static XPlatFont DefaultFont { get; } = new(size: 13f);
+    private static string? _fontFamily;
+    private static XPlatFont _defaultFont = new(size: 13f);
+    private static XPlatFont _captionFont = new(size: 11.5f);
+    private static XPlatFont _emphasizedFont = new(size: 13f, weight: 600);
+    private static XPlatFont _titleFont = new(size: 24f, weight: 700);
+    private static XPlatFont _sectionFont = new(size: 15f, weight: 600);
 
-    public static XPlatFont CaptionFont { get; } = new(size: 11.5f);
+    /// <summary>
+    /// The font family the built-in controls draw with, or null to use the operating system's
+    /// default. A backend sets this once at start-up so the UI matches the desktop it runs on.
+    /// </summary>
+    /// <remarks>
+    /// Assign it before creating controls: the theme fonts are rebuilt when it changes, and the
+    /// previous font objects are left undisposed because a control may still be holding one from a
+    /// paint pass. A handful of fonts is a few bytes, and this is a start-up only operation.
+    /// </remarks>
+    public static string? FontFamily
+    {
+        get => _fontFamily;
+        set
+        {
+            if (string.Equals(_fontFamily, value, StringComparison.Ordinal))
+            {
+                return;
+            }
 
-    public static XPlatFont EmphasizedFont { get; } = new(size: 13f, weight: 600);
+            _fontFamily = value;
+            RebuildFonts();
+            Changed?.Invoke(null, EventArgs.Empty);
+        }
+    }
 
-    public static XPlatFont TitleFont { get; } = new(size: 24f, weight: 700);
+    public static XPlatFont DefaultFont => _defaultFont;
 
-    public static XPlatFont SectionFont { get; } = new(size: 15f, weight: 600);
+    public static XPlatFont CaptionFont => _captionFont;
+
+    public static XPlatFont EmphasizedFont => _emphasizedFont;
+
+    public static XPlatFont TitleFont => _titleFont;
+
+    public static XPlatFont SectionFont => _sectionFont;
+
+    private static void RebuildFonts()
+    {
+        _defaultFont = new XPlatFont(_fontFamily, 13f);
+        _captionFont = new XPlatFont(_fontFamily, 11.5f);
+        _emphasizedFont = new XPlatFont(_fontFamily, 13f, weight: 600);
+        _titleFont = new XPlatFont(_fontFamily, 24f, weight: 700);
+        _sectionFont = new XPlatFont(_fontFamily, 15f, weight: 600);
+    }
 
     private static void Assign(XPlatPalette palette)
     {

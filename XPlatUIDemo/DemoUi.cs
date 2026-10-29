@@ -2,12 +2,12 @@ using SkiaSharp;
 using XPlatUI;
 using XDock = XPlatUI.DockStyle;
 
-namespace WinFormsApp3;
+namespace XPlatUI.Demo;
 
 /// <summary>
-/// The sample XPlat UI shown by the Win32 harness. It is kept separate from the host window
-/// so the very same control tree can be rendered headlessly (see <see cref="RenderToPng"/>)
-/// or hosted by a macOS/Linux adapter.
+/// The sample XPlat UI shown by the harnesses. It is kept separate from any host window so the
+/// very same control tree is rendered by the Win32 harness, by the GTK4 harness, and headlessly
+/// (see <see cref="RenderToPng"/>).
 /// </summary>
 public sealed class DemoUi
 {
