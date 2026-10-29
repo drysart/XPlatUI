@@ -536,20 +536,22 @@ combination that the menu bar did not claim is swallowed instead of typing its l
 to the library through `XPlatTheme.FontFamily`.
 
 Set `XPLATUI_DEBUG=1` to trace frames and buffer reallocation to stderr.
+
 ### Bundle size
 
-A Mac always has a `RuntimeIdentifier`, and the macOS workload trims every RID build - there is no
-untrimmed `dotnet build`. What varies is `LinkMode`, so all three settings were published, rendered
-and measured (`osx-arm64`, apparent size on disk):
+Only `dotnet publish` runs the trimmer: a plain `dotnet build` leaves a fully untrimmed bundle, and
+`LinkMode` decides how much a publish takes away. All four were measured (`osx-arm64`, apparent size
+on disk) and rendered:
 
 | bundle | size | files | dlls | render |
 | --- | --- | --- | --- | --- |
-| `-p:LinkMode=None -p:TrimMode=copy` | 137.8 MB | 197 | 177 | reference |
-| `-p:LinkMode=SdkOnly` (the default) | 35.0 MB | 42 | 22 | pixel identical |
-| `-p:LinkMode=Full` | 35.4 MB | 39 | 19 | pixel identical |
+| `dotnet build` (nothing trimmed) | 137.2 MB | 197 | 177 | reference |
+| `publish -p:LinkMode=None -p:TrimMode=copy` | 137.8 MB | 197 | 177 | pixel identical |
+| `publish -p:LinkMode=SdkOnly` (the default) | 35.0 MB | 42 | 22 | pixel identical |
+| `publish -p:LinkMode=Full` | 35.4 MB | 39 | 19 | pixel identical |
 
-So trimming is worth **103 MB** and changes nothing on screen. `LinkMode=None` on its own does *not*
-switch the trimmer off; it also needs `TrimMode=copy`.
+So publishing with the default settings is worth **102 MB** and changes nothing on screen.
+`LinkMode=None` on its own does *not* switch the trimmer off; it also needs `TrimMode=copy`.
 
 `LinkMode=Full` is not worth turning on. It only drops `System.Runtime`,
 `System.Runtime.InteropServices` and `System.Threading` (the facade assemblies) and then rewrites

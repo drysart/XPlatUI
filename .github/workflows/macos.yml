@@ -124,10 +124,10 @@ jobs:
           echo "BUILD_BUNDLE=$(dirname "$(dirname "$(dirname "$APP")")")" >> "$GITHUB_ENV"
           "$APP" --render "$RUNNER_TEMP/xplatui.png"
 
-      # A Mac always has a RuntimeIdentifier, and the workload trims every RID build, so even a plain
-      # `dotnet build` is trimmed. Publishing the three link modes side by side shows what each one
-      # actually buys, and each bundle renders the sample UI: a render that differs means the trimmer
-      # removed something the UI needs.
+      # Only `dotnet publish` runs the trimmer - a plain `dotnet build` leaves the bundle at ~137 MB -
+      # and the link mode decides how much it takes away. Publishing the three modes side by side
+      # shows what each one buys, and each bundle renders the sample UI: a render that differs means
+      # the trimmer removed something the UI needs.
       - name: Compare link modes
         run: |
           set -euo pipefail

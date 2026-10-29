@@ -15,10 +15,11 @@
     <RootNamespace>MacHarness</RootNamespace>
     <!-- The Skia raster buffer is handed to CoreGraphics through a raw pointer. -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <!-- The workload trims every RID build; LinkMode keeps its default of SdkOnly, which trims the
-         BCL and leaves the application's own assemblies whole. Nothing here reflects over its own
-         types, so LinkMode=Full is safe too - it was measured and is a net loss (it drops three tiny
-         facades but rewrites Microsoft.macOS.dll 473 KB larger). See README.md, "Bundle size". -->
+    <!-- `dotnet publish` trims the bundle (a plain build does not), and LinkMode keeps its default of
+         SdkOnly, which trims the BCL and leaves the application's own assemblies whole. Nothing here
+         reflects over its own types, so LinkMode=Full is safe too - it was measured and is a net loss
+         (it drops three tiny facades but rewrites Microsoft.macOS.dll 473 KB larger). See README.md,
+         "Bundle size". -->
     <!-- The bundle identity lives in the checked in Info.plist next to this file, so the SDK must
          not generate one of its own (ApplicationId would do exactly that and then collide). -->
   </PropertyGroup>
