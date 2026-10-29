@@ -118,25 +118,57 @@ jobs:
             exit 1
           fi
           echo "app: $APP"
+          echo "UNTRIMMED_BUNDLE=$(dirname "$(dirname "$(dirname "$APP")")")" >> "$GITHUB_ENV"
           "$APP" --render "$RUNNER_TEMP/xplatui.png"
+
+      # The workload trims every RID publish, but by default only the BCL (LinkMode=SdkOnly).
+      # Publishing both modes shows what trimming the application's own assemblies buys, and each
+      # bundle renders the sample UI: a render that differs from the untrimmed build means the
+      # trimmer removed something the UI needs.
+      - name: Publish trimmed bundles
+        run: |
+          set -euo pipefail
+          ref="$(shasum -a 256 "$RUNNER_TEMP/xplatui.png" | cut -d' ' -f1)"
+          {
+            echo '### Bundle size'
+            echo '| bundle | size | render |'
+            echo '| --- | --- | --- |'
+            echo "| untrimmed build | $(du -sh "$UNTRIMMED_BUNDLE" | cut -f1) | reference |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          pubdir="MacHarness/bin/Release/net10.0-macos/osx-arm64/publish"
+          for link in SdkOnly Full; do
+            rm -rf "$pubdir"
+            dotnet publish MacHarness/MacHarness.csproj -c Release -r osx-arm64 --nologo \
+              -p:LinkMode=$link 2>&1 | tee "$RUNNER_TEMP/publish-$link.log"
+            app="$(find "$pubdir" -maxdepth 2 -name 'MacHarness.app' -type d | head -n 1)"
+            if [ -z "$app" ]; then
+              echo "::error::publish with LinkMode=$link produced no .app bundle in $pubdir"
+              find "$pubdir" -maxdepth 2 | head -n 20
+              exit 1
+            fi
+            size="$(du -sh "$app" | cut -f1)"
+            "$app/Contents/MacOS/MacHarness" --render "$RUNNER_TEMP/xplatui-$link.png"
+            if [ "$(shasum -a 256 "$RUNNER_TEMP/xplatui-$link.png" | cut -d' ' -f1)" = "$ref" ]; then
+              verdict="identical to the untrimmed build"
+            else
+              verdict="**differs** from the untrimmed build"
+            fi
+            echo "| LinkMode=$link | $size | $verdict |" >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::LinkMode=$link bundle is $size; render $verdict"
+            ditto -c -k --sequesterRsrc --keepParent "$app" "$RUNNER_TEMP/MacHarness-$link.app.zip"
+          done
 
       - name: Upload the rendered UI
         uses: actions/upload-artifact@v4
         with:
           name: macos-render
-          path: ${{ runner.temp }}/xplatui.png
+          path: ${{ runner.temp }}/xplatui*.png
           if-no-files-found: error
 
-      - name: Package the app bundle
-        run: |
-          set -euo pipefail
-          APP="$(find MacHarness/bin/Release -maxdepth 6 -name 'MacHarness.app' -type d | head -n 1)"
-          test -n "$APP"
-          ditto -c -k --sequesterRsrc --keepParent "$APP" "$RUNNER_TEMP/MacHarness.app.zip"
-
-      - name: Upload the app bundle
+      - name: Upload the trimmed app bundles
         uses: actions/upload-artifact@v4
         with:
           name: MacHarness-app
-          path: ${{ runner.temp }}/MacHarness.app.zip
+          path: ${{ runner.temp }}/MacHarness-*.app.zip
           if-no-files-found: error
