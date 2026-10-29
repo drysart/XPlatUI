@@ -1,0 +1,75 @@
+name: macOS harness
+
+# MacHarness targets net10.0-macos, so it needs the macOS workload and can only be built on a Mac.
+# This job is the compile check for it: it builds the bundle and then renders the sample UI
+# headlessly, which also proves the library itself runs on the machine.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/macos.yml'
+      - 'MacHarness/**'
+      - 'XPlatUI/**'
+      - 'XPlatUIDemo/**'
+  pull_request:
+    paths:
+      - '.github/workflows/macos.yml'
+      - 'MacHarness/**'
+      - 'XPlatUI/**'
+      - 'XPlatUIDemo/**'
+  workflow_dispatch:
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build MacHarness
+    runs-on: macos-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      # The bindings are an optional workload and the runner image does not always carry the
+      # version the project needs.
+      - name: Install the macOS workload
+        run: dotnet workload install macos
+
+      - name: Build
+        run: dotnet build MacHarness/MacHarness.csproj -c Release --nologo
+
+      - name: Render the sample UI headlessly
+        run: |
+          set -euo pipefail
+          APP="$(find MacHarness/bin/Release -path '*MacHarness.app/Contents/MacOS/MacHarness' -type f | head -n 1)"
+          test -n "$APP"
+          echo "app: $APP"
+          "$APP" --render "$RUNNER_TEMP/xplatui.png"
+
+      - name: Upload the rendered UI
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-render
+          path: ${{ runner.temp }}/xplatui.png
+          if-no-files-found: error
+
+      - name: Package the app bundle
+        run: |
+          set -euo pipefail
+          APP="$(find MacHarness/bin/Release -maxdepth 4 -name 'MacHarness.app' -type d | head -n 1)"
+          test -n "$APP"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" "$RUNNER_TEMP/MacHarness.app.zip"
+
+      - name: Upload the app bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: MacHarness-app
+          path: ${{ runner.temp }}/MacHarness.app.zip
+          if-no-files-found: error

@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- The macOS harness is a native AppKit application, so it targets the macOS bindings instead
+         of plain net10.0. That also means it can only be built on macOS (or in CI): it is
+         deliberately not part of WinFormsApp3.slnx, so the Windows solution never needs the macOS
+         workload installed. See README.md, "On macOS (AppKit)". -->
+    <TargetFramework>net10.0-macos</TargetFramework>
+    <SupportedOSPlatformVersion>12.0</SupportedOSPlatformVersion>
+    <OutputType>Exe</OutputType>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>MacHarness</RootNamespace>
+    <!-- The Skia raster buffer is handed to CoreGraphics through a raw pointer. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- The bundle identity lives in the checked in Info.plist next to this file, so the SDK must
+         not generate one of its own (ApplicationId would do exactly that and then collide). -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\XPlatUI\XPlatUI.csproj" />
+    <ProjectReference Include="..\XPlatUIDemo\XPlatUIDemo.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- SkiaSharp itself only ships Win32 natives; macOS needs the separate native package. -->
+    <PackageReference Include="SkiaSharp.NativeAssets.macOS" Version="4.154.0" />
+  </ItemGroup>
+
+</Project>

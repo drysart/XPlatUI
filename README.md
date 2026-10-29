@@ -2,9 +2,9 @@
 
 A tiny, AOT-friendly, cross-platform UI layer that borrows the WinForms/WPF programming
 model (controls, docking, table layout, events) but draws everything with
-[SkiaSharp](https://github.com/mono/SkiaSharp). The library itself has no OS dependency: two small
-harnesses host it - `WinFormsApp3` on raw Win32 and `GtkHarness` on GTK4 - and both show the same
-sample UI from the shared `XPlatUIDemo` project.
+[SkiaSharp](https://github.com/mono/SkiaSharp). The library itself has no OS dependency: three
+small harnesses host it - `WinFormsApp3` on raw Win32, `GtkHarness` on GTK4 and `MacHarness` on
+AppKit - and all of them show the same sample UI from the shared `XPlatUIDemo` project.
 
 ```
 XPlatUI/                  net10.0 class library (no OS-specific code, IsAotCompatible)
@@ -22,7 +22,16 @@ GtkHarness/               Linux harness: a GTK4 window that draws the same UI
   GtkSystemTheme.cs       IXPlatSystemTheme over GSettings and GtkSettings
   GtkClipboard.cs         IXPlatClipboard over Gdk.Clipboard
   GtkContextMenuPresenter.cs  IXPlatContextMenuPresenter built on Gtk.Popover
+MacHarness/               macOS harness: a native AppKit NSView that draws the same UI
+  MacUiView.cs            the host: NSView, Skia bitmap blitted as a CGImage, input forwarding
+  MacSystemTheme.cs       IXPlatSystemTheme over NSAppearance
+  MacClipboard.cs         IXPlatClipboard over NSPasteboard
+  MacContextMenuPresenter.cs  IXPlatContextMenuPresenter built on NSMenu
 ```
+
+`MacHarness` targets `net10.0-macos` instead of `net10.0`, so it is deliberately kept out of
+`WinFormsApp3.slnx`: the macOS workload cannot be installed on Windows and the Windows solution
+must not depend on it. See [On macOS (AppKit)](#on-macos-appkit).
 
 ## Design
 
@@ -474,3 +483,46 @@ dotnet GtkHarness.dll --render out.png 1280 760 --dark
 ```
 
 Set `XPLATUI_DEBUG=1` to trace host work (frames, buffer reallocation) to stderr.
+
+### On macOS (AppKit)
+
+`MacHarness` is the same harness as a native macOS application. It targets `net10.0-macos` and uses
+Apple's AppKit bindings, so the window, its title bar, the menu bar, the context menus and the
+clipboard are all the real thing; only the contents of the window are drawn by the library.
+
+That target framework is why the project is **not** part of `WinFormsApp3.slnx`: it needs the macOS
+workload, which cannot be installed on Windows. Build it on a Mac, or let the `macOS harness` GitHub
+Actions workflow do it:
+
+```
+dotnet workload install macos
+dotnet build MacHarness/MacHarness.csproj
+open MacHarness/bin/Debug/net10.0-macos/osx-arm64/MacHarness.app
+```
+
+The bundle is produced by the build itself; its identity lives in `MacHarness/Info.plist`. It is
+signed ad-hoc, so a copy downloaded from CI needs `xattr -dr com.apple.quarantine MacHarness.app`
+before it will open. The same headless switches work, and they run before AppKit is initialised, so
+they work over ssh too:
+
+```
+MacHarness.app/Contents/MacOS/MacHarness --render out.png 1280 760 --dark
+```
+
+`MacUiView` is a plain `NSView`, flipped so y grows downwards like every other backend. Skia paints
+into an `SKBitmap` of premultiplied BGRA pixels, and `DrawRect` hands those pixels to CoreGraphics as
+a `CGImage` built over the same memory, so a frame costs no copy. There is no SkiaSharp view for
+AppKit in SkiaSharp 4.x, which is why the view draws itself. Mouse and keyboard events are forwarded
+to `XPlatUiHost.Process*` from the `NSResponder` overrides, a 250 ms `NSTimer` drives `ProcessTick`
+(caret blinking) and doubles as the poll for a system appearance change
+(`NSAppearance.FindBestMatch`), and a tracking area keeps `MouseMoved`/`MouseEntered`/`MouseExited`
+coming so hover states and cursors work.
+
+macOS reports accelerators through `Command` rather than `Control`, so `MacMenuBar` gives Cut, Copy,
+Paste and Select All real menu items whose `Cmd` key equivalents feed the same editing commands into
+the host. `MacKeyMap` deliberately does *not* map `Command` onto `XPlatModifiers.Control`: a `Cmd`
+combination that the menu bar did not claim is swallowed instead of typing its letter, while
+`Control` combinations reach the library as shortcuts. The system UI font (`SF Pro Text`) is handed
+to the library through `XPlatTheme.FontFamily`.
+
+Set `XPLATUI_DEBUG=1` to trace frames and buffer reallocation to stderr.
