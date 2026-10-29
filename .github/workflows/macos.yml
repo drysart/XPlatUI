@@ -125,9 +125,9 @@ jobs:
           "$APP" --render "$RUNNER_TEMP/xplatui.png"
 
       # A Mac always has a RuntimeIdentifier, and the workload trims every RID build, so even a plain
-      # `dotnet build` is trimmed (LinkMode defaults to SdkOnly: only the BCL). Publishing the three
-      # link modes side by side shows what each one actually buys, and each bundle renders the sample
-      # UI: a render that differs means the trimmer removed something the UI needs.
+      # `dotnet build` is trimmed. Publishing the three link modes side by side shows what each one
+      # actually buys, and each bundle renders the sample UI: a render that differs means the trimmer
+      # removed something the UI needs.
       - name: Compare link modes
         run: |
           set -euo pipefail
@@ -155,6 +155,16 @@ jobs:
               "$(cmp -l "$RUNNER_TEMP/left.bmp" "$RUNNER_TEMP/right.bmp" 2>/dev/null | wc -l | tr -d ' ')" \
               "$(stat -f %z "$RUNNER_TEMP/left.bmp")"
           }
+
+          # The build bundle is measured before anything is published, because a publish writes to the
+          # same directory: measuring it afterwards would just measure the last publish again.
+          "$BUILD_BUNDLE/Contents/MacOS/MacHarness" --render "$RUNNER_TEMP/xplatui-build.png" > /dev/null 2>&1
+          manifest "$BUILD_BUNDLE" > "$RUNNER_TEMP/files-build.txt"
+          build_mb="$(apparent_mb "$BUILD_BUNDLE")"
+          build_files="$(file_count "$BUILD_BUNDLE")"
+          build_dlls="$(dll_count "$BUILD_BUNDLE")"
+          build_skia="$(skia "$BUILD_BUNDLE")"
+          build_largest="$(largest "$BUILD_BUNDLE")"
 
           {
             echo '### Bundle size by link mode'
@@ -208,6 +218,16 @@ jobs:
             ditto -c -k --sequesterRsrc --keepParent "$app" "$RUNNER_TEMP/MacHarness-$link.app.zip"
           done
 
+          px="$(pixel_diff "$ref" "$RUNNER_TEMP/xplatui-build.png")"
+          if [ -z "$px" ]; then
+            build_verdict="pixel identical to LinkMode=None"
+          else
+            build_verdict="**differs** from LinkMode=None ($px)"
+          fi
+          echo "| plain \`dotnet build\` | $build_mb | $build_files | $build_dlls | $build_skia | $build_verdict |" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`dotnet build\` largest files: $build_largest" >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice::Plain \`dotnet build\`: $build_mb, $build_files files, $build_dlls dlls, $(dims "$RUNNER_TEMP/xplatui-build.png"); $build_verdict; largest: $build_largest"
+
           # SdkOnly trims the BCL only, Full also trims the application's own assemblies. Which files
           # each mode drops, and what it grows, is the interesting part of the comparison.
           only_sdk="$(comm -23 <(names "$RUNNER_TEMP/files-SdkOnly.txt") <(names "$RUNNER_TEMP/files-Full.txt") | tr '\n' ' ')"
@@ -226,20 +246,6 @@ jobs:
           echo "::notice::SdkOnly only: ${only_sdk:-(nothing)}"
           echo "::notice::Full only: ${only_full:-(nothing)}"
           echo "::notice::Size changes SdkOnly -> Full: $(echo "$deltas" | head -n 12 | tr '\n' ' ')"
-
-          # The build bundle is measured last, and rendered again right before the comparison, so a
-          # difference cannot be blamed on state left behind by an earlier step.
-          "$BUILD_BUNDLE/Contents/MacOS/MacHarness" --render "$RUNNER_TEMP/xplatui-build.png" > /dev/null 2>&1
-          px="$(pixel_diff "$ref" "$RUNNER_TEMP/xplatui-build.png")"
-          if [ -z "$px" ]; then
-            verdict="pixel identical to LinkMode=None"
-          else
-            verdict="**differs** from LinkMode=None ($px)"
-          fi
-          echo "| plain \`dotnet build\` | $(apparent_mb "$BUILD_BUNDLE") | $(file_count "$BUILD_BUNDLE") | $(dll_count "$BUILD_BUNDLE") | $(skia "$BUILD_BUNDLE") | $verdict |" >> "$GITHUB_STEP_SUMMARY"
-          echo "- \`dotnet build\` largest files: $(largest "$BUILD_BUNDLE")" >> "$GITHUB_STEP_SUMMARY"
-          echo "::notice::Plain \`dotnet build\`: $(apparent_mb "$BUILD_BUNDLE"), $(file_count "$BUILD_BUNDLE") files, $(dll_count "$BUILD_BUNDLE") dlls, $(dims "$RUNNER_TEMP/xplatui-build.png"); $verdict; largest: $(largest "$BUILD_BUNDLE")"
-
       - name: Upload the rendered UI
         uses: actions/upload-artifact@v4
         with:
