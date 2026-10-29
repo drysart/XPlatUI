@@ -118,14 +118,14 @@ jobs:
             exit 1
           fi
           echo "app: $APP"
-          echo "UNTRIMMED_BUNDLE=$(dirname "$(dirname "$(dirname "$APP")")")" >> "$GITHUB_ENV"
+          echo "BUILD_BUNDLE=$(dirname "$(dirname "$(dirname "$APP")")")" >> "$GITHUB_ENV"
           "$APP" --render "$RUNNER_TEMP/xplatui.png"
 
-      # The workload trims every RID publish, but by default only the BCL (LinkMode=SdkOnly).
-      # Publishing both modes shows what trimming the application's own assemblies buys, and each
-      # bundle renders the sample UI: a render that differs from the untrimmed build means the
-      # trimmer removed something the UI needs.
-      - name: Publish trimmed bundles
+      # A Mac always has a RuntimeIdentifier, and the workload trims every RID build, so even a plain
+      # `dotnet build` is trimmed (LinkMode defaults to SdkOnly: only the BCL). Publishing the three
+      # link modes side by side shows what each one actually buys, and each bundle renders the sample
+      # UI: a render that differs means the trimmer removed something the UI needs.
+      - name: Compare link modes
         run: |
           set -euo pipefail
           # Apparent size, because du counts a block shared by several files only once and the SDK
@@ -148,33 +148,27 @@ jobs:
               "$(stat -f %z "$RUNNER_TEMP/left.bmp")"
           }
 
-          ref="$RUNNER_TEMP/xplatui.png"
-          refhash="$(shasum -a 256 "$ref" | cut -d' ' -f1)"
-          # Rendering the same bundle twice says whether that hash is a usable reference at all.
-          "$UNTRIMMED_BUNDLE/Contents/MacOS/MacHarness" --render "$RUNNER_TEMP/refcheck.png" \
-            > "$RUNNER_TEMP/render-untrimmed.log" 2>&1
-          if [ "$(shasum -a 256 "$RUNNER_TEMP/refcheck.png" | cut -d' ' -f1)" = "$refhash" ]; then
-            stable="stable"
-          else
-            stable="**unstable** (two renders of the same bundle differ)"
-          fi
-          refmb="$(apparent_mb "$UNTRIMMED_BUNDLE")"
           {
-            echo '### Bundle size'
+            echo '### Bundle size by link mode'
             echo '| bundle | size | files | dlls | render |'
             echo '| --- | --- | --- | --- | --- |'
-            echo "| untrimmed build | $refmb | $(file_count "$UNTRIMMED_BUNDLE") | $(dll_count "$UNTRIMMED_BUNDLE") | reference (${stable}) |"
+            echo "| plain \`dotnet build\` | $(apparent_mb "$BUILD_BUNDLE") | $(file_count "$BUILD_BUNDLE") | $(dll_count "$BUILD_BUNDLE") | see the uploaded render |"
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "::notice::Untrimmed build is $refmb ($(file_count "$UNTRIMMED_BUNDLE") files, $(dll_count "$UNTRIMMED_BUNDLE") dlls, $(dims "$ref")); reference render is ${stable}; $(grep -h '^Font:' "$RUNNER_TEMP/render-untrimmed.log" || true)"
+          echo "::notice::Plain build: $(apparent_mb "$BUILD_BUNDLE"), $(file_count "$BUILD_BUNDLE") files, $(dll_count "$BUILD_BUNDLE") dlls, $(dims "$RUNNER_TEMP/xplatui.png")"
 
           pubdir="MacHarness/bin/Release/net10.0-macos/osx-arm64"
-          prev=""
-          for link in SdkOnly Full; do
+          ref=""
+          for link in None SdkOnly Full; do
             # The bundle is written next to the build output, not into the publish directory, so it
             # has to be removed between variants to be sure the one measured is the fresh one.
             rm -rf "$pubdir"
+            extra=""
+            if [ "$link" = "None" ]; then
+              # The only way to turn the trimmer off is LinkMode=None together with TrimMode=copy.
+              extra="-p:TrimMode=copy"
+            fi
             dotnet publish MacHarness/MacHarness.csproj -c Release -r osx-arm64 --nologo \
-              -p:LinkMode=$link -p:CreatePackage=false 2>&1 | tee "$RUNNER_TEMP/publish-$link.log"
+              -p:LinkMode=$link -p:CreatePackage=false $extra 2>&1 | tee "$RUNNER_TEMP/publish-$link.log"
             app="$pubdir/MacHarness.app"
             if [ ! -d "$app" ]; then
               echo "::error::publish with LinkMode=$link produced no .app bundle in $pubdir"
@@ -183,22 +177,27 @@ jobs:
             fi
             "$app/Contents/MacOS/MacHarness" --render "$RUNNER_TEMP/xplatui-$link.png" \
               > "$RUNNER_TEMP/render-$link.log" 2>&1
-            hash="$(shasum -a 256 "$RUNNER_TEMP/xplatui-$link.png" | cut -d' ' -f1)"
-            px="$(pixel_diff "$ref" "$RUNNER_TEMP/xplatui-$link.png")"
-            if [ -z "$px" ]; then
-              verdict="pixel identical to the untrimmed build"
+            if [ -z "$ref" ]; then
+              ref="$RUNNER_TEMP/xplatui-$link.png"
+              # Rendering the same bundle twice says whether this is a usable reference at all.
+              "$app/Contents/MacOS/MacHarness" --render "$RUNNER_TEMP/refcheck.png" > /dev/null 2>&1
+              if cmp -s "$ref" "$RUNNER_TEMP/refcheck.png"; then
+                verdict="reference (stable)"
+              else
+                verdict="reference (**unstable**: two renders differ)"
+              fi
             else
-              verdict="**differs** from the untrimmed build ($px)"
+              px="$(pixel_diff "$ref" "$RUNNER_TEMP/xplatui-$link.png")"
+              if [ -z "$px" ]; then
+                verdict="pixel identical to LinkMode=None"
+              else
+                verdict="**differs** from LinkMode=None ($px)"
+              fi
             fi
-            if [ -n "$prev" ] && [ "$hash" != "$prev" ]; then
-              verdict="$verdict, **differs from the previous variant**"
-            fi
-            prev="$hash"
             mb="$(apparent_mb "$app")"
-            evidence="$(grep -i -m2 'link' "$RUNNER_TEMP/publish-$link.log" | tr -s ' ' | cut -c1-140 | tr '\n' ' ' || true)"
             echo "| LinkMode=$link | $mb | $(file_count "$app") | $(dll_count "$app") | $verdict |" >> "$GITHUB_STEP_SUMMARY"
             echo "- \`LinkMode=$link\` largest files: $(largest "$app")" >> "$GITHUB_STEP_SUMMARY"
-            echo "::notice::LinkMode=$link bundle is $mb ($(file_count "$app") files, $(dll_count "$app") dlls, $(dims "$RUNNER_TEMP/xplatui-$link.png")); render $verdict; $(grep -h '^Font:' "$RUNNER_TEMP/render-$link.log" || true); log: ${evidence}"
+            echo "::notice::LinkMode=$link: $mb, $(file_count "$app") files, $(dll_count "$app") dlls, $(dims "$RUNNER_TEMP/xplatui-$link.png"); $verdict; $(grep -h '^Font:' "$RUNNER_TEMP/render-$link.log" || true); largest: $(largest "$app")"
             ditto -c -k --sequesterRsrc --keepParent "$app" "$RUNNER_TEMP/MacHarness-$link.app.zip"
           done
 
@@ -209,7 +208,7 @@ jobs:
           path: ${{ runner.temp }}/xplatui*.png
           if-no-files-found: error
 
-      - name: Upload the trimmed app bundles
+      - name: Upload the app bundles
         uses: actions/upload-artifact@v4
         with:
           name: MacHarness-app
