@@ -30,7 +30,7 @@ public sealed class DemoUi
     /// </summary>
     public static void RenderToPng(string path, int width, int height)
     {
-        var host = new XPlatUiHost { ClearColor = SKColors.White };
+        var host = new XPlatUiHost();
         host.Root = new DemoUi().Root;
         host.SetClientSize(width, height);
 
@@ -46,11 +46,12 @@ public sealed class DemoUi
 
     private XPlatControl BuildUi()
     {
+        // The window background comes from the host's ClearColor, which follows the palette.
         var root = new XPlatPanel
         {
             ShowFrame = false,
             IsCard = false,
-            BackColor = XPlatTheme.Background,
+            BackColor = null,
             BorderWidth = 0f,
             CornerRadius = 0f,
             Padding = new XPlatThickness(0f),
@@ -63,7 +64,7 @@ public sealed class DemoUi
         return root;
     }
 
-    private static XPlatPanel BuildHeader()
+    private XPlatPanel BuildHeader()
     {
         var header = new XPlatPanel
         {
@@ -76,6 +77,8 @@ public sealed class DemoUi
             CornerRadius = 0f,
             Padding = new XPlatThickness(0f),
         };
+
+        header.Controls.Add(BuildAppearanceButton());
 
         header.Controls.Add(new XPlatLabel("XPlat UI")
         {
@@ -93,12 +96,37 @@ public sealed class DemoUi
             AutoSize = false,
             Height = 22f,
             Font = XPlatTheme.CaptionFont,
-            ForeColor = XPlatTheme.MutedForeground,
+            ForeColorRole = XPlatThemeColor.MutedForeground,
             TextAlign = XPlatContentAlignment.TopLeft,
             Margin = new XPlatThickness(28f, 4f, 28f, 0f),
         });
 
         return header;
+    }
+
+    /// <summary>
+    /// Swaps the palette. The library repaints on its own (the host listens to
+    /// <see cref="XPlatTheme.Changed"/>), so this is the whole of the application's dark mode story.
+    /// </summary>
+    private XPlatButton BuildAppearanceButton()
+    {
+        var button = new XPlatButton("Switch appearance")
+        {
+            Dock = XDock.Right,
+            Style = XPlatButtonStyle.Secondary,
+            AutoSize = true,
+            Margin = new XPlatThickness(8f, 20f, 28f, 0f),
+        };
+
+        button.Click += (_, _) =>
+        {
+            XPlatTheme.Palette = XPlatTheme.IsDarkMode ? XPlatPalette.Light : XPlatPalette.Dark;
+            SetStatus(XPlatTheme.IsDarkMode
+                ? "Dark palette applied - every control recoloured on the next frame."
+                : "Light palette applied - every control recoloured on the next frame.");
+        };
+
+        return button;
     }
 
     private XPlatPanel BuildFooter()
@@ -107,9 +135,8 @@ public sealed class DemoUi
         {
             Dock = XDock.Bottom,
             Height = 64f,
-            ShowFrame = false,
+            ShowFrame = true,
             IsCard = false,
-            BackColor = XPlatTheme.Surface,
             BorderWidth = 0f,
             CornerRadius = 0f,
             Padding = new XPlatThickness(0f),
@@ -120,7 +147,7 @@ public sealed class DemoUi
             Dock = XDock.Fill,
             AutoSize = false,
             Font = XPlatTheme.CaptionFont,
-            ForeColor = XPlatTheme.MutedForeground,
+            ForeColorRole = XPlatThemeColor.MutedForeground,
             TextAlign = XPlatContentAlignment.MiddleLeft,
             Margin = new XPlatThickness(28f, 0f, 12f, 0f),
         };
@@ -264,7 +291,7 @@ public sealed class DemoUi
             AutoSize = false,
             Height = 20f,
             Font = XPlatTheme.CaptionFont,
-            ForeColor = XPlatTheme.MutedForeground,
+            ForeColorRole = XPlatThemeColor.MutedForeground,
             TextAlign = XPlatContentAlignment.TopLeft,
         });
 
@@ -329,7 +356,7 @@ public sealed class DemoUi
             AutoSize = false,
             WrapText = true,
             Font = XPlatTheme.CaptionFont,
-            ForeColor = XPlatTheme.MutedForeground,
+            ForeColorRole = XPlatThemeColor.MutedForeground,
             TextAlign = XPlatContentAlignment.TopLeft,
         });
 
@@ -409,8 +436,6 @@ public sealed class DemoUi
     private static XPlatPanel Card() => new()
     {
         Dock = XDock.Fill,
-        BackColor = XPlatTheme.Surface,
-        BorderColor = XPlatTheme.Border,
         BorderWidth = 1f,
         CornerRadius = 10f,
         Padding = new XPlatThickness(16f),
@@ -437,7 +462,7 @@ public sealed class DemoUi
             Height = 72f,
             WrapText = true,
             Font = XPlatTheme.DefaultFont,
-            ForeColor = XPlatTheme.MutedForeground,
+            ForeColorRole = XPlatThemeColor.MutedForeground,
             TextAlign = XPlatContentAlignment.TopLeft,
             Margin = new XPlatThickness(0f, 0f, 0f, 10f),
             Selectable = true,
@@ -449,7 +474,7 @@ public sealed class DemoUi
             AutoSize = false,
             Height = 22f,
             Font = XPlatTheme.EmphasizedFont,
-            ForeColor = XPlatTheme.Accent,
+            ForeColorRole = XPlatThemeColor.Accent,
             TextAlign = XPlatContentAlignment.MiddleLeft,
             Margin = new XPlatThickness(0f, 0f, 0f, 6f),
             Selectable = true,
@@ -462,7 +487,7 @@ public sealed class DemoUi
             AutoSize = false,
             Height = 40f,
             Font = XPlatTheme.CaptionFont,
-            ForeColor = XPlatTheme.MutedForeground,
+            ForeColorRole = XPlatThemeColor.MutedForeground,
             TextAlign = XPlatContentAlignment.TopLeft,
             Selectable = true,
         });
@@ -490,7 +515,6 @@ public sealed class DemoUi
             AutoSize = true,
             WrapText = true,
             Font = XPlatTheme.DefaultFont,
-            ForeColor = XPlatTheme.Foreground,
             Selectable = true,
         };
 
@@ -501,7 +525,7 @@ public sealed class DemoUi
         rich.AddText(", ");
         rich.AddSpan(new XPlatTextSpan("underline test") { Underline = true });
         rich.AddText(", ");
-        rich.AddSpan(new XPlatTextSpan("colour") { ForeColor = XPlatTheme.Accent });
+        rich.AddSpan(new XPlatTextSpan("colour") { ThemeColor = XPlatThemeColor.Accent });
         rich.AddText(" and ");
         rich.AddSpan(new XPlatTextSpan("struck") { Strikethrough = true });
         rich.AddText(" text, plus a ");
@@ -561,7 +585,7 @@ public sealed class DemoUi
             Height = 40f,
             WrapText = true,
             Font = XPlatTheme.DefaultFont,
-            ForeColor = XPlatTheme.MutedForeground,
+            ForeColorRole = XPlatThemeColor.MutedForeground,
             TextAlign = XPlatContentAlignment.TopLeft,
             Margin = new XPlatThickness(0f, 0f, 0f, 6f),
             Selectable = true,
@@ -592,7 +616,7 @@ public sealed class DemoUi
             AutoSize = false,
             WrapText = true,
             Font = XPlatTheme.CaptionFont,
-            ForeColor = XPlatTheme.MutedForeground,
+            ForeColorRole = XPlatThemeColor.MutedForeground,
             TextAlign = XPlatContentAlignment.TopLeft,
         });
 
@@ -645,7 +669,7 @@ public sealed class DemoUi
             Height = 40f,
             WrapText = true,
             Font = XPlatTheme.CaptionFont,
-            ForeColor = XPlatTheme.MutedForeground,
+            ForeColorRole = XPlatThemeColor.MutedForeground,
             TextAlign = XPlatContentAlignment.TopLeft,
         });
 
@@ -675,7 +699,7 @@ public sealed class DemoUi
             Height = 34f,
             WrapText = true,
             Font = XPlatTheme.CaptionFont,
-            ForeColor = XPlatTheme.MutedForeground,
+            ForeColorRole = XPlatThemeColor.MutedForeground,
             TextAlign = XPlatContentAlignment.TopLeft,
         });
 

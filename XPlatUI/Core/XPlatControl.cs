@@ -30,12 +30,15 @@ public class XPlatControl : IDisposable
     private XPlatUiHost? _host;
     private XPlatControlCollection? _controls;
     private List<SKRect>? _selectionRects;
+    private SKColor? _backColor;
+    private bool _backColorAssigned;
+    private SKColor? _foreColor;
+    private SKColor? _borderColor;
+    private XPlatThemeColor _foreColorRole = XPlatThemeColor.Foreground;
 
     public XPlatControl()
     {
         Name = GetType().Name;
-        ForeColor = XPlatTheme.Foreground;
-        BorderColor = XPlatTheme.Border;
     }
 
     public event EventHandler? Click;
@@ -477,12 +480,56 @@ public class XPlatControl : IDisposable
         Invalidate();
     }
 
-    /// <summary>Background fill. Null means transparent.</summary>
-    public SKColor? BackColor { get; set; }
+    /// <summary>
+    /// Background fill. Null means transparent. While it has never been assigned the control
+    /// paints <see cref="DefaultBackColor"/> instead, so it keeps following the theme.
+    /// </summary>
+    public SKColor? BackColor
+    {
+        get => _backColorAssigned ? _backColor : DefaultBackColor;
+        set
+        {
+            _backColor = value;
+            _backColorAssigned = true;
+        }
+    }
 
-    public SKColor ForeColor { get; set; }
+    /// <summary>
+    /// Background painted while <see cref="BackColor"/> has never been assigned. The base control
+    /// is transparent; containers default to the theme surface and editable fields to the input fill.
+    /// </summary>
+    protected virtual SKColor? DefaultBackColor => null;
 
-    public SKColor BorderColor { get; set; }
+    /// <summary>
+    /// Text colour. While it has never been assigned the control paints
+    /// <see cref="ForeColorRole"/>, which is how a label stays readable when the theme changes.
+    /// </summary>
+    public SKColor ForeColor
+    {
+        get => _foreColor ?? XPlatTheme.ColorOf(_foreColorRole);
+        set => _foreColor = value;
+    }
+
+    /// <summary>
+    /// Palette entry used while <see cref="ForeColor"/> has never been assigned. Defaults to
+    /// <see cref="XPlatThemeColor.Foreground"/>; use <see cref="XPlatThemeColor.MutedForeground"/> for
+    /// secondary text.
+    /// </summary>
+    public XPlatThemeColor ForeColorRole
+    {
+        get => _foreColorRole;
+        set => _foreColorRole = value;
+    }
+
+    /// <summary>
+    /// Border colour. While it has never been assigned the control paints
+    /// <see cref="XPlatTheme.Border"/>.
+    /// </summary>
+    public SKColor BorderColor
+    {
+        get => _borderColor ?? XPlatTheme.Border;
+        set => _borderColor = value;
+    }
 
     public float BorderWidth { get; set; }
 

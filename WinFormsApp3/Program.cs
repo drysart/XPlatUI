@@ -25,8 +25,14 @@ namespace WinFormsApp3
             // Give the UI library a real clipboard; the library itself stays platform free.
             XPlatClipboard.Current = new Win32Clipboard();
 
+            // Likewise for the system's light/dark preference, then pick it up before any control
+            // is built so nothing is ever painted in the wrong palette.
+            XPlatSystemTheme.Current = new Win32SystemTheme();
+            XPlatSystemTheme.Refresh();
+            ApplyAppearanceOverride(args);
+
             // Headless render of the sample UI, handy for visual checks and CI:
-            //   WinFormsApp3.exe --render output.png [width height]
+            //   WinFormsApp3.exe --render output.png [width height] [--dark|--light]
             if (args.Length > 0 && args[0] == "--render")
             {
                 var path = args.Length > 1 ? args[1] : "xplatui.png";
@@ -50,6 +56,22 @@ namespace WinFormsApp3
 
             window.Root = new DemoUi().Root;
             return window.Run();
+        }
+
+        /// <summary>
+        /// Honours <c>--dark</c> / <c>--light</c>, which force a palette instead of following the
+        /// system. Handy for screenshots and for checking both appearances on one machine.
+        /// </summary>
+        private static void ApplyAppearanceOverride(string[] args)
+        {
+            if (Array.IndexOf(args, "--dark") >= 0)
+            {
+                XPlatTheme.Palette = XPlatPalette.Dark;
+            }
+            else if (Array.IndexOf(args, "--light") >= 0)
+            {
+                XPlatTheme.Palette = XPlatPalette.Light;
+            }
         }
 
         private const uint AttachParentProcess = 0xFFFFFFFF;

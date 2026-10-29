@@ -20,6 +20,7 @@ public sealed class XPlatUiHost
     private SKPoint _selectionOrigin;
     private bool _selecting;
     private bool _draggingSelection;
+    private SKColor? _clearColor;
 
     public XPlatUiHost() => _selection = new XPlatSelection(this);
 
@@ -70,8 +71,15 @@ public sealed class XPlatUiHost
     /// <summary>Size of the drawable area in logical pixels (96 DPI).</summary>
     public SKSize ClientSize => _clientSize;
 
-    /// <summary>Color used to clear the surface before painting.</summary>
-    public SKColor ClearColor { get; set; } = SKColors.White;
+    /// <summary>
+    /// Color used to clear the surface before painting. While it has never been assigned it
+    /// follows <see cref="XPlatTheme.Background"/>, so the window follows the theme on its own.
+    /// </summary>
+    public SKColor ClearColor
+    {
+        get => _clearColor ?? XPlatTheme.Background;
+        set => _clearColor = value;
+    }
 
     public XPlatControl? FocusedControl => _focused;
 
@@ -144,6 +152,24 @@ public sealed class XPlatUiHost
     }
 
     public void Invalidate() => Invalidated?.Invoke(this, EventArgs.Empty);
+
+    /// <summary>
+    /// Re-reads the platform's light/dark preference through <see cref="XPlatSystemTheme"/> and, when
+    /// it no longer matches the palette, switches the palette and repaints. Backends call this once
+    /// at startup and again from their theme-changed notification (<c>WM_SETTINGCHANGE</c> and
+    /// <c>WM_THEMECHANGED</c> on Windows).
+    /// </summary>
+    /// <returns>True when the appearance changed.</returns>
+    public bool RefreshTheme()
+    {
+        if (!XPlatSystemTheme.Refresh())
+        {
+            return false;
+        }
+
+        Invalidate();
+        return true;
+    }
 
     public void ProcessMouseMove(SKPoint location)
     {

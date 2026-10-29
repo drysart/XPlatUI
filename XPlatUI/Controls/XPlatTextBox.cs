@@ -38,8 +38,6 @@ public class XPlatTextBox : XPlatControl
     {
         TabStop = true;
         Cursor = XPlatCursor.IBeam;
-        BackColor = XPlatTheme.InputBackground;
-        BorderColor = XPlatTheme.Border;
         BorderWidth = 1f;
         CornerRadius = 6f;
         Padding = new XPlatThickness(8f, 6f);
@@ -57,6 +55,9 @@ public class XPlatTextBox : XPlatControl
     {
         Text = text;
     }
+
+    /// <summary>An editable field is painted on the input fill until <see cref="XPlatControl.BackColor"/> is assigned.</summary>
+    protected override SKColor? DefaultBackColor => XPlatTheme.InputBackground;
 
     /// <summary>Font used to draw the text. The text box does not take ownership of it.</summary>
     public XPlatFont Font

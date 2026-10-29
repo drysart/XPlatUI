@@ -12,11 +12,13 @@ public class XPlatPanel : XPlatControl
 {
     public XPlatPanel()
     {
-        BackColor = XPlatTheme.Surface;
         BorderWidth = 1f;
         CornerRadius = 8f;
         Padding = new XPlatThickness(8f);
     }
+
+    /// <summary>A framed panel is a raised surface; a plain grouping container is transparent.</summary>
+    protected override SKColor? DefaultBackColor => ShowFrame ? XPlatTheme.Surface : null;
 
     /// <summary>When true the panel paints its background and border. Set false for a plain grouping container.</summary>
     public bool ShowFrame { get; set; } = true;

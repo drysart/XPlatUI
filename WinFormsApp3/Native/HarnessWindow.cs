@@ -55,9 +55,9 @@ internal sealed class HarnessWindow : IDisposable
         // The delegate must stay rooted for as long as the window class points at it.
         _wndProc = WindowProc;
 
-        _host.ClearColor = new SKColor(0xFF, 0xFF, 0xFF);
         _host.Invalidated += (_, _) => Invalidate();
         _host.CursorChanged += (_, _) => ApplyCursor();
+        XPlatTheme.Changed += OnThemeChanged;
     }
 
     /// <summary>The platform independent UI host.</summary>
@@ -153,6 +153,9 @@ internal sealed class HarnessWindow : IDisposable
 
         ApplyDpi(NativeMethods.GetDpiForWindow(_hwnd));
 
+        // DWM only honours this on Windows 10 1809+, and only affects the non-client area.
+        NativeMethods.SetDarkTitleBar(_hwnd, XPlatTheme.IsDarkMode);
+
         NativeMethods.SetTimer(_hwnd, (nuint)TickTimerId, TickIntervalMs, IntPtr.Zero);
         NativeMethods.ShowWindow(_hwnd, NativeMethods.SwShow);
         NativeMethods.UpdateWindow(_hwnd);
@@ -230,6 +233,8 @@ internal sealed class HarnessWindow : IDisposable
         }
 
         _disposed = true;
+
+        XPlatTheme.Changed -= OnThemeChanged;
 
         if (_hwnd != IntPtr.Zero)
         {
@@ -349,6 +354,12 @@ internal sealed class HarnessWindow : IDisposable
 
                 break;
 
+            case NativeMethods.WmSettingChange:
+            case NativeMethods.WmThemeChanged:
+                // The system appearance may have moved; RefreshTheme only acts on a real change.
+                _host.RefreshTheme();
+                return NativeMethods.DefWindowProcW(hwnd, message, wParam, lParam);
+
             case NativeMethods.WmContextMenu:
                 // Let the default handler run when nothing opened a menu, so a missing menu still
                 // behaves like an ordinary window instead of silently swallowing the message.
@@ -366,6 +377,16 @@ internal sealed class HarnessWindow : IDisposable
         }
 
         return NativeMethods.DefWindowProcW(hwnd, message, wParam, lParam);
+    }
+
+    /// <summary>
+    /// Repaints whenever the palette is swapped - by the system appearance changing, or by the
+    /// application assigning <see cref="XPlatTheme.Palette"/> - and keeps the title bar in step.
+    /// </summary>
+    private void OnThemeChanged(object? sender, EventArgs e)
+    {
+        NativeMethods.SetDarkTitleBar(_hwnd, XPlatTheme.IsDarkMode);
+        Invalidate();
     }
 
     private void OnPaint(IntPtr hwnd)

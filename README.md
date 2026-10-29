@@ -32,6 +32,8 @@ WinFormsApp3/             Windows test harness: raw Win32 + SkiaSharp (no WinFor
 | `XPlatButton` | `Button` | Primary/Secondary/Ghost styles, hover/press/disabled states, Enter/Space activation |
 | `XPlatTextBox` | `TextBox` | Single-line editor: caret, selection, clipboard, `MaxLength`, `ReadOnly`, password masking, placeholder |
 | `XPlatImage` | `PictureBox` | `SizeMode` (Normal/StretchImage/CenterImage/Zoom), `Load` helpers |
+| `XPlatTheme` / `XPlatPalette` | `SystemColors` / `Application.SetColorMode` | Every default colour is a palette role, so the whole UI can switch light/dark at runtime |
+| `XPlatSystemTheme` | `Application.ColorMode` | The seam a backend implements to report the OS appearance |
 
 Everything is drawn in **logical (96 DPI) coordinates**; the host adapter is responsible
 for scaling the canvas and the incoming pointer coordinates (the Win32 harness uses
@@ -259,6 +261,54 @@ shortcuts and per-item `Enabled` states - so a right-click inside one always ope
 **Copy** falls back to `host.CopySelection()` when the box has no selection of its own, which is
 what makes copying a multi-control selection work no matter which control was right-clicked.
 
+### Appearance
+
+Every default colour in the library is a palette role, so the whole UI can switch between light and
+dark at runtime. `XPlatTheme.Palette` holds the current one:
+
+```csharp
+XPlatTheme.Palette = XPlatPalette.Dark;   // or XPlatPalette.Light, or your own
+XPlatTheme.IsDarkMode;                    // shortcut for Palette.IsDark
+var accent = XPlatTheme.ColorOf(XPlatThemeColor.Accent);
+```
+
+`XPlatPalette` is a record with one colour per `XPlatThemeColor` role - `Background`, `Surface`,
+`Foreground`, `MutedForeground`, `Border`, `Accent` (`Hover`/`Pressed`/`Foreground`),
+`Secondary` (`Hover`/`Pressed`), `FocusRing`, `Splitter` (`Hover`), `InputBackground`, `Selection`,
+`Caret`, `Placeholder` and `DisabledBackground`/`DisabledForeground` - so a custom theme is just
+`XPlatPalette.Light with { Accent = SKColors.Teal }`. Assigning the palette (or any single colour,
+e.g. `XPlatTheme.Accent = …`) raises `XPlatTheme.Changed` and the next frame picks it up: controls
+never snapshot a colour at construction time.
+
+Controls resolve their colours while painting, so nothing has to be walked or re-applied:
+
+| Member | Meaning |
+| --- | --- |
+| `DefaultBackColor` | Override to return a palette colour, or `null` for "no background" |
+| `BackColor` | An explicitly assigned colour, otherwise `DefaultBackColor` |
+| `ForeColorRole` | The role used while `ForeColor` has not been assigned explicitly |
+| `BorderColor` | An explicitly assigned colour, otherwise `XPlatTheme.Border` |
+| `XPlatTextSpan.ThemeColor` | A role for one span of a rich label; `AddLink` uses `Accent` |
+| `XPlatTextSpan.HoverBackColorRole` | The role tinted behind a span while it is hovered |
+| `XPlatUiHost.ClearColor` | Follows `XPlatTheme.Background` until assigned |
+
+The library itself never asks the OS anything. A backend implements the two-property
+`IXPlatSystemTheme`, installs it, and calls `host.RefreshTheme()` whenever the OS reports a change:
+
+```csharp
+XPlatSystemTheme.Current = new Win32SystemTheme();   // any IXPlatSystemTheme
+XPlatSystemTheme.Refresh();                         // read IsDarkMode, swap the palette if needed
+```
+
+`XPlatSystemTheme.Refresh()` returns whether the appearance actually changed, and
+`host.RefreshTheme()` additionally invalidates the tree. The Win32 harness
+(`Native/Win32SystemTheme.cs`) reads
+`HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize\AppsUseLightTheme` (falling back
+to the undocumented `uxtheme` `ShouldSystemUseDarkMode`), reacts to `WM_SETTINGCHANGE` and
+`WM_THEMECHANGED`, and darkens the title bar with
+`DwmSetWindowAttribute(DWMWA_USE_IMMERSIVE_DARK_MODE)` - driven by `XPlatTheme.Changed`, so a manual
+palette change updates the chrome too.
+
 ## Writing a backend
 
 Implement the small surface that `Native/HarnessWindow.cs` implements for Win32:
@@ -270,6 +320,8 @@ Implement the small surface that `Native/HarnessWindow.cs` implements for Win32:
 5. Repaint when `Invalidated` fires.
 6. Install a clipboard into `XPlatClipboard.Current` and call `host.ProcessTick(elapsed)` from
    a timer (see below).
+7. Install an `IXPlatSystemTheme` into `XPlatSystemTheme.Current` at startup, then call
+   `host.RefreshTheme()` whenever the OS appearance changes.
 
 ## NativeAOT
 
@@ -326,7 +378,9 @@ To render the same sample UI headlessly (useful for visual checks in CI):
 WinFormsApp3.exe --render out.png 1280 760
 ```
 
-The sample UI is laid out for a 1280 x 760 client area. The host lays out in *logical* (96 DPI)
+Add `--light` or `--dark` to either mode to force an appearance instead of using the system one; the
+header's **Switch appearance** button flips it at runtime. The sample UI is laid out for a 1280 x 760
+client area.
 points and the harness scales the Skia canvas by `GetDpiForWindow(hwnd) / 96`, sizing its client
 area to `1280 x 760` multiplied by that scale (clamped to the monitor work area) so the demo is
 never cropped on a high-DPI monitor. The **Selection and clipboard** card is the one to try:

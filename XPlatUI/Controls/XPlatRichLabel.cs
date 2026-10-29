@@ -41,6 +41,7 @@ public class XPlatRichLabel : XPlatControl
     }
 
     private const float HighlightRadius = 2f;
+    private const byte HoverBackAlpha = 0x1A;
 
     private readonly XPlatTextSpanCollection _spans;
     private readonly Dictionary<string, XPlatFont> _derivedFonts = new(StringComparer.Ordinal);
@@ -55,7 +56,6 @@ public class XPlatRichLabel : XPlatControl
     {
         _spans = new XPlatTextSpanCollection(this);
         AutoSize = true;
-        ForeColor = XPlatTheme.Foreground;
         SelectionStyle = XPlatSelectionStyle.Partial;
     }
 
@@ -183,9 +183,9 @@ public class XPlatRichLabel : XPlatControl
     {
         var span = new XPlatTextSpan(text)
         {
-            ForeColor = XPlatTheme.Accent,
+            ThemeColor = XPlatThemeColor.Accent,
             Underline = true,
-            HoverBackColor = new SKColor(0x2F, 0x6F, 0xED, 0x1A),
+            HoverBackColorRole = XPlatThemeColor.Accent,
         };
 
         if (onClick is not null)
@@ -276,8 +276,7 @@ public class XPlatRichLabel : XPlatControl
                 }
 
                 float baseline = fragment.Bounds.Top + line.Ascent;
-                var color = fragment.Span.ForeColor ?? (Enabled ? ForeColor : XPlatTheme.DisabledForeground);
-                textPaint.Color = color;
+                textPaint.Color = ResolveSpanColor(fragment.Span);
                 canvas.DrawText(fragment.Text, fragment.Bounds.Left, baseline, SKTextAlign.Left, fragment.Font.SkFont, textPaint);
             }
 
@@ -909,7 +908,7 @@ public class XPlatRichLabel : XPlatControl
             var span = first.Span;
             if (first.Kind is FragmentKind.Break or FragmentKind.Control ||
                 (!span.IsMouseOver && !span.IsPressed) ||
-                span.HoverBackColor is not { } hoverBack)
+                ResolveHoverBackColor(span) is not { } hoverBack)
             {
                 continue;
             }
@@ -940,9 +939,44 @@ public class XPlatRichLabel : XPlatControl
 
             i = FindRunEnd(fragments, i, out float left, out float right);
 
-            var color = span.ForeColor ?? (Enabled ? ForeColor : XPlatTheme.DisabledForeground);
-            DrawDecorations(canvas, left, right, first.Bounds.Top + line.Ascent, first.Font, span, color, paint);
+            DrawDecorations(canvas, left, right, first.Bounds.Top + line.Ascent, first.Font, span, ResolveSpanColor(span), paint);
         }
+    }
+
+    /// <summary>
+    /// The colour a span's text is painted in: its own colour, else the palette entry it names,
+    /// else the label's <see cref="XPlatControl.ForeColor"/>. Resolved while painting so that a
+    /// link keeps up with the theme instead of freezing the accent colour it was created with.
+    /// </summary>
+    private SKColor ResolveSpanColor(XPlatTextSpan span)
+    {
+        if (span.ForeColor is { } literal)
+        {
+            return literal;
+        }
+
+        if (span.ThemeColor is { } role)
+        {
+            return XPlatTheme.ColorOf(role);
+        }
+
+        return Enabled ? ForeColor : XPlatTheme.DisabledForeground;
+    }
+
+    /// <summary>
+    /// The fill painted behind a span while it is hovered or pressed: its own colour, else a light
+    /// tint of the palette entry it names, so a link's highlight follows the theme.
+    /// </summary>
+    private static SKColor? ResolveHoverBackColor(XPlatTextSpan span)
+    {
+        if (span.HoverBackColor is { } literal)
+        {
+            return literal;
+        }
+
+        return span.HoverBackColorRole is { } role
+            ? XPlatTheme.ColorOf(role).WithAlpha(HoverBackAlpha)
+            : null;
     }
 
     /// <summary>
