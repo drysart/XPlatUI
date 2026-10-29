@@ -128,24 +128,33 @@ jobs:
       - name: Publish trimmed bundles
         run: |
           set -euo pipefail
-          ref="$(shasum -a 256 "$RUNNER_TEMP/xplatui.png" | cut -d' ' -f1)"
-          refkb="$(du -sk "$UNTRIMMED_BUNDLE" | cut -f1)"
+          # Apparent size, because du counts a block shared by several files only once and the SDK
+          # copies many of these files from the same sources.
+          apparent_mb() { find "$1" -type f -exec stat -f %z {} + | awk '{ s += $1 } END { printf "%.1f MB", s / 1048576 }'; }
+          file_count() { find "$1" -type f | wc -l | tr -d ' '; }
+          png_bytes() { stat -f %z "$1"; }
+          # Number of differing bytes, which tells a real visual change from a stray byte or two.
+          differing_bytes() { cmp -l "$1" "$2" 2>/dev/null | wc -l | tr -d ' '; }
+          largest() { find "$1" -type f -exec stat -f "%z %N" {} + | sort -rn | head -n 3 | awk '{ printf "%s (%.1f MB), ", $2, $1 / 1048576 }'; }
+
+          ref="$RUNNER_TEMP/xplatui.png"
+          refhash="$(shasum -a 256 "$ref" | cut -d' ' -f1)"
           # Rendering the same bundle twice says whether that hash is a usable reference at all.
           "$UNTRIMMED_BUNDLE/Contents/MacOS/MacHarness" --render "$RUNNER_TEMP/refcheck.png" \
             > "$RUNNER_TEMP/render-untrimmed.log" 2>&1
-          if [ "$(shasum -a 256 "$RUNNER_TEMP/refcheck.png" | cut -d' ' -f1)" = "$ref" ]; then
+          if [ "$(shasum -a 256 "$RUNNER_TEMP/refcheck.png" | cut -d' ' -f1)" = "$refhash" ]; then
             stable="stable"
           else
             stable="**unstable** (two renders of the same bundle differ)"
           fi
-          refinfo="$(grep -h '^Font:' "$RUNNER_TEMP/render-untrimmed.log" || true)"
+          refmb="$(apparent_mb "$UNTRIMMED_BUNDLE")"
           {
             echo '### Bundle size'
-            echo '| bundle | size | render |'
-            echo '| --- | --- | --- |'
-            echo "| untrimmed build | $((refkb / 1024)) MB | reference (${stable}) |"
+            echo '| bundle | size | files | render |'
+            echo '| --- | --- | --- | --- |'
+            echo "| untrimmed build | $refmb | $(file_count "$UNTRIMMED_BUNDLE") | reference (${stable}) |"
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "::notice::Untrimmed build is $((refkb / 1024)) MB; reference render is ${stable}; ${refinfo}"
+          echo "::notice::Untrimmed build is $refmb ($(file_count "$UNTRIMMED_BUNDLE") files); reference render is ${stable}; $(grep -h '^Font:' "$RUNNER_TEMP/render-untrimmed.log" || true)"
 
           pubdir="MacHarness/bin/Release/net10.0-macos/osx-arm64"
           prev=""
@@ -161,22 +170,23 @@ jobs:
               find "$pubdir" -maxdepth 1 | head -n 20
               exit 1
             fi
-            kb="$(du -sk "$app" | cut -f1)"
             "$app/Contents/MacOS/MacHarness" --render "$RUNNER_TEMP/xplatui-$link.png" \
               > "$RUNNER_TEMP/render-$link.log" 2>&1
             hash="$(shasum -a 256 "$RUNNER_TEMP/xplatui-$link.png" | cut -d' ' -f1)"
-            if [ "$hash" = "$ref" ]; then
+            if [ "$hash" = "$refhash" ]; then
               verdict="identical to the untrimmed build"
             else
-              verdict="**differs** from the untrimmed build"
+              verdict="**differs** from the untrimmed build ($(differing_bytes "$ref" "$RUNNER_TEMP/xplatui-$link.png") of $(png_bytes "$RUNNER_TEMP/xplatui-$link.png") bytes)"
             fi
             if [ -n "$prev" ] && [ "$hash" != "$prev" ]; then
               verdict="$verdict, **differs from the previous variant**"
             fi
             prev="$hash"
-            info="$(grep -h '^Font:' "$RUNNER_TEMP/render-$link.log" || true)"
-            echo "| LinkMode=$link | $((kb / 1024)) MB | $verdict |" >> "$GITHUB_STEP_SUMMARY"
-            echo "::notice::LinkMode=$link bundle is $((kb / 1024)) MB; render $verdict; ${info}"
+            mb="$(apparent_mb "$app")"
+            trimmer="$(grep -ci 'trimming\|trimmer\|illink' "$RUNNER_TEMP/publish-$link.log" || true)"
+            echo "| LinkMode=$link | $mb | $(file_count "$app") | $verdict |" >> "$GITHUB_STEP_SUMMARY"
+            echo "- \`LinkMode=$link\` largest files: $(largest "$app")" >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::LinkMode=$link bundle is $mb ($(file_count "$app") files); render $verdict; $trimmer trimmer log lines; $(grep -h '^Font:' "$RUNNER_TEMP/render-$link.log" || true)"
             ditto -c -k --sequesterRsrc --keepParent "$app" "$RUNNER_TEMP/MacHarness-$link.app.zip"
           done
 
