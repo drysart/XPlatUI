@@ -138,6 +138,10 @@ jobs:
           dll_count() { find "$1" -name '*.dll' | wc -l | tr -d ' '; }
           largest() { find "$1" -type f -exec stat -f "%z %N" {} + | sort -rn | head -n 3 | awk '{ printf "%s (%.1f MB), ", $2, $1 / 1048576 }'; }
           skia() { stat -f %z "$1/Contents/MonoBundle/libSkiaSharp.dylib" 2>/dev/null || echo '?'; }
+          # "size path" for every file in the bundle, relative to it, sorted by path so two manifests
+          # can be joined.
+          manifest() { ( cd "$1" && find . -type f -exec stat -f "%z %N" {} + | sort -k2 ); }
+          names() { awk '{ print $2 }' "$1" | sort; }
           dims() { sips -g pixelWidth -g pixelHeight "$1" | awk '/pixelWidth/ { w = $2 } /pixelHeight/ { h = $2 } END { printf "%sx%s", w, h }'; }
           # Deflate makes a one pixel change rewrite most of a PNG, so comparing the encoded bytes
           # says nothing about what is on screen. Decode both and compare the raw bitmaps instead.
@@ -200,8 +204,28 @@ jobs:
             echo "| LinkMode=$link | $mb | $(file_count "$app") | $(dll_count "$app") | $(skia "$app") | $verdict |" >> "$GITHUB_STEP_SUMMARY"
             echo "- \`LinkMode=$link\` largest files: $(largest "$app")" >> "$GITHUB_STEP_SUMMARY"
             echo "::notice::LinkMode=$link: $mb, $(file_count "$app") files, $(dll_count "$app") dlls, $(dims "$RUNNER_TEMP/xplatui-$link.png"); $verdict; $(grep -h '^Font:' "$RUNNER_TEMP/render-$link.log" || true); largest: $(largest "$app")"
+            manifest "$app" > "$RUNNER_TEMP/files-$link.txt"
             ditto -c -k --sequesterRsrc --keepParent "$app" "$RUNNER_TEMP/MacHarness-$link.app.zip"
           done
+
+          # SdkOnly trims the BCL only, Full also trims the application's own assemblies. Which files
+          # each mode drops, and what it grows, is the interesting part of the comparison.
+          only_sdk="$(comm -23 <(names "$RUNNER_TEMP/files-SdkOnly.txt") <(names "$RUNNER_TEMP/files-Full.txt") | tr '\n' ' ')"
+          only_full="$(comm -13 <(names "$RUNNER_TEMP/files-SdkOnly.txt") <(names "$RUNNER_TEMP/files-Full.txt") | tr '\n' ' ')"
+          deltas="$(join -j 2 -o 0,1.1,2.1 "$RUNNER_TEMP/files-SdkOnly.txt" "$RUNNER_TEMP/files-Full.txt" \
+            | awk '$2 != $3 { d = $3 - $2; printf "%s %+d\n", $1, d }' | sort -g -k2 -r)"
+          {
+            echo '### What LinkMode=Full changes'
+            echo "\`SdkOnly\` only: ${only_sdk:-(nothing)}"
+            echo
+            echo "\`Full\` only: ${only_full:-(nothing)}"
+            echo '```'
+            echo "${deltas:-(no file changed size)}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice::SdkOnly only: ${only_sdk:-(nothing)}"
+          echo "::notice::Full only: ${only_full:-(nothing)}"
+          echo "::notice::Size changes SdkOnly -> Full: $(echo "$deltas" | head -n 12 | tr '\n' ' ')"
 
           # The build bundle is measured last, and rendered again right before the comparison, so a
           # difference cannot be blamed on state left behind by an earlier step.
