@@ -6,7 +6,8 @@ name: macOS harness
 
 on:
   push:
-    branches: [master]
+    # Feature branches are included so a branch that is not a pull request yet is still compiled.
+    branches: [master, 'feature/**']
     paths:
       - '.github/workflows/macos.yml'
       - 'MacHarness/**'
