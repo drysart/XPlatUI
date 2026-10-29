@@ -134,6 +134,7 @@ jobs:
           file_count() { find "$1" -type f | wc -l | tr -d ' '; }
           dll_count() { find "$1" -name '*.dll' | wc -l | tr -d ' '; }
           largest() { find "$1" -type f -exec stat -f "%z %N" {} + | sort -rn | head -n 3 | awk '{ printf "%s (%.1f MB), ", $2, $1 / 1048576 }'; }
+          skia() { stat -f %z "$1/Contents/MonoBundle/libSkiaSharp.dylib" 2>/dev/null || echo '?'; }
           dims() { sips -g pixelWidth -g pixelHeight "$1" | awk '/pixelWidth/ { w = $2 } /pixelHeight/ { h = $2 } END { printf "%sx%s", w, h }'; }
           # Deflate makes a one pixel change rewrite most of a PNG, so comparing the encoded bytes
           # says nothing about what is on screen. Decode both and compare the raw bitmaps instead.
@@ -150,11 +151,9 @@ jobs:
 
           {
             echo '### Bundle size by link mode'
-            echo '| bundle | size | files | dlls | render |'
-            echo '| --- | --- | --- | --- | --- |'
-            echo "| plain \`dotnet build\` | $(apparent_mb "$BUILD_BUNDLE") | $(file_count "$BUILD_BUNDLE") | $(dll_count "$BUILD_BUNDLE") | see the uploaded render |"
+            echo '| bundle | size | files | dlls | libSkiaSharp | render |'
+            echo '| --- | --- | --- | --- | --- | --- |'
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "::notice::Plain build: $(apparent_mb "$BUILD_BUNDLE"), $(file_count "$BUILD_BUNDLE") files, $(dll_count "$BUILD_BUNDLE") dlls, $(dims "$RUNNER_TEMP/xplatui.png")"
 
           pubdir="MacHarness/bin/Release/net10.0-macos/osx-arm64"
           ref=""
@@ -195,11 +194,24 @@ jobs:
               fi
             fi
             mb="$(apparent_mb "$app")"
-            echo "| LinkMode=$link | $mb | $(file_count "$app") | $(dll_count "$app") | $verdict |" >> "$GITHUB_STEP_SUMMARY"
+            echo "| LinkMode=$link | $mb | $(file_count "$app") | $(dll_count "$app") | $(skia "$app") | $verdict |" >> "$GITHUB_STEP_SUMMARY"
             echo "- \`LinkMode=$link\` largest files: $(largest "$app")" >> "$GITHUB_STEP_SUMMARY"
             echo "::notice::LinkMode=$link: $mb, $(file_count "$app") files, $(dll_count "$app") dlls, $(dims "$RUNNER_TEMP/xplatui-$link.png"); $verdict; $(grep -h '^Font:' "$RUNNER_TEMP/render-$link.log" || true); largest: $(largest "$app")"
             ditto -c -k --sequesterRsrc --keepParent "$app" "$RUNNER_TEMP/MacHarness-$link.app.zip"
           done
+
+          # The build bundle is measured last, and rendered again right before the comparison, so a
+          # difference cannot be blamed on state left behind by an earlier step.
+          "$BUILD_BUNDLE/Contents/MacOS/MacHarness" --render "$RUNNER_TEMP/xplatui-build.png" > /dev/null 2>&1
+          px="$(pixel_diff "$ref" "$RUNNER_TEMP/xplatui-build.png")"
+          if [ -z "$px" ]; then
+            verdict="pixel identical to LinkMode=None"
+          else
+            verdict="**differs** from LinkMode=None ($px)"
+          fi
+          echo "| plain \`dotnet build\` | $(apparent_mb "$BUILD_BUNDLE") | $(file_count "$BUILD_BUNDLE") | $(dll_count "$BUILD_BUNDLE") | $(skia "$BUILD_BUNDLE") | $verdict |" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`dotnet build\` largest files: $(largest "$BUILD_BUNDLE")" >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice::Plain \`dotnet build\`: $(apparent_mb "$BUILD_BUNDLE"), $(file_count "$BUILD_BUNDLE") files, $(dll_count "$BUILD_BUNDLE") dlls, $(dims "$RUNNER_TEMP/xplatui-build.png"); $verdict; largest: $(largest "$BUILD_BUNDLE")"
 
       - name: Upload the rendered UI
         uses: actions/upload-artifact@v4
