@@ -78,7 +78,10 @@ jobs:
           if [ "${SKIP_XCODE_CHECK:-}" = "true" ]; then
             skip="-p:ValidateXcodeVersion=false"
           fi
-          dotnet build MacHarness/MacHarness.csproj -c Release --nologo $skip 2>&1 | tee "$RUNNER_TEMP/build.log"
+          # -r matches the publishes below: the macOS SDK otherwise defaults to osx-x64, and the
+          # rendered pixels then differ from an osx-arm64 build for reasons that have nothing to do
+          # with trimming.
+          dotnet build MacHarness/MacHarness.csproj -c Release -r osx-arm64 --nologo $skip 2>&1 | tee "$RUNNER_TEMP/build.log"
 
       # MSBuild diagnostics are not workflow annotations, so lift the first few into the job
       # summary and into annotations: those are readable without downloading the raw log.
