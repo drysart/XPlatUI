@@ -129,18 +129,30 @@ jobs:
         run: |
           set -euo pipefail
           ref="$(shasum -a 256 "$RUNNER_TEMP/xplatui.png" | cut -d' ' -f1)"
+          refkb="$(du -sk "$UNTRIMMED_BUNDLE" | cut -f1)"
+          # Rendering the same bundle twice says whether that hash is a usable reference at all.
+          "$UNTRIMMED_BUNDLE/Contents/MacOS/MacHarness" --render "$RUNNER_TEMP/refcheck.png" \
+            > "$RUNNER_TEMP/render-untrimmed.log" 2>&1
+          if [ "$(shasum -a 256 "$RUNNER_TEMP/refcheck.png" | cut -d' ' -f1)" = "$ref" ]; then
+            stable="stable"
+          else
+            stable="**unstable** (two renders of the same bundle differ)"
+          fi
+          refinfo="$(grep -h '^Font:' "$RUNNER_TEMP/render-untrimmed.log" || true)"
           {
             echo '### Bundle size'
             echo '| bundle | size | render |'
             echo '| --- | --- | --- |'
-            echo "| untrimmed build | $(du -sh "$UNTRIMMED_BUNDLE" | cut -f1) | reference |"
+            echo "| untrimmed build | $((refkb / 1024)) MB | reference (${stable}) |"
           } >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice::Untrimmed build is $((refkb / 1024)) MB; reference render is ${stable}; ${refinfo}"
 
           pubdir="MacHarness/bin/Release/net10.0-macos/osx-arm64"
+          prev=""
           for link in SdkOnly Full; do
             # The bundle is written next to the build output, not into the publish directory, so it
             # has to be removed between variants to be sure the one measured is the fresh one.
-            rm -rf "$pubdir/MacHarness.app"
+            rm -rf "$pubdir"
             dotnet publish MacHarness/MacHarness.csproj -c Release -r osx-arm64 --nologo \
               -p:LinkMode=$link -p:CreatePackage=false 2>&1 | tee "$RUNNER_TEMP/publish-$link.log"
             app="$pubdir/MacHarness.app"
@@ -149,15 +161,22 @@ jobs:
               find "$pubdir" -maxdepth 1 | head -n 20
               exit 1
             fi
-            size="$(du -sh "$app" | cut -f1)"
-            "$app/Contents/MacOS/MacHarness" --render "$RUNNER_TEMP/xplatui-$link.png"
-            if [ "$(shasum -a 256 "$RUNNER_TEMP/xplatui-$link.png" | cut -d' ' -f1)" = "$ref" ]; then
+            kb="$(du -sk "$app" | cut -f1)"
+            "$app/Contents/MacOS/MacHarness" --render "$RUNNER_TEMP/xplatui-$link.png" \
+              > "$RUNNER_TEMP/render-$link.log" 2>&1
+            hash="$(shasum -a 256 "$RUNNER_TEMP/xplatui-$link.png" | cut -d' ' -f1)"
+            if [ "$hash" = "$ref" ]; then
               verdict="identical to the untrimmed build"
             else
               verdict="**differs** from the untrimmed build"
             fi
-            echo "| LinkMode=$link | $size | $verdict |" >> "$GITHUB_STEP_SUMMARY"
-            echo "::notice::LinkMode=$link bundle is $size; render $verdict"
+            if [ -n "$prev" ] && [ "$hash" != "$prev" ]; then
+              verdict="$verdict, **differs from the previous variant**"
+            fi
+            prev="$hash"
+            info="$(grep -h '^Font:' "$RUNNER_TEMP/render-$link.log" || true)"
+            echo "| LinkMode=$link | $((kb / 1024)) MB | $verdict |" >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::LinkMode=$link bundle is $((kb / 1024)) MB; render $verdict; ${info}"
             ditto -c -k --sequesterRsrc --keepParent "$app" "$RUNNER_TEMP/MacHarness-$link.app.zip"
           done
 
