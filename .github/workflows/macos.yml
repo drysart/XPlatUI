@@ -132,10 +132,21 @@ jobs:
           # copies many of these files from the same sources.
           apparent_mb() { find "$1" -type f -exec stat -f %z {} + | awk '{ s += $1 } END { printf "%.1f MB", s / 1048576 }'; }
           file_count() { find "$1" -type f | wc -l | tr -d ' '; }
-          png_bytes() { stat -f %z "$1"; }
-          # Number of differing bytes, which tells a real visual change from a stray byte or two.
-          differing_bytes() { cmp -l "$1" "$2" 2>/dev/null | wc -l | tr -d ' '; }
+          dll_count() { find "$1" -name '*.dll' | wc -l | tr -d ' '; }
           largest() { find "$1" -type f -exec stat -f "%z %N" {} + | sort -rn | head -n 3 | awk '{ printf "%s (%.1f MB), ", $2, $1 / 1048576 }'; }
+          dims() { sips -g pixelWidth -g pixelHeight "$1" | awk '/pixelWidth/ { w = $2 } /pixelHeight/ { h = $2 } END { printf "%sx%s", w, h }'; }
+          # Deflate makes a one pixel change rewrite most of a PNG, so comparing the encoded bytes
+          # says nothing about what is on screen. Decode both and compare the raw bitmaps instead.
+          pixel_diff() {
+            sips -s format bmp "$1" --out "$RUNNER_TEMP/left.bmp" > /dev/null 2>&1
+            sips -s format bmp "$2" --out "$RUNNER_TEMP/right.bmp" > /dev/null 2>&1
+            if cmp -s "$RUNNER_TEMP/left.bmp" "$RUNNER_TEMP/right.bmp"; then
+              return 0
+            fi
+            printf '%s of %s pixel bytes differ' \
+              "$(cmp -l "$RUNNER_TEMP/left.bmp" "$RUNNER_TEMP/right.bmp" 2>/dev/null | wc -l | tr -d ' ')" \
+              "$(stat -f %z "$RUNNER_TEMP/left.bmp")"
+          }
 
           ref="$RUNNER_TEMP/xplatui.png"
           refhash="$(shasum -a 256 "$ref" | cut -d' ' -f1)"
@@ -150,11 +161,11 @@ jobs:
           refmb="$(apparent_mb "$UNTRIMMED_BUNDLE")"
           {
             echo '### Bundle size'
-            echo '| bundle | size | files | render |'
-            echo '| --- | --- | --- | --- |'
-            echo "| untrimmed build | $refmb | $(file_count "$UNTRIMMED_BUNDLE") | reference (${stable}) |"
+            echo '| bundle | size | files | dlls | render |'
+            echo '| --- | --- | --- | --- | --- |'
+            echo "| untrimmed build | $refmb | $(file_count "$UNTRIMMED_BUNDLE") | $(dll_count "$UNTRIMMED_BUNDLE") | reference (${stable}) |"
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "::notice::Untrimmed build is $refmb ($(file_count "$UNTRIMMED_BUNDLE") files); reference render is ${stable}; $(grep -h '^Font:' "$RUNNER_TEMP/render-untrimmed.log" || true)"
+          echo "::notice::Untrimmed build is $refmb ($(file_count "$UNTRIMMED_BUNDLE") files, $(dll_count "$UNTRIMMED_BUNDLE") dlls, $(dims "$ref")); reference render is ${stable}; $(grep -h '^Font:' "$RUNNER_TEMP/render-untrimmed.log" || true)"
 
           pubdir="MacHarness/bin/Release/net10.0-macos/osx-arm64"
           prev=""
@@ -173,20 +184,21 @@ jobs:
             "$app/Contents/MacOS/MacHarness" --render "$RUNNER_TEMP/xplatui-$link.png" \
               > "$RUNNER_TEMP/render-$link.log" 2>&1
             hash="$(shasum -a 256 "$RUNNER_TEMP/xplatui-$link.png" | cut -d' ' -f1)"
-            if [ "$hash" = "$refhash" ]; then
-              verdict="identical to the untrimmed build"
+            px="$(pixel_diff "$ref" "$RUNNER_TEMP/xplatui-$link.png")"
+            if [ -z "$px" ]; then
+              verdict="pixel identical to the untrimmed build"
             else
-              verdict="**differs** from the untrimmed build ($(differing_bytes "$ref" "$RUNNER_TEMP/xplatui-$link.png") of $(png_bytes "$RUNNER_TEMP/xplatui-$link.png") bytes)"
+              verdict="**differs** from the untrimmed build ($px)"
             fi
             if [ -n "$prev" ] && [ "$hash" != "$prev" ]; then
               verdict="$verdict, **differs from the previous variant**"
             fi
             prev="$hash"
             mb="$(apparent_mb "$app")"
-            trimmer="$(grep -ci 'trimming\|trimmer\|illink' "$RUNNER_TEMP/publish-$link.log" || true)"
-            echo "| LinkMode=$link | $mb | $(file_count "$app") | $verdict |" >> "$GITHUB_STEP_SUMMARY"
+            evidence="$(grep -i -m2 'link' "$RUNNER_TEMP/publish-$link.log" | tr -s ' ' | cut -c1-140 | tr '\n' ' ' || true)"
+            echo "| LinkMode=$link | $mb | $(file_count "$app") | $(dll_count "$app") | $verdict |" >> "$GITHUB_STEP_SUMMARY"
             echo "- \`LinkMode=$link\` largest files: $(largest "$app")" >> "$GITHUB_STEP_SUMMARY"
-            echo "::notice::LinkMode=$link bundle is $mb ($(file_count "$app") files); render $verdict; $trimmer trimmer log lines; $(grep -h '^Font:' "$RUNNER_TEMP/render-$link.log" || true)"
+            echo "::notice::LinkMode=$link bundle is $mb ($(file_count "$app") files, $(dll_count "$app") dlls, $(dims "$RUNNER_TEMP/xplatui-$link.png")); render $verdict; $(grep -h '^Font:' "$RUNNER_TEMP/render-$link.log" || true); log: ${evidence}"
             ditto -c -k --sequesterRsrc --keepParent "$app" "$RUNNER_TEMP/MacHarness-$link.app.zip"
           done
 
