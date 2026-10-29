@@ -136,15 +136,17 @@ jobs:
             echo "| untrimmed build | $(du -sh "$UNTRIMMED_BUNDLE" | cut -f1) | reference |"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          pubdir="MacHarness/bin/Release/net10.0-macos/osx-arm64/publish"
+          pubdir="MacHarness/bin/Release/net10.0-macos/osx-arm64"
           for link in SdkOnly Full; do
-            rm -rf "$pubdir"
+            # The bundle is written next to the build output, not into the publish directory, so it
+            # has to be removed between variants to be sure the one measured is the fresh one.
+            rm -rf "$pubdir/MacHarness.app"
             dotnet publish MacHarness/MacHarness.csproj -c Release -r osx-arm64 --nologo \
-              -p:LinkMode=$link 2>&1 | tee "$RUNNER_TEMP/publish-$link.log"
-            app="$(find "$pubdir" -maxdepth 2 -name 'MacHarness.app' -type d | head -n 1)"
-            if [ -z "$app" ]; then
+              -p:LinkMode=$link -p:CreatePackage=false 2>&1 | tee "$RUNNER_TEMP/publish-$link.log"
+            app="$pubdir/MacHarness.app"
+            if [ ! -d "$app" ]; then
               echo "::error::publish with LinkMode=$link produced no .app bundle in $pubdir"
-              find "$pubdir" -maxdepth 2 | head -n 20
+              find "$pubdir" -maxdepth 1 | head -n 20
               exit 1
             fi
             size="$(du -sh "$app" | cut -f1)"
