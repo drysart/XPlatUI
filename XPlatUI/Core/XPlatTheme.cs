@@ -3,56 +3,203 @@ using SkiaSharp;
 namespace XPlatUI;
 
 /// <summary>
-/// Process-wide defaults used by the built-in controls. Set these once at startup to
-/// brand the UI; controls resolve their own defaults when they are constructed.
+/// The palette and fonts the built-in controls draw with. Controls read these values while
+/// they paint, so assigning <see cref="Palette"/> recolours the whole UI on the next frame;
+/// <see cref="Changed"/> tells a backend that a frame is due.
 /// </summary>
+/// <remarks>
+/// The palette is process-wide, the way branding usually is. To follow the operating system's
+/// light/dark preference use <see cref="XPlatSystemTheme"/>; to force one, assign
+/// <see cref="Palette"/> directly.
+/// </remarks>
 public static class XPlatTheme
 {
-    public static SKColor Background { get; set; } = new(0xFFF4F6F9);
+    private static XPlatPalette _palette = XPlatPalette.Light;
 
-    public static SKColor Surface { get; set; } = SKColors.White;
+    /// <summary>Raised after <see cref="Palette"/> was assigned a different palette.</summary>
+    public static event EventHandler? Changed;
 
-    public static SKColor Foreground { get; set; } = new(0xFF1F2933);
+    /// <summary>
+    /// The colours in use. Assign <see cref="XPlatPalette.Light"/>, <see cref="XPlatPalette.Dark"/>
+    /// or a palette of your own.
+    /// </summary>
+    public static XPlatPalette Palette
+    {
+        get => _palette;
+        set
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            if (ReferenceEquals(_palette, value))
+            {
+                return;
+            }
 
-    public static SKColor MutedForeground { get; set; } = new(0xFF6B7280);
+            Assign(value);
+        }
+    }
 
-    public static SKColor Border { get; set; } = new(0xFFDDE1E7);
+    /// <summary>True while a dark palette is in use.</summary>
+    public static bool IsDarkMode => _palette.IsDark;
 
-    public static SKColor Accent { get; set; } = new(0xFF2F6FED);
+    /// <summary>Resolves one palette entry by name, for controls that defer a colour to paint time.</summary>
+    public static SKColor ColorOf(XPlatThemeColor color) => color switch
+    {
+        XPlatThemeColor.Background => _palette.Background,
+        XPlatThemeColor.Surface => _palette.Surface,
+        XPlatThemeColor.Foreground => _palette.Foreground,
+        XPlatThemeColor.MutedForeground => _palette.MutedForeground,
+        XPlatThemeColor.Border => _palette.Border,
+        XPlatThemeColor.Accent => _palette.Accent,
+        XPlatThemeColor.AccentHover => _palette.AccentHover,
+        XPlatThemeColor.AccentPressed => _palette.AccentPressed,
+        XPlatThemeColor.AccentForeground => _palette.AccentForeground,
+        XPlatThemeColor.Secondary => _palette.Secondary,
+        XPlatThemeColor.SecondaryHover => _palette.SecondaryHover,
+        XPlatThemeColor.SecondaryPressed => _palette.SecondaryPressed,
+        XPlatThemeColor.FocusRing => _palette.FocusRing,
+        XPlatThemeColor.Splitter => _palette.Splitter,
+        XPlatThemeColor.SplitterHover => _palette.SplitterHover,
+        XPlatThemeColor.InputBackground => _palette.InputBackground,
+        XPlatThemeColor.Selection => _palette.Selection,
+        XPlatThemeColor.Caret => _palette.Caret,
+        XPlatThemeColor.Placeholder => _palette.Placeholder,
+        XPlatThemeColor.DisabledBackground => _palette.DisabledBackground,
+        XPlatThemeColor.DisabledForeground => _palette.DisabledForeground,
+        _ => _palette.Foreground,
+    };
 
-    public static SKColor AccentHover { get; set; } = new(0xFF2560D8);
+    // The individual colours read and write the current palette: assigning one replaces the
+    // palette with an edited copy. Prefer Palette when switching appearance.
 
-    public static SKColor AccentPressed { get; set; } = new(0xFF1D4FBB);
+    public static SKColor Background
+    {
+        get => _palette.Background;
+        set => Assign(_palette with { Background = value });
+    }
 
-    public static SKColor AccentForeground { get; set; } = SKColors.White;
+    public static SKColor Surface
+    {
+        get => _palette.Surface;
+        set => Assign(_palette with { Surface = value });
+    }
 
-    public static SKColor Secondary { get; set; } = new(0xFFE9EDF3);
+    public static SKColor Foreground
+    {
+        get => _palette.Foreground;
+        set => Assign(_palette with { Foreground = value });
+    }
 
-    public static SKColor SecondaryHover { get; set; } = new(0xFFDEE4EC);
+    public static SKColor MutedForeground
+    {
+        get => _palette.MutedForeground;
+        set => Assign(_palette with { MutedForeground = value });
+    }
 
-    public static SKColor SecondaryPressed { get; set; } = new(0xFFCFD7E2);
+    public static SKColor Border
+    {
+        get => _palette.Border;
+        set => Assign(_palette with { Border = value });
+    }
 
-    public static SKColor FocusRing { get; set; } = new(0xFF7FA8F5);
+    public static SKColor Accent
+    {
+        get => _palette.Accent;
+        set => Assign(_palette with { Accent = value });
+    }
 
-    public static SKColor Splitter { get; set; } = new(0xFFDDE1E7);
+    public static SKColor AccentHover
+    {
+        get => _palette.AccentHover;
+        set => Assign(_palette with { AccentHover = value });
+    }
 
-    public static SKColor SplitterHover { get; set; } = new(0xFFC3CBD6);
+    public static SKColor AccentPressed
+    {
+        get => _palette.AccentPressed;
+        set => Assign(_palette with { AccentPressed = value });
+    }
+
+    public static SKColor AccentForeground
+    {
+        get => _palette.AccentForeground;
+        set => Assign(_palette with { AccentForeground = value });
+    }
+
+    public static SKColor Secondary
+    {
+        get => _palette.Secondary;
+        set => Assign(_palette with { Secondary = value });
+    }
+
+    public static SKColor SecondaryHover
+    {
+        get => _palette.SecondaryHover;
+        set => Assign(_palette with { SecondaryHover = value });
+    }
+
+    public static SKColor SecondaryPressed
+    {
+        get => _palette.SecondaryPressed;
+        set => Assign(_palette with { SecondaryPressed = value });
+    }
+
+    public static SKColor FocusRing
+    {
+        get => _palette.FocusRing;
+        set => Assign(_palette with { FocusRing = value });
+    }
+
+    public static SKColor Splitter
+    {
+        get => _palette.Splitter;
+        set => Assign(_palette with { Splitter = value });
+    }
+
+    public static SKColor SplitterHover
+    {
+        get => _palette.SplitterHover;
+        set => Assign(_palette with { SplitterHover = value });
+    }
 
     /// <summary>Fill of editable fields such as <see cref="XPlatTextBox"/>.</summary>
-    public static SKColor InputBackground { get; set; } = SKColors.White;
+    public static SKColor InputBackground
+    {
+        get => _palette.InputBackground;
+        set => Assign(_palette with { InputBackground = value });
+    }
 
     /// <summary>Fill of a text selection inside an editable field (drawn over the background).</summary>
-    public static SKColor Selection { get; set; } = new(0x552F6FED);
+    public static SKColor Selection
+    {
+        get => _palette.Selection;
+        set => Assign(_palette with { Selection = value });
+    }
 
     /// <summary>Color of the text caret.</summary>
-    public static SKColor Caret { get; set; } = new(0xFF1F2933);
+    public static SKColor Caret
+    {
+        get => _palette.Caret;
+        set => Assign(_palette with { Caret = value });
+    }
 
     /// <summary>Color of placeholder text shown in an empty editable field.</summary>
-    public static SKColor Placeholder { get; set; } = new(0xFF9AA3AF);
+    public static SKColor Placeholder
+    {
+        get => _palette.Placeholder;
+        set => Assign(_palette with { Placeholder = value });
+    }
 
-    public static SKColor DisabledBackground { get; set; } = new(0xFFE4E7EC);
+    public static SKColor DisabledBackground
+    {
+        get => _palette.DisabledBackground;
+        set => Assign(_palette with { DisabledBackground = value });
+    }
 
-    public static SKColor DisabledForeground { get; set; } = new(0xFF9AA3AF);
+    public static SKColor DisabledForeground
+    {
+        get => _palette.DisabledForeground;
+        set => Assign(_palette with { DisabledForeground = value });
+    }
 
     public static XPlatFont DefaultFont { get; } = new(size: 13f);
 
@@ -63,4 +210,10 @@ public static class XPlatTheme
     public static XPlatFont TitleFont { get; } = new(size: 24f, weight: 700);
 
     public static XPlatFont SectionFont { get; } = new(size: 15f, weight: 600);
+
+    private static void Assign(XPlatPalette palette)
+    {
+        _palette = palette;
+        Changed?.Invoke(null, EventArgs.Empty);
+    }
 }

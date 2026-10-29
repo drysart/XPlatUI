@@ -42,6 +42,8 @@ internal static class NativeMethods
     internal const uint WmMouseLeave = 0x02A3;
     internal const uint WmDpiChanged = 0x02E0;
     internal const uint WmContextMenu = 0x007B;
+    internal const uint WmSettingChange = 0x001A;
+    internal const uint WmThemeChanged = 0x031A;
     internal const uint WmNull = 0x0000;
 
     // Menus.
@@ -468,4 +470,70 @@ internal static class NativeMethods
 
     /// <summary>Extracts the signed high word of a packed coordinate.</summary>
     internal static int HighWord(IntPtr value) => (short)(((long)value >> 16) & 0xFFFF);
+
+    // Appearance. The system's app-mode preference lives in the registry; WM_SETTINGCHANGE with
+    // "ImmersiveColorSet" and WM_THEMECHANGED are the two notifications that say it may have moved.
+    internal static readonly IntPtr HkeyCurrentUser = new(0x80000001);
+
+    private const uint RrfRtRegDword = 0x00000010;
+    private const int DwmwaUseImmersiveDarkMode = 20;
+    private const int DwmwaUseImmersiveDarkModeBefore20H1 = 19;
+
+    /// <summary>Reads a REG_DWORD from HKEY_CURRENT_USER, or null when the value is absent.</summary>
+    internal static uint? ReadUserDword(string subKey, string valueName)
+    {
+        uint type;
+        uint data;
+        uint size = sizeof(uint);
+        int status = RegGetValueW(HkeyCurrentUser, subKey, valueName, RrfRtRegDword, out type, out data, ref size);
+        return status == 0 && size == sizeof(uint) ? data : null;
+    }
+
+    /// <summary>
+    /// Undocumented uxtheme export that reports the system-wide dark mode switch. Only consulted
+    /// when the per-app value is missing, which happens on builds older than Windows 10 1903.
+    /// </summary>
+    internal static bool ShouldSystemUseDarkMode()
+    {
+        try
+        {
+            return ShouldSystemUseDarkModeNative();
+        }
+        catch (Exception e) when (e is DllNotFoundException or EntryPointNotFoundException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Asks DWM to draw the non-client area (title bar, borders) dark.</summary>
+    internal static void SetDarkTitleBar(IntPtr hwnd, bool dark)
+    {
+        if (hwnd == IntPtr.Zero)
+        {
+            return;
+        }
+
+        int value = dark ? 1 : 0;
+        // 20 is DWMWA_USE_IMMERSIVE_DARK_MODE on Windows 10 2004+; 19 on 1809-1909.
+        if (DwmSetWindowAttribute(hwnd, DwmwaUseImmersiveDarkMode, ref value, sizeof(int)) != 0)
+        {
+            DwmSetWindowAttribute(hwnd, DwmwaUseImmersiveDarkModeBefore20H1, ref value, sizeof(int));
+        }
+    }
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    private static extern int RegGetValueW(
+        IntPtr hkey,
+        string lpSubKey,
+        string lpValue,
+        uint dwFlags,
+        out uint pdwType,
+        out uint pvData,
+        ref uint pcbData);
+
+    [DllImport("uxtheme.dll", ExactSpelling = true, EntryPoint = "#104")]
+    private static extern bool ShouldSystemUseDarkModeNative();
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
 }

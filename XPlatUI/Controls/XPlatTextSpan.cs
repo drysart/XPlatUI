@@ -53,7 +53,9 @@ public sealed class XPlatTextSpan
     private bool _underline;
     private bool _strikethrough;
     private SKColor? _foreColor;
+    private XPlatThemeColor? _themeColor;
     private SKColor? _hoverBackColor;
+    private XPlatThemeColor? _hoverBackColorRole;
     private float? _fontSize;
     private string? _fontFamily;
     private XPlatFont? _font;
@@ -148,6 +150,26 @@ public sealed class XPlatTextSpan
         }
     }
 
+    /// <summary>
+    /// A palette entry to paint the span in, resolved while painting so the span follows a theme
+    /// change. Used when <see cref="ForeColor"/> is not set; <see cref="XPlatRichLabel.AddLink"/>
+    /// uses <see cref="XPlatThemeColor.Accent"/>.
+    /// </summary>
+    public XPlatThemeColor? ThemeColor
+    {
+        get => _themeColor;
+        set
+        {
+            if (_themeColor == value)
+            {
+                return;
+            }
+
+            _themeColor = value;
+            NotifyChanged();
+        }
+    }
+
     /// <summary>Optional fill painted behind the span while the pointer is over it (handy for links).</summary>
     public SKColor? HoverBackColor
     {
@@ -160,6 +182,26 @@ public sealed class XPlatTextSpan
             }
 
             _hoverBackColor = value;
+            NotifyChanged();
+        }
+    }
+
+    /// <summary>
+    /// A palette entry to tint the hover fill with, resolved while painting. Used when
+    /// <see cref="HoverBackColor"/> is not set; <see cref="XPlatRichLabel.AddLink"/> uses
+    /// <see cref="XPlatThemeColor.Accent"/>, so a link keeps its highlight across a theme change.
+    /// </summary>
+    public XPlatThemeColor? HoverBackColorRole
+    {
+        get => _hoverBackColorRole;
+        set
+        {
+            if (_hoverBackColorRole == value)
+            {
+                return;
+            }
+
+            _hoverBackColorRole = value;
             NotifyChanged();
         }
     }

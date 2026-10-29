@@ -13,7 +13,6 @@ public class XPlatLabel : XPlatControl
     public XPlatLabel()
     {
         AutoSize = true;
-        ForeColor = XPlatTheme.Foreground;
         SelectionStyle = XPlatSelectionStyle.Partial;
     }
 
