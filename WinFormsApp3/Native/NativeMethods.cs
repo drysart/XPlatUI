@@ -94,6 +94,10 @@ internal static class NativeMethods
 
     // Painting.
     internal const uint SrcCopy = 0x00CC0020;
+
+    /// <summary>Includes layered windows in the copy, which plain <c>SRCCOPY</c> skips.</summary>
+    internal const uint CaptureBlt = 0x40000000;
+
     internal const uint DibRgbColors = 0;
     internal const uint BiRgb = 0;
 

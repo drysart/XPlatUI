@@ -243,6 +243,10 @@ public static class XPlatMenuRenderer
     /// </param>
     /// <param name="metrics">Row metrics, or null for <see cref="XPlatMenuMetrics.Default"/>.</param>
     /// <param name="font">Label font, or null for <see cref="XPlatTheme.DefaultFont"/>.</param>
+    /// <remarks>
+    /// The canvas is not cleared, so whatever the caller has already painted stays visible through a
+    /// translucent surface.
+    /// </remarks>
     public static void Paint(
         SKCanvas canvas,
         XPlatMenuLayout layout,
@@ -258,8 +262,6 @@ public static class XPlatMenuRenderer
         var f = font ?? XPlatTheme.DefaultFont;
         var alpha = Math.Clamp(surfaceAlpha, 0f, 1f);
         var bounds = layout.SurfaceBounds;
-
-        canvas.Clear(SKColors.Transparent);
 
         if (layout.HasShadow)
         {

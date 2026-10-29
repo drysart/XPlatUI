@@ -267,21 +267,30 @@ what makes copying a multi-control selection work no matter which control was ri
 installed on the host. The library only owns the model; the backend decides how to show it.
 
 On Windows 11 the harness draws the menu itself instead of calling `TrackPopupMenuEx`, because the
-Win32 menu is the old flat style while the shell and WinUI menus are rounded and softly shadowed.
-The menu goes through the same Skia pipeline as the controls and is shown in a `WS_EX_LAYERED`
-popup, so it looks the same on every machine and follows `XPlatTheme` in light and dark:
+Win32 menu is the old flat style while the shell and WinUI menus are rounded, softly shadowed and
+backed by acrylic. The menu goes through the same Skia pipeline as the controls and is shown in a
+`WS_EX_LAYERED` popup, so it looks the same on every machine and follows `XPlatTheme` in light and
+dark:
 
 | Piece | What it does |
 | --- | --- |
 | `XPlatMenuRenderer.Measure(menu, metrics, font, shadow)` | Lays the rows out and returns an `XPlatMenuLayout`: surface size, shadow margin, row bounds, `HitTest` and `NextPickable` |
-| `XPlatMenuRenderer.Paint(canvas, layout, hovered, surfaceAlpha)` | Draws the surface, drop shadow, hover pill, check column and right-aligned shortcut hints |
+| `XPlatMenuRenderer.Paint(canvas, layout, hovered, surfaceAlpha)` | Draws the surface, drop shadow, hover pill, check column and right-aligned shortcut hints. It does not clear the canvas, so whatever the caller painted underneath shows through a translucent surface |
 | `XPlatMenuMetrics` | Row height, padding, corner radii and shadow extent; `Default` is tuned to the Windows 11 menu |
-| `Native/Win32MenuWindow.cs` | The popup: renders into a 32bpp DIB and hands it to the compositor with `UpdateLayeredWindow` |
+| `Native/Win32MenuWindow.cs` | The popup: captures and blurs the backdrop, renders into a 32bpp DIB and hands it to the compositor with `UpdateLayeredWindow` |
 
 `XPlatMenuRenderer` contains no platform code, so a macOS or Linux backend can reuse it verbatim
 instead of writing its own menu drawing. Because the popup is layered, the rounded corners and the
 drop shadow come from per-pixel alpha: the window is sized surface + `ShadowExtent` on each side and
 positioned so that the surface - not the window - lands exactly on the requested point.
+
+The acrylic is produced by the popup rather than by DWM, because DWM ignores
+`DWMWA_SYSTEMBACKDROP_TYPE` on a layered window and translucency without blur would leave the text
+behind the menu legible through it. Instead the popup copies the screen region it is about to cover
+before it is shown, blurs that copy, adds a fine noise and paints the surface over it at 80% (dark)
+or 84% (light) opacity - the same three layers real acrylic is made of. The blur is baked into the
+captured image because Skia ignores an image filter on the paint passed to `DrawImage`. If the
+capture fails, the surface falls back to fully opaque.
 
 The popup runs its own message loop while it is open, the way `TrackPopupMenuEx` does. Moving the
 pointer moves the highlight, the arrow keys walk the enabled items (skipping separators and disabled

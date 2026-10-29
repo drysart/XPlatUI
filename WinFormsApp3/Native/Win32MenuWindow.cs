@@ -20,9 +20,16 @@ namespace WinFormsApp3;
 /// of the Skia surface reaches the compositor. That is what makes the rounded corners genuinely
 /// transparent and lets the drop shadow fade out over whatever is behind, neither of which a
 /// GDI-painted window can do: GDI cannot write an alpha channel, so a normal window would show
-/// the corners as solid squares. The price is that the surface is opaque - a layered window cannot
-/// borrow a DWM backdrop, and translucent-without-blur would show the content behind the menu
-/// through the text.
+/// the corners as solid squares.
+/// </para>
+/// <para>
+/// The acrylic backdrop is produced here rather than by DWM, because a layered window cannot borrow
+/// a system backdrop material (<c>DWMWA_SYSTEMBACKDROP_TYPE</c> is ignored) and translucent-without
+/// -blur would leave the text behind the menu legible through it. Instead the popup grabs a copy of
+/// the screen region it is about to cover, blurs it with Skia, adds the acrylic noise, and paints
+/// the translucent surface over that - the same three layers real acrylic is made of. The blur is
+/// baked into the captured image because Skia ignores an image filter on the paint handed to
+/// <c>DrawImage</c>. If the capture fails the surface simply falls back to opaque.
 /// </para>
 /// <para>
 /// <see cref="Show"/> runs a nested message loop, so from the caller's point of view it behaves
@@ -33,6 +40,18 @@ namespace WinFormsApp3;
 internal sealed class Win32MenuWindow : IDisposable
 {
     private const string ClassName = "XPlatUI.MenuWindow";
+
+    /// <summary>Blur applied to the captured backdrop, in logical pixels so it scales with the DPI.</summary>
+    private const float BlurSigma = 14f;
+
+    /// <summary>
+    /// Opacity of the menu surface over the backdrop. Windows 11's acrylic tint is deliberately
+    /// strong enough that item text stays readable over whatever is behind it.
+    /// </summary>
+    private static float SurfaceOpacity => XPlatTheme.IsDarkMode ? 0.80f : 0.84f;
+
+    /// <summary>Peak alpha of the acrylic noise, which is meant to be felt rather than seen.</summary>
+    private const byte NoiseAlpha = 9;
 
     /// <summary>
     /// The popup pumping messages on this thread. A menu command may open another menu, so each
@@ -65,6 +84,13 @@ internal sealed class Win32MenuWindow : IDisposable
     private bool _activated;
     private bool _finished;
     private XPlatMenuItem? _picked;
+
+    /// <summary>
+    /// What was on screen where the menu now sits, captured before the popup is shown. Blurred and
+    /// laid under the translucent surface this is the acrylic backdrop; null when the capture failed
+    /// or the display is not composited, in which case the menu paints solid instead.
+    /// </summary>
+    private SKImage? _backdrop;
 
     private Win32MenuWindow()
     {
@@ -100,6 +126,7 @@ internal sealed class Win32MenuWindow : IDisposable
     {
         DestroyWindow();
         ReleaseBuffer();
+        ReleaseBackdrop();
     }
 
     private static bool EnsureClass()
@@ -178,6 +205,9 @@ internal sealed class Win32MenuWindow : IDisposable
         NativeMethods.SetWindowLongPtrW(_hwnd, NativeMethods.GwlpHwndParent, owner);
 
         EnsureBuffer(width, height);
+
+        // Must happen before the popup is shown, or the capture would contain the menu itself.
+        _backdrop = CaptureBackdrop(x, y, width, height);
 
         var previous = _active;
         _active = this;
@@ -580,11 +610,163 @@ internal sealed class Win32MenuWindow : IDisposable
         }
 
         var canvas = _skia.Canvas;
+        canvas.Clear(SKColors.Transparent);
         canvas.Save();
         canvas.Scale(_scale);
-        XPlatMenuRenderer.Paint(canvas, _layout, _hovered);
+
+        var acrylic = _backdrop is not null;
+        if (acrylic)
+        {
+            DrawBackdrop(canvas);
+        }
+
+        XPlatMenuRenderer.Paint(canvas, _layout, _hovered, acrylic ? SurfaceOpacity : 1f);
         canvas.Restore();
         canvas.Flush();
+    }
+
+    /// <summary>
+    /// Paints the acrylic backdrop under the surface: the screen behind the popup, blurred, plus the
+    /// fine noise real acrylic carries so flat areas do not look like plain translucency.
+    /// </summary>
+    private void DrawBackdrop(SKCanvas canvas)
+    {
+        var bounds = _layout!.SurfaceBounds;
+        var radius = XPlatMenuMetrics.Default.CornerRadius;
+
+        canvas.Save();
+        canvas.ClipRoundRect(new SKRoundRect(bounds, radius), SKClipOperation.Intersect, antialias: true);
+
+        // The capture is in physical pixels; the canvas is already scaled to the DPI, so the image
+        // has to be placed in logical units for it to land back on the pixels it came from.
+        var destination = new SKRect(0f, 0f, _bufferWidth / _scale, _bufferHeight / _scale);
+        canvas.DrawImage(_backdrop!, destination, new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.None), null);
+
+        using (var noise = SKShader.CreatePerlinNoiseFractalNoise(0.45f, 0.45f, 2, 0f, SKPointI.Empty))
+        using (var paint = new SKPaint { Shader = noise, Color = SKColors.White.WithAlpha(NoiseAlpha) })
+        {
+            canvas.DrawRect(bounds, paint);
+        }
+
+        canvas.Restore();
+    }
+
+    /// <summary>
+    /// Copies the screen region the popup will cover and blurs it. Returns null when the copy fails,
+    /// which simply leaves the menu opaque.
+    /// </summary>
+    private SKImage? CaptureBackdrop(int x, int y, int width, int height)
+    {
+        if (width <= 0 || height <= 0)
+        {
+            return null;
+        }
+
+        var screen = NativeMethods.GetDC(IntPtr.Zero);
+        if (screen == IntPtr.Zero)
+        {
+            return null;
+        }
+
+        var memoryDc = IntPtr.Zero;
+        var dib = IntPtr.Zero;
+        var previous = IntPtr.Zero;
+
+        try
+        {
+            memoryDc = NativeMethods.CreateCompatibleDC(screen);
+            if (memoryDc == IntPtr.Zero)
+            {
+                return null;
+            }
+
+            var info = new NativeMethods.BITMAPINFO();
+            info.bmiHeader.biSize = (uint)Marshal.SizeOf<NativeMethods.BITMAPINFOHEADER>();
+            info.bmiHeader.biWidth = width;
+            info.bmiHeader.biHeight = -height;
+            info.bmiHeader.biPlanes = 1;
+            info.bmiHeader.biBitCount = 32;
+            info.bmiHeader.biCompression = NativeMethods.BiRgb;
+
+            dib = NativeMethods.CreateDIBSection(IntPtr.Zero, ref info, NativeMethods.DibRgbColors, out var bits, IntPtr.Zero, 0);
+            if (dib == IntPtr.Zero || bits == IntPtr.Zero)
+            {
+                return null;
+            }
+
+            previous = NativeMethods.SelectObject(memoryDc, dib);
+
+            if (!NativeMethods.BitBlt(memoryDc, 0, 0, width, height, screen, x, y, NativeMethods.SrcCopy | NativeMethods.CaptureBlt))
+            {
+                return null;
+            }
+
+            // FromPixelCopy so the image survives the DIB being freed below.
+            var imageInfo = new SKImageInfo(width, height, SKColorType.Bgra8888, SKAlphaType.Opaque);
+            using var captured = SKImage.FromPixelCopy(imageInfo, bits, width * 4);
+            return BlurBackdrop(captured);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+        finally
+        {
+            if (memoryDc != IntPtr.Zero)
+            {
+                if (previous != IntPtr.Zero)
+                {
+                    NativeMethods.SelectObject(memoryDc, previous);
+                }
+
+                NativeMethods.DeleteDC(memoryDc);
+            }
+
+            if (dib != IntPtr.Zero)
+            {
+                NativeMethods.DeleteObject(dib);
+            }
+
+            NativeMethods.ReleaseDC(IntPtr.Zero, screen);
+        }
+    }
+
+    /// <summary>
+    /// Blurs a captured frame into a new image. The blur is baked into the pixels rather than left on
+    /// a paint because Skia ignores an image filter on the paint handed to <c>DrawImage</c>.
+    /// </summary>
+    private SKImage? BlurBackdrop(SKImage source)
+    {
+        var info = new SKImageInfo(source.Width, source.Height, SKColorType.Bgra8888, SKAlphaType.Premul);
+        using var surface = SKSurface.Create(info);
+        if (surface is null)
+        {
+            return null;
+        }
+
+        var canvas = surface.Canvas;
+        var bounds = new SKRect(0f, 0f, source.Width, source.Height);
+
+        // Sigma is expressed in logical pixels, so it has to be scaled to the physical pixels of the
+        // capture. Clamp rather than the default decal tiling: decal fades the alpha out at the
+        // capture border, and the surface sits only a shadow-margin inside that border, so the fade
+        // would reach the menu rim and let the sharp desktop show through it.
+        using (var filter = SKImageFilter.CreateBlur(BlurSigma * _scale, BlurSigma * _scale, SKShaderTileMode.Clamp))
+        using (var paint = new SKPaint { ImageFilter = filter })
+        {
+            canvas.SaveLayer(bounds, paint);
+            canvas.DrawImage(source, bounds, new SKSamplingOptions(SKFilterMode.Nearest, SKMipmapMode.None), null);
+            canvas.Restore();
+        }
+
+        canvas.Flush();
+        return surface.Snapshot();
+    }
+
+    private void ReleaseBackdrop()
+    {
+        _backdrop?.Dispose();
+        _backdrop = null;
     }
 
     private void EnsureBuffer(int width, int height)
