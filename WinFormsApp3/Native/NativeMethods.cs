@@ -60,12 +60,44 @@ internal static class NativeMethods
     internal const uint TpmReturnCmd = 0x0100;
 
     internal const int HtClient = 1;
+    internal const int HtTransparent = -1;
     internal const int SwShow = 5;
+    internal const int SwShowNoActivate = 4;
     internal const uint SwpNoZOrder = 0x0004;
     internal const uint SwpNoActivate = 0x0010;
+    internal const uint SwpShowWindow = 0x0040;
+
+    // Popup menu window.
+    internal const uint WsPopup = 0x80000000;
+    internal const uint WsClipChildren = 0x02000000;
+    internal const uint WsExToolWindow = 0x00000080;
+    internal const uint WsExTopmost = 0x00000008;
+    internal const uint WsExLayered = 0x00080000;
+    internal const int GwlpHwndParent = -8;
+    internal static readonly IntPtr HwndTopmost = new(-1);
+    internal static readonly IntPtr HwndTop = new(0);
+
+    internal const uint WmActivate = 0x0006;
+    internal const uint WmActivateApp = 0x001C;
+    internal const uint WmCaptureChanged = 0x0215;
+    internal const uint WmNcHitTest = 0x0084;
+    internal const int WaInactive = 0;
+
+    internal const int VkReturn = 0x0D;
+    internal const int VkEscape = 0x1B;
+    internal const int VkEnd = 0x23;
+    internal const int VkHome = 0x24;
+    internal const int VkLeft = 0x25;
+    internal const int VkUp = 0x26;
+    internal const int VkRight = 0x27;
+    internal const int VkDown = 0x28;
 
     // Painting.
     internal const uint SrcCopy = 0x00CC0020;
+
+    /// <summary>Includes layered windows in the copy, which plain <c>SRCCOPY</c> skips.</summary>
+    internal const uint CaptureBlt = 0x40000000;
+
     internal const uint DibRgbColors = 0;
     internal const uint BiRgb = 0;
 
@@ -211,6 +243,22 @@ internal static class NativeMethods
         public IntPtr hIconSm;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct SIZE
+    {
+        public int cx;
+        public int cy;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct BLENDFUNCTION
+    {
+        public byte BlendOp;
+        public byte BlendFlags;
+        public byte SourceConstantAlpha;
+        public byte AlphaFormat;
+    }
+
     // user32 - window management.
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     internal static extern ushort RegisterClassExW(ref WNDCLASSEXW lpwcx);
@@ -327,6 +375,12 @@ internal static class NativeMethods
     internal static extern bool SetForegroundWindow(IntPtr hwnd);
 
     [DllImport("user32.dll")]
+    internal static extern IntPtr SetFocus(IntPtr hwnd);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    internal static extern IntPtr SetWindowLongPtrW(IntPtr hwnd, int index, IntPtr value);
+
+    [DllImport("user32.dll")]
     internal static extern bool GetCursorPos(out POINT lpPoint);
 
     [DllImport("user32.dll")]
@@ -393,6 +447,29 @@ internal static class NativeMethods
 
     [DllImport("gdi32.dll")]
     internal static extern bool BitBlt(IntPtr hdc, int x, int y, int cx, int cy, IntPtr hdcSrc, int x1, int y1, uint rop);
+
+    // The BLENDFUNCTION used to describe a premultiplied surface to the compositor.
+    internal const byte AcSrcOver = 0;
+    internal const byte AcSrcAlpha = 1;
+
+    // UpdateLayeredWindow flags.
+    internal const uint UlwAlpha = 0x00000002;
+
+    /// <summary>
+    /// Hands a premultiplied 32bpp DIB to the compositor as the whole content of a layered window,
+    /// so the alpha channel in it decides what the desktop shows through.
+    /// </summary>
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern bool UpdateLayeredWindow(
+        IntPtr hwnd,
+        IntPtr hdcDst,
+        ref POINT pptDst,
+        ref SIZE psize,
+        IntPtr hdcSrc,
+        ref POINT pptSrc,
+        uint crKey,
+        ref BLENDFUNCTION pblend,
+        uint dwFlags);
 
     // kernel32.
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
@@ -520,6 +597,13 @@ internal static class NativeMethods
             DwmSetWindowAttribute(hwnd, DwmwaUseImmersiveDarkModeBefore20H1, ref value, sizeof(int));
         }
     }
+
+    /// <summary>
+    /// Windows 11 (build 22000) is the first release whose menus use the modern rounded, softly
+    /// shadowed style, so that is the cut-off for drawing one instead of calling
+    /// <c>TrackPopupMenuEx</c>.
+    /// </summary>
+    internal static bool SupportsModernPopups => Environment.OSVersion.Version.Build >= 22000;
 
     [DllImport("advapi32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
     private static extern int RegGetValueW(

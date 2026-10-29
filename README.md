@@ -261,6 +261,45 @@ shortcuts and per-item `Enabled` states - so a right-click inside one always ope
 **Copy** falls back to `host.CopySelection()` when the box has no selection of its own, which is
 what makes copying a multi-control selection work no matter which control was right-clicked.
 
+### Context menus
+
+`host.ProcessContextMenu(point)` builds an `XPlatContextMenu` and hands it to the presenter
+installed on the host. The library only owns the model; the backend decides how to show it.
+
+On Windows 11 the harness draws the menu itself instead of calling `TrackPopupMenuEx`, because the
+Win32 menu is the old flat style while the shell and WinUI menus are rounded, softly shadowed and
+backed by acrylic. The menu goes through the same Skia pipeline as the controls and is shown in a
+`WS_EX_LAYERED` popup, so it looks the same on every machine and follows `XPlatTheme` in light and
+dark:
+
+| Piece | What it does |
+| --- | --- |
+| `XPlatMenuRenderer.Measure(menu, metrics, font, shadow)` | Lays the rows out and returns an `XPlatMenuLayout`: surface size, shadow margin, row bounds, `HitTest` and `NextPickable` |
+| `XPlatMenuRenderer.Paint(canvas, layout, hovered, surfaceAlpha)` | Draws the surface, drop shadow, hover pill, check column and right-aligned shortcut hints. It does not clear the canvas, so whatever the caller painted underneath shows through a translucent surface |
+| `XPlatMenuMetrics` | Row height, padding, corner radii and shadow extent; `Default` is tuned to the Windows 11 menu |
+| `Native/Win32MenuWindow.cs` | The popup: captures and blurs the backdrop, renders into a 32bpp DIB and hands it to the compositor with `UpdateLayeredWindow` |
+
+`XPlatMenuRenderer` contains no platform code, so a macOS or Linux backend can reuse it verbatim
+instead of writing its own menu drawing. Because the popup is layered, the rounded corners and the
+drop shadow come from per-pixel alpha: the window is sized surface + `ShadowExtent` on each side and
+positioned so that the surface - not the window - lands exactly on the requested point.
+
+The acrylic is produced by the popup rather than by DWM, because DWM ignores
+`DWMWA_SYSTEMBACKDROP_TYPE` on a layered window and translucency without blur would leave the text
+behind the menu legible through it. Instead the popup copies the screen region it is about to cover
+before it is shown, blurs that copy, adds a fine noise and paints the surface over it at 80% (dark)
+or 84% (light) opacity - the same three layers real acrylic is made of. The blur is baked into the
+captured image because Skia ignores an image filter on the paint passed to `DrawImage`. If the
+capture fails, the surface falls back to fully opaque.
+
+The popup runs its own message loop while it is open, the way `TrackPopupMenuEx` does. Moving the
+pointer moves the highlight, the arrow keys walk the enabled items (skipping separators and disabled
+rows), `Enter` or a click invokes, and `Esc`, a click outside or losing activation dismisses it.
+
+This style is used when `Environment.OSVersion.Version.Build >= 22000`. On older Windows, or if the
+popup cannot be created, `Win32ContextMenuPresenter` falls back to `TrackPopupMenuEx`; pass
+`--classic-menus` to the harness to force the old menu on Windows 11 as well.
+
 ### Appearance
 
 Every default colour in the library is a palette role, so the whole UI can switch between light and
@@ -322,6 +361,8 @@ Implement the small surface that `Native/HarnessWindow.cs` implements for Win32:
    a timer (see below).
 7. Install an `IXPlatSystemTheme` into `XPlatSystemTheme.Current` at startup, then call
    `host.RefreshTheme()` whenever the OS appearance changes.
+8. Install an `IXPlatContextMenuPresenter` into `host.ContextMenuPresenter`, or hand the menu to
+   `XPlatMenuRenderer` if the platform has no native menu of its own.
 
 ## NativeAOT
 
@@ -335,7 +376,7 @@ dotnet publish WinFormsApp3\WinFormsApp3.csproj -p:PublishProfile=FolderProfile
 ```
 
 or right-click **Publish** in Visual Studio. The result is a **single** self-contained
-`WinFormsApp3.exe` (~7.8 MB, of which ~5.2 MB is the compressed Skia native binary) and an optional
+`WinFormsApp3.exe` (~7.9 MB, of which ~5.2 MB is the compressed Skia native binary) and an optional
 `WinFormsApp3.pdb` for debugging. Nothing else is needed to run it - the AOT build opens the real
 window and renders the demo.
 
@@ -379,8 +420,8 @@ WinFormsApp3.exe --render out.png 1280 760
 ```
 
 Add `--light` or `--dark` to either mode to force an appearance instead of using the system one; the
-header's **Switch appearance** button flips it at runtime. The sample UI is laid out for a 1280 x 760
-client area.
+header's **Switch appearance** button flips it at runtime. `--classic-menus` forces the old
+`TrackPopupMenuEx` context menus. The sample UI is laid out for a 1280 x 760 client area at 96 DPI
 points and the harness scales the Skia canvas by `GetDpiForWindow(hwnd) / 96`, sizing its client
 area to `1280 x 760` multiplied by that scale (clamped to the monitor work area) so the demo is
 never cropped on a high-DPI monitor. The **Selection and clipboard** card is the one to try:

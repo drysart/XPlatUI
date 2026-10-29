@@ -35,6 +35,36 @@ public sealed class XPlatContextMenu
         }
     }
 
+    /// <summary>
+    /// The items with the separators that would look wrong dropped: leading, trailing, and doubled.
+    /// Renderers use this so a menu never starts or ends on a separator line, and never shows two
+    /// in a row where the middle group was empty.
+    /// </summary>
+    public IReadOnlyList<XPlatMenuItem> TrimmedItems
+    {
+        get
+        {
+            var trimmed = new List<XPlatMenuItem>(_items.Count);
+
+            foreach (var item in _items)
+            {
+                if (item.IsSeparator && (trimmed.Count == 0 || trimmed[^1].IsSeparator))
+                {
+                    continue;
+                }
+
+                trimmed.Add(item);
+            }
+
+            while (trimmed.Count > 0 && trimmed[^1].IsSeparator)
+            {
+                trimmed.RemoveAt(trimmed.Count - 1);
+            }
+
+            return trimmed;
+        }
+    }
+
     /// <summary>Adds an item that runs <paramref name="command"/> when picked.</summary>
     public XPlatContextMenu Add(string text, Action? command = null) => Add(new XPlatMenuItem(text, command));
 

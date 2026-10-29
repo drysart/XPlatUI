@@ -4,11 +4,17 @@ using XPlatUI;
 namespace WinFormsApp3;
 
 /// <summary>
-/// Shows XPlat context menus as native Win32 popup menus. This is the whole of the Windows side
-/// of the feature: the UI library hands over an <see cref="XPlatContextMenu"/> and never learns
-/// how it was drawn, so a macOS or Linux host replaces this class with an equivalent that calls
-/// NSMenu or GTK and changes nothing else.
+/// Shows XPlat context menus on Windows. This is the whole of the Windows side of the feature:
+/// the UI library hands over an <see cref="XPlatContextMenu"/> and never learns how it was drawn,
+/// so a macOS or Linux host replaces this class with an equivalent that calls NSMenu or GTK and
+/// changes nothing else.
 /// </summary>
+/// <remarks>
+/// Two presentations are available. On Windows 11 the menu is drawn with Skia in its own rounded,
+/// acrylic-backed popup window, which matches the shell's own menus; on older Windows, or when that
+/// popup cannot be created, it falls back to a classic <c>TrackPopupMenuEx</c> menu. Both paths
+/// take the same menu model and invoke the picked item the same way.
+/// </remarks>
 internal sealed class Win32ContextMenuPresenter : IXPlatContextMenuPresenter
 {
     private readonly IntPtr _hwnd;
@@ -29,20 +35,47 @@ internal sealed class Win32ContextMenuPresenter : IXPlatContextMenuPresenter
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        using var menu = BuildMenu(request.Menu);
-        if (menu.Handle == IntPtr.Zero)
+        if (request.Menu.IsEmpty)
         {
             return;
         }
 
         var screen = _toScreen(request.Location);
 
+        if (NativeMethods.SupportsModernPopups && !ForceClassicMenu)
+        {
+            var (shown, item) = Win32MenuWindow.Show(_hwnd, screen, request.Menu);
+            if (shown)
+            {
+                item?.Invoke();
+                return;
+            }
+        }
+
+        ShowClassic(request.Menu, screen);
+    }
+
+    /// <summary>
+    /// Forces the classic Win32 menu even where the modern one is available. Set from the command
+    /// line so the two presentations can be compared side by side.
+    /// </summary>
+    public static bool ForceClassicMenu { get; set; }
+
+    /// <summary>Shows the menu with <c>TrackPopupMenuEx</c>, the only option before Windows 11.</summary>
+    private void ShowClassic(XPlatContextMenu menu, NativeMethods.POINT screen)
+    {
+        using var built = BuildMenu(menu);
+        if (built.Handle == IntPtr.Zero)
+        {
+            return;
+        }
+
         // Ownership matters for dismissal: a menu whose owner is not foreground keeps its modal
         // loop alive after the user clicks elsewhere, which looks like a hung application.
         NativeMethods.SetForegroundWindow(_hwnd);
 
         var command = NativeMethods.TrackPopupMenuEx(
-            menu.Handle,
+            built.Handle,
             NativeMethods.TpmLeftAlign | NativeMethods.TpmTopAlign | NativeMethods.TpmRightButton | NativeMethods.TpmReturnCmd,
             screen.X,
             screen.Y,
@@ -52,7 +85,7 @@ internal sealed class Win32ContextMenuPresenter : IXPlatContextMenuPresenter
         // Documented workaround for a menu that stays on screen until the next input arrives.
         NativeMethods.PostMessageW(_hwnd, NativeMethods.WmNull, IntPtr.Zero, IntPtr.Zero);
 
-        menu.Invoke(command);
+        built.Invoke(command);
     }
 
     /// <summary>
@@ -72,7 +105,7 @@ internal sealed class Win32ContextMenuPresenter : IXPlatContextMenuPresenter
 
         var built = new BuiltMenu(handle);
 
-        foreach (var item in TrimSeparators(menu.Items))
+        foreach (var item in menu.TrimmedItems)
         {
             if (item.IsSeparator)
             {
@@ -85,36 +118,6 @@ internal sealed class Win32ContextMenuPresenter : IXPlatContextMenuPresenter
         }
 
         return built;
-    }
-
-    /// <summary>
-    /// Drops leading, trailing and doubled separators. A native menu draws a stray line for each
-    /// of them, and an application that appends groups conditionally produces them easily.
-    /// </summary>
-    private static List<XPlatMenuItem> TrimSeparators(IReadOnlyList<XPlatMenuItem> items)
-    {
-        var result = new List<XPlatMenuItem>(items.Count);
-
-        foreach (var item in items)
-        {
-            if (!item.IsSeparator)
-            {
-                result.Add(item);
-                continue;
-            }
-
-            if (result.Count > 0 && !result[^1].IsSeparator)
-            {
-                result.Add(item);
-            }
-        }
-
-        while (result.Count > 0 && result[^1].IsSeparator)
-        {
-            result.RemoveAt(result.Count - 1);
-        }
-
-        return result;
     }
 
     private static uint FlagsFor(XPlatMenuItem item)
