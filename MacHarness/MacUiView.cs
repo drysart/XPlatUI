@@ -26,6 +26,14 @@ internal sealed class MacUiView : NSView
     private static readonly bool DebugTrace =
         Environment.GetEnvironmentVariable("XPLATUI_DEBUG") is "1" or "true";
 
+    /// <summary>How many frames in a row may be queued by an invalidation raised while painting.</summary>
+    private const int MaxDeferredRepaints = 8;
+
+    /// <summary>How often the tracing memory report is printed.</summary>
+    private const long MemoryReportIntervalMs = 5000;
+
+    private const long Mib = 1024 * 1024;
+
     private readonly XPlatUiHost _host = new();
 
     private NSTimer? _tickTimer;
@@ -39,11 +47,21 @@ internal sealed class MacUiView : NSView
     private int _scale;
     private bool _disposed;
 
+    private bool _inDraw;
+    private bool _invalidationDuringDraw;
+    private int _deferredRepaints;
+
+    private long _frames;
+    private long _buffersAllocated;
+    private long _reportedAt;
+    private long _reportedFrames;
+
     public MacUiView()
     {
         _host.Invalidated += OnHostInvalidated;
         _host.CursorChanged += OnHostCursorChanged;
         XPlatTheme.Changed += OnThemeChanged;
+        _reportedAt = Environment.TickCount64;
     }
 
     /// <summary>Raised once per tick, before the UI is ticked.</summary>
@@ -94,6 +112,54 @@ internal sealed class MacUiView : NSView
 
     public override void DrawRect(CGRect dirtyRect)
     {
+        _frames++;
+
+        // AppKit does not re-enter a draw, and doing so would paint the same buffer twice, so a
+        // nested call can only mean something asked for a frame while painting.
+        if (_inDraw)
+        {
+            Trace("draw skipped: already drawing");
+            return;
+        }
+
+        _inDraw = true;
+        try
+        {
+            DrawFrame();
+        }
+        finally
+        {
+            _inDraw = false;
+        }
+
+        // A control that invalidates while it paints needs one more frame to show that state, but
+        // one that does it every frame would spin the run loop as fast as the machine allows and
+        // grow memory with it, so the deferral is bounded and says so when it gives up.
+        if (!_invalidationDuringDraw)
+        {
+            _deferredRepaints = 0;
+            return;
+        }
+
+        _invalidationDuringDraw = false;
+        _deferredRepaints++;
+
+        if (_deferredRepaints > MaxDeferredRepaints)
+        {
+            if (_deferredRepaints == MaxDeferredRepaints + 1)
+            {
+                Trace($"repaint loop: the UI asked for a frame from inside {_deferredRepaints} draws in a row; " +
+                      "repainting only when something else asks from now on");
+            }
+
+            return;
+        }
+
+        NeedsDisplay = true;
+    }
+
+    private void DrawFrame()
+    {
         var context = NSGraphicsContext.CurrentContext?.CGContext;
         var bounds = Bounds;
 
@@ -121,7 +187,10 @@ internal sealed class MacUiView : NSView
             return;
         }
 
-        Trace($"draw {_width}x{_height} at {_scale}x");
+        if (DebugTrace && (_frames <= 3 || _frames % 100 == 0))
+        {
+            Trace($"draw #{_frames} {_width}x{_height} at {_scale}x");
+        }
 
         try
         {
@@ -149,8 +218,8 @@ internal sealed class MacUiView : NSView
         {
             provider = new CGDataProvider(_bitmap.GetPixels(), _bitmap.ByteCount, false);
             image = new CGImage(
-                _bitmap.Width,
-                _bitmap.Height,
+                _width * _scale,
+                _height * _scale,
                 8,
                 32,
                 _bitmap.RowBytes,
@@ -346,9 +415,50 @@ internal sealed class MacUiView : NSView
     {
         Ticked?.Invoke(this, EventArgs.Empty);
         _host.ProcessTick(TimeSpan.FromSeconds(TickIntervalSeconds));
+        ReportMemory();
     }
 
-    private void OnHostInvalidated(object? sender, EventArgs e) => NeedsDisplay = true;
+    private void OnHostInvalidated(object? sender, EventArgs e)
+    {
+        if (_inDraw)
+        {
+            _invalidationDuringDraw = true;
+            return;
+        }
+
+        NeedsDisplay = true;
+    }
+
+    /// <summary>
+    /// Prints frame rate and memory use every few seconds when tracing is on. A UI that grows
+    /// without bound is either drawing far more often than it should (watch the frame rate) or
+    /// holding on to something for every frame (watch private memory against the frame count).
+    /// </summary>
+    private void ReportMemory()
+    {
+        if (!DebugTrace)
+        {
+            return;
+        }
+
+        var now = Environment.TickCount64;
+        var since = now - _reportedAt;
+        if (since < MemoryReportIntervalMs)
+        {
+            return;
+        }
+
+        var frames = _frames - _reportedFrames;
+        _reportedAt = now;
+        _reportedFrames = _frames;
+
+        using var process = System.Diagnostics.Process.GetCurrentProcess();
+        Trace(
+            $"stats: {frames * 1000d / since:F1} fps, {_frames} frames, {_buffersAllocated} buffers, " +
+            $"managed {GC.GetTotalMemory(false) / Mib} MB, allocated {GC.GetTotalAllocatedBytes() / Mib} MB, " +
+            $"private {process.PrivateMemorySize64 / Mib} MB, resident {process.WorkingSet64 / Mib} MB, " +
+            $"buffer {_width}x{_height} at {_scale}x");
+    }
 
     /// <summary>Repaints whenever the palette is swapped, by the system or by the application.</summary>
     private void OnThemeChanged(object? sender, EventArgs e) => NeedsDisplay = true;
@@ -397,10 +507,26 @@ internal sealed class MacUiView : NSView
             return;
         }
 
-        ReleaseBuffer();
-
         var pixelWidth = width * scale;
         var pixelHeight = height * scale;
+
+        // Dragging a window edge asks for a frame at every intermediate size, and a fresh
+        // multi-megabyte bitmap per frame is native memory the garbage collector never sees the
+        // pressure from. Keeping the largest buffer and drawing into its corner bounds the whole
+        // resize to one allocation.
+        if (_bitmap is not null && _scale == scale && _bitmap.Width >= pixelWidth && _bitmap.Height >= pixelHeight)
+        {
+            _width = width;
+            _height = height;
+            return;
+        }
+
+        ReleaseBuffer();
+
+        if (DebugTrace && _buffersAllocated > 0)
+        {
+            Trace($"buffer reallocated for {width}x{height} at {scale}x (#{_buffersAllocated + 1})");
+        }
 
         try
         {
@@ -425,6 +551,7 @@ internal sealed class MacUiView : NSView
             _height = height;
             _scale = scale;
             _bufferError = null;
+            _buffersAllocated++;
         }
         catch (Exception ex)
         {

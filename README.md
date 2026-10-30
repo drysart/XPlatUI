@@ -538,7 +538,10 @@ combination that the menu bar did not claim is swallowed instead of typing its l
 `Control` combinations reach the library as shortcuts. The system UI font (`SF Pro Text`) is handed
 to the library through `XPlatTheme.FontFamily`.
 
-Set `XPLATUI_DEBUG=1` to trace frames and buffer reallocation to stderr. If a frame cannot be
+Set `XPLATUI_DEBUG=1` to trace frames and buffer reallocation to stderr. It also prints a `stats:`
+line every five seconds - frame rate, frames drawn, managed heap, total allocated, private and
+resident memory - which is how a runaway repaint (a high frame rate with idle input) or a per-frame
+retention (private memory climbing while the frame rate stays low) shows itself. If a frame cannot be
 produced at all, the view paints the reason over the whole window instead of leaving it blank, so a
 broken setup reports itself on screen rather than only on a console.
 
