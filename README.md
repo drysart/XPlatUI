@@ -528,8 +528,12 @@ copies the whole block before wrapping it, which on a Retina window is a 16 MB `
 The `CGImage` is rebuilt for every frame, because CoreGraphics treats an image as immutable and keeps
 whatever it decoded out of the provider's memory: one cached image would pin the window to the
 contents of the very first frame, which is drawn before the control tree exists. There is no
-SkiaSharp view for AppKit in SkiaSharp 4.x, which is why the view draws itself.
-to `XPlatUiHost.Process*` from the `NSResponder` overrides, a 250 ms `NSTimer` drives `ProcessTick`
+SkiaSharp view for AppKit in SkiaSharp 4.x, which is why the view draws itself. The buffer is made
+half again as large as the window needs, and only given back once the window is twice as small, so
+dragging a window edge across the screen reallocates it once instead of once per frame - each of
+those was a multi-megabyte native allocation that the garbage collector never sees. Mouse and
+keyboard events are forwarded to `XPlatUiHost.Process*` from the `NSResponder` overrides, a 250 ms
+`NSTimer` drives `ProcessTick`
 (caret blinking) and doubles as the poll for a system appearance change
 (`NSAppearance.FindBestMatch`), and a tracking area keeps `MouseMoved`/`MouseEntered`/`MouseExited`
 coming so hover states and cursors work.
@@ -542,11 +546,12 @@ combination that the menu bar did not claim is swallowed instead of typing its l
 to the library through `XPlatTheme.FontFamily`.
 
 Set `XPLATUI_DEBUG=1` to trace frames and buffer reallocation to stderr. It also prints a `stats:`
-line every five seconds - frame rate, frames drawn, managed heap, total allocated, private and
-resident memory - which is how a runaway repaint (a high frame rate with idle input) or a per-frame
-retention (private memory climbing while the frame rate stays low) shows itself. If a frame cannot be
-produced at all, the view paints the reason over the whole window instead of leaving it blank, so a
-broken setup reports itself on screen rather than only on a console.
+line every five seconds - frame rate, frames drawn, buffers allocated, managed heap, total managed
+allocation and resident memory - which is how a runaway repaint (a high frame rate with idle input)
+or a per-frame retention (resident memory climbing while the frame rate stays low) shows itself.
+Resident memory is the figure to read: `Process.PrivateMemorySize64` is always zero on macOS. If a
+frame cannot be produced at all, the view paints the reason over the whole window instead of
+leaving it blank, so a broken setup reports itself on screen rather than only on a console.
 
 ### Bundle size
 

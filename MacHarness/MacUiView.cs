@@ -29,6 +29,9 @@ internal sealed class MacUiView : NSView
     /// <summary>How many frames in a row may be queued by an invalidation raised while painting.</summary>
     private const int MaxDeferredRepaints = 8;
 
+    /// <summary>A drawing buffer is only given back once the window is this many times smaller.</summary>
+    private const int OversizedFactor = 2;
+
     /// <summary>How often the tracing memory report is printed.</summary>
     private const long MemoryReportIntervalMs = 5000;
 
@@ -180,6 +183,13 @@ internal sealed class MacUiView : NSView
 
         var scale = Math.Max((int)Math.Round(Window is null ? 1d : (double)Window.BackingScaleFactor), 1);
         SyncHostSize();
+
+        // Resizing the host lays its children out, which asks for a repaint - but this frame is
+        // about to paint at exactly the size that was just set, so that invalidation is already
+        // satisfied. Asking for another frame on its behalf would double the work of every step of
+        // a live resize.
+        _invalidationDuringDraw = false;
+
         EnsureBuffer((int)Math.Round(bounds.Width), (int)Math.Round(bounds.Height), scale);
 
         if (_skia is null || _bitmap is null || _provider is null || _colorSpace is null)
@@ -197,6 +207,11 @@ internal sealed class MacUiView : NSView
         {
             var canvas = _skia.Canvas;
             canvas.Save();
+
+            // The buffer is larger than the window so that a drag does not reallocate it, and the
+            // clear that starts every frame honours the clip, so without this each frame would also
+            // wipe all the headroom.
+            canvas.ClipRect(new SKRect(0, 0, _width, _height));
             canvas.Scale(scale);
             _host.Paint(canvas);
             canvas.Restore();
@@ -455,7 +470,7 @@ internal sealed class MacUiView : NSView
         Trace(
             $"stats: {frames * 1000d / since:F1} fps, {_frames} frames, {_buffersAllocated} buffers, " +
             $"managed {GC.GetTotalMemory(false) / Mib} MB, allocated {GC.GetTotalAllocatedBytes() / Mib} MB, " +
-            $"private {process.PrivateMemorySize64 / Mib} MB, resident {process.WorkingSet64 / Mib} MB, " +
+            $"resident {process.WorkingSet64 / Mib} MB, " +
             $"buffer {_width}x{_height} at {_scale}x");
     }
 
@@ -511,37 +526,54 @@ internal sealed class MacUiView : NSView
 
         // Dragging a window edge asks for a frame at every intermediate size, and a fresh
         // multi-megabyte bitmap per frame is native memory the garbage collector never sees the
-        // pressure from. Keeping the largest buffer and drawing into its corner bounds the whole
-        // resize to one allocation.
-        if (_bitmap is not null && _scale == scale && _bitmap.Width >= pixelWidth && _bitmap.Height >= pixelHeight)
+        // pressure from: one drag across a Retina screen reallocated twenty times, and the
+        // allocator was in no hurry to give any of it back. So the buffer grows with headroom
+        // (half again the size it needs) and only shrinks once the window is far smaller than it,
+        // which turns a whole drag into one allocation and keeps an in-and-out drag from thrashing.
+        if (_bitmap is not null && _scale == scale)
         {
-            _width = width;
-            _height = height;
-            return;
+            var fits = _bitmap.Width >= pixelWidth && _bitmap.Height >= pixelHeight;
+            var oversized = _bitmap.Width > pixelWidth * OversizedFactor ||
+                            _bitmap.Height > pixelHeight * OversizedFactor;
+
+            if (fits && !oversized)
+            {
+                _width = width;
+                _height = height;
+                return;
+            }
         }
+
+        // Half again the size that is actually needed, so the next few sizes of the same drag fit
+        // the buffer that was just made. It is measured from the needed size rather than from the
+        // buffer being replaced, which is what keeps a shrinking window from growing its buffer and
+        // bounds the buffer to 1.5x the window instead of letting it compound.
+        var allocWidth = pixelWidth + pixelWidth / 2;
+        var allocHeight = pixelHeight + pixelHeight / 2;
 
         ReleaseBuffer();
 
         if (DebugTrace && _buffersAllocated > 0)
         {
-            Trace($"buffer reallocated for {width}x{height} at {scale}x (#{_buffersAllocated + 1})");
+            Trace($"buffer reallocated for {width}x{height} at {scale}x " +
+                  $"(#{_buffersAllocated + 1}, {allocWidth}x{allocHeight} pixels)");
         }
 
         try
         {
             // Premultiplied BGRA, which is what CoreGraphics wants on a little endian machine with
             // ByteOrder32Little, so the same buffer can be handed to both Skia and CoreGraphics.
-            var info = new SKImageInfo(pixelWidth, pixelHeight, SKColorType.Bgra8888, SKAlphaType.Premul);
+            var info = new SKImageInfo(allocWidth, allocHeight, SKColorType.Bgra8888, SKAlphaType.Premul);
             _bitmap = new SKBitmap(info);
 
             var pixels = _bitmap.GetPixels();
             if (pixels == IntPtr.Zero)
             {
-                throw new InvalidOperationException($"SkiaSharp allocated no pixels for {pixelWidth}x{pixelHeight}.");
+                throw new InvalidOperationException($"SkiaSharp allocated no pixels for {allocWidth}x{allocHeight}.");
             }
 
             _skia = SKSurface.Create(info, pixels, _bitmap.RowBytes)
-                ?? throw new InvalidOperationException($"SkiaSharp could not wrap {pixelWidth}x{pixelHeight} pixels in a surface.");
+                ?? throw new InvalidOperationException($"SkiaSharp could not wrap {allocWidth}x{allocHeight} pixels in a surface.");
 
             // The (memory, size, bool) overload reads that bool as "owns the buffer" and, when it is
             // false, copies the whole block - which would memcpy every pixel of every frame, about
