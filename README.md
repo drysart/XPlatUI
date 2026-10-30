@@ -531,7 +531,10 @@ contents of the very first frame, which is drawn before the control tree exists.
 SkiaSharp view for AppKit in SkiaSharp 4.x, which is why the view draws itself. The buffer is made
 half again as large as the window needs, and only given back once the window is twice as small, so
 dragging a window edge across the screen reallocates it once instead of once per frame - each of
-those was a multi-megabyte native allocation that the garbage collector never sees. Mouse and
+those was a multi-megabyte native allocation that the garbage collector never sees. Because the
+buffer outgrows the window, each frame clips the canvas to the window before painting; the clip is
+applied *after* the scale, in the same logical units the controls paint in, or it would only cover
+the top left `1/scale` of the view. Mouse and
 keyboard events are forwarded to `XPlatUiHost.Process*` from the `NSResponder` overrides, a 250 ms
 `NSTimer` drives `ProcessTick`
 (caret blinking) and doubles as the poll for a system appearance change
