@@ -520,10 +520,23 @@ MacHarness.app/Contents/MacOS/MacHarness --render out.png 1280 760 --dark
 ```
 
 `MacUiView` is a plain `NSView`, flipped so y grows downwards like every other backend. Skia paints
-into an `SKBitmap` of premultiplied BGRA pixels, and `DrawRect` hands those pixels to CoreGraphics as
-a `CGImage` built over the same memory, so a frame costs no copy. There is no SkiaSharp view for
-AppKit in SkiaSharp 4.x, which is why the view draws itself. Mouse and keyboard events are forwarded
-to `XPlatUiHost.Process*` from the `NSResponder` overrides, a 250 ms `NSTimer` drives `ProcessTick`
+into an `SKBitmap` of premultiplied BGRA pixels, one `CGDataProvider` wraps those pixels where they
+are, and `DrawRect` builds a `CGImage` over that provider, so a frame costs no copy and allocates
+nothing but the image itself. The provider is built with the `Action<IntPtr>` overload on purpose:
+the `(IntPtr, int, bool)` overload reads its `bool` as *owns the buffer* and, when it is false,
+copies the whole block before wrapping it, which on a Retina window is a 16 MB `memcpy` per frame.
+The `CGImage` is rebuilt for every frame, because CoreGraphics treats an image as immutable and keeps
+whatever it decoded out of the provider's memory: one cached image would pin the window to the
+contents of the very first frame, which is drawn before the control tree exists. There is no
+SkiaSharp view for AppKit in SkiaSharp 4.x, which is why the view draws itself. The buffer is made
+half again as large as the window needs, and only given back once the window is twice as small, so
+dragging a window edge across the screen reallocates it once instead of once per frame - each of
+those was a multi-megabyte native allocation that the garbage collector never sees. Because the
+buffer outgrows the window, each frame clips the canvas to the window before painting; the clip is
+applied *after* the scale, in the same logical units the controls paint in, or it would only cover
+the top left `1/scale` of the view. Mouse and
+keyboard events are forwarded to `XPlatUiHost.Process*` from the `NSResponder` overrides, a 250 ms
+`NSTimer` drives `ProcessTick`
 (caret blinking) and doubles as the poll for a system appearance change
 (`NSAppearance.FindBestMatch`), and a tracking area keeps `MouseMoved`/`MouseEntered`/`MouseExited`
 coming so hover states and cursors work.
@@ -535,7 +548,13 @@ combination that the menu bar did not claim is swallowed instead of typing its l
 `Control` combinations reach the library as shortcuts. The system UI font (`SF Pro Text`) is handed
 to the library through `XPlatTheme.FontFamily`.
 
-Set `XPLATUI_DEBUG=1` to trace frames and buffer reallocation to stderr.
+Set `XPLATUI_DEBUG=1` to trace frames and buffer reallocation to stderr. It also prints a `stats:`
+line every five seconds - frame rate, frames drawn, buffers allocated, managed heap, total managed
+allocation and resident memory - which is how a runaway repaint (a high frame rate with idle input)
+or a per-frame retention (resident memory climbing while the frame rate stays low) shows itself.
+Resident memory is the figure to read: `Process.PrivateMemorySize64` is always zero on macOS. If a
+frame cannot be produced at all, the view paints the reason over the whole window instead of
+leaving it blank, so a broken setup reports itself on screen rather than only on a console.
 
 ### Bundle size
 

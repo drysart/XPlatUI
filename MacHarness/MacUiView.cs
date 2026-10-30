@@ -1,6 +1,7 @@
 using AppKit;
 using CoreGraphics;
 using Foundation;
+using ObjCRuntime;
 using SkiaSharp;
 using XPlatUI;
 
@@ -25,6 +26,17 @@ internal sealed class MacUiView : NSView
     private static readonly bool DebugTrace =
         Environment.GetEnvironmentVariable("XPLATUI_DEBUG") is "1" or "true";
 
+    /// <summary>How many frames in a row may be queued by an invalidation raised while painting.</summary>
+    private const int MaxDeferredRepaints = 8;
+
+    /// <summary>A drawing buffer is only given back once the window is this many times smaller.</summary>
+    private const int OversizedFactor = 2;
+
+    /// <summary>How often the tracing memory report is printed.</summary>
+    private const long MemoryReportIntervalMs = 5000;
+
+    private const long Mib = 1024 * 1024;
+
     private readonly XPlatUiHost _host = new();
 
     private NSTimer? _tickTimer;
@@ -32,18 +44,28 @@ internal sealed class MacUiView : NSView
     private SKBitmap? _bitmap;
     private SKSurface? _skia;
     private CGDataProvider? _provider;
-    private CGImage? _image;
     private CGColorSpace? _colorSpace;
+    private string? _bufferError;
     private int _width;
     private int _height;
     private int _scale;
     private bool _disposed;
+
+    private bool _inDraw;
+    private bool _invalidationDuringDraw;
+    private int _deferredRepaints;
+
+    private long _frames;
+    private long _buffersAllocated;
+    private long _reportedAt;
+    private long _reportedFrames;
 
     public MacUiView()
     {
         _host.Invalidated += OnHostInvalidated;
         _host.CursorChanged += OnHostCursorChanged;
         XPlatTheme.Changed += OnThemeChanged;
+        _reportedAt = Environment.TickCount64;
     }
 
     /// <summary>Raised once per tick, before the UI is ticked.</summary>
@@ -60,6 +82,11 @@ internal sealed class MacUiView : NSView
         {
             _host.Root = value;
             SyncHostSize();
+
+            // The host already asks for a repaint when its root changes, but it does so before the
+            // view knows the new tree needs a frame - and if the size did not change there is no
+            // layout pass either - so the first frame of the tree would otherwise wait for input.
+            NeedsDisplay = true;
         }
     }
 
@@ -75,6 +102,10 @@ internal sealed class MacUiView : NSView
         }
 
         _tickTimer = NSTimer.CreateRepeatingScheduledTimer(TickIntervalSeconds, _ => OnTick());
+
+        // Startup order is window first, control tree second, so make sure the tree gets a frame
+        // even though nothing has touched the view since it was put on screen.
+        NeedsDisplay = true;
     }
 
     /// <summary>
@@ -85,38 +116,158 @@ internal sealed class MacUiView : NSView
 
     public override void DrawRect(CGRect dirtyRect)
     {
+        _frames++;
+
+        // AppKit does not re-enter a draw, and doing so would paint the same buffer twice, so a
+        // nested call can only mean something asked for a frame while painting.
+        if (_inDraw)
+        {
+            Trace("draw skipped: already drawing");
+            return;
+        }
+
+        _inDraw = true;
+        try
+        {
+            DrawFrame();
+        }
+        finally
+        {
+            _inDraw = false;
+        }
+
+        // A control that invalidates while it paints needs one more frame to show that state, but
+        // one that does it every frame would spin the run loop as fast as the machine allows and
+        // grow memory with it, so the deferral is bounded and says so when it gives up.
+        if (!_invalidationDuringDraw)
+        {
+            _deferredRepaints = 0;
+            return;
+        }
+
+        _invalidationDuringDraw = false;
+        _deferredRepaints++;
+
+        if (_deferredRepaints > MaxDeferredRepaints)
+        {
+            if (_deferredRepaints == MaxDeferredRepaints + 1)
+            {
+                Trace($"repaint loop: the UI asked for a frame from inside {_deferredRepaints} draws in a row; " +
+                      "repainting only when something else asks from now on");
+            }
+
+            return;
+        }
+
+        NeedsDisplay = true;
+    }
+
+    private void DrawFrame()
+    {
         var context = NSGraphicsContext.CurrentContext?.CGContext;
         var bounds = Bounds;
-        if (context is null || bounds.Width <= 0 || bounds.Height <= 0)
+
+        // Neither of these should happen, and both of them look exactly like "the window is empty"
+        // from the outside, so they say so when tracing is on.
+        if (context is null)
         {
+            Trace("draw skipped: no CoreGraphics context");
+            return;
+        }
+
+        if (bounds.Width <= 0 || bounds.Height <= 0)
+        {
+            Trace($"draw skipped: empty bounds {bounds.Width}x{bounds.Height}");
             return;
         }
 
         var scale = Math.Max((int)Math.Round(Window is null ? 1d : (double)Window.BackingScaleFactor), 1);
         SyncHostSize();
+
+        // Resizing the host lays its children out, which asks for a repaint - but this frame is
+        // about to paint at exactly the size that was just set, so that invalidation is already
+        // satisfied. Asking for another frame on its behalf would double the work of every step of
+        // a live resize.
+        _invalidationDuringDraw = false;
+
         EnsureBuffer((int)Math.Round(bounds.Width), (int)Math.Round(bounds.Height), scale);
 
-        if (_skia is null || _image is null)
+        if (_skia is null || _bitmap is null || _provider is null || _colorSpace is null)
         {
+            DrawDiagnostic(context, bounds, _bufferError ?? "the SkiaSharp drawing buffer could not be created");
             return;
         }
 
-        Trace($"draw {_width}x{_height} at {_scale}x");
+        if (DebugTrace && (_frames <= 3 || _frames % 100 == 0))
+        {
+            Trace($"draw #{_frames} {_width}x{_height} at {_scale}x");
+        }
 
-        var canvas = _skia.Canvas;
-        canvas.Save();
-        canvas.Scale(scale);
-        _host.Paint(canvas);
-        canvas.Restore();
-        canvas.Flush();
+        try
+        {
+            var canvas = _skia.Canvas;
+            canvas.Save();
+            canvas.Scale(scale);
 
-        // The view is flipped, so the context is y-down; undo that for the image blit or the whole
-        // UI comes out upside down.
-        context.SaveState();
-        context.TranslateCTM(0, bounds.Height);
-        context.ScaleCTM(1, -1);
-        context.DrawImage(new CGRect(0, 0, bounds.Width, bounds.Height), _image);
-        context.RestoreState();
+            // The buffer is larger than the window so that a drag does not reallocate it, and the
+            // clear that starts every frame honours the clip, so without this each frame would also
+            // wipe all the headroom. This is after the scale because the clip is in the same
+            // logical units the UI paints in, not in pixels.
+            canvas.ClipRect(new SKRect(0, 0, _width, _height));
+            _host.Paint(canvas);
+            canvas.Restore();
+            canvas.Flush();
+        }
+        catch (Exception ex)
+        {
+            DrawDiagnostic(context, bounds, $"painting the UI failed: {ex.GetType().Name}: {ex.Message}");
+            return;
+        }
+
+        // CoreGraphics treats a CGImage as immutable and is free to keep the decode it made of the
+        // provider's memory, so one cached image would pin the window to whatever the buffer held
+        // when it was first drawn - and the first frame is drawn before the control tree exists,
+        // which is an empty window. A fresh image over the pixels that were just painted is what
+        // makes each frame show the current UI; the bitmap, its Skia surface and the data provider
+        // over its pixels stay cached, so a frame allocates nothing but the image itself.
+        CGImage? image = null;
+        try
+        {
+            image = new CGImage(
+                _width * _scale,
+                _height * _scale,
+                8,
+                32,
+                _bitmap.RowBytes,
+                _colorSpace,
+                CGBitmapFlags.PremultipliedFirst | CGBitmapFlags.ByteOrder32Little,
+                _provider,
+                null,
+                false,
+                CGColorRenderingIntent.Default);
+
+            if (((INativeObject)image).Handle == IntPtr.Zero)
+            {
+                DrawDiagnostic(context, bounds, "CoreGraphics could not build an image from the SkiaSharp bitmap");
+                return;
+            }
+
+            // The view is flipped, so the context is y-down; undo that for the image blit or the
+            // whole UI comes out upside down.
+            context.SaveState();
+            context.TranslateCTM(0, bounds.Height);
+            context.ScaleCTM(1, -1);
+            context.DrawImage(new CGRect(0, 0, bounds.Width, bounds.Height), image);
+            context.RestoreState();
+        }
+        catch (Exception ex)
+        {
+            DrawDiagnostic(context, bounds, $"presenting the UI failed: {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            image?.Dispose();
+        }
     }
 
     public override bool AcceptsFirstResponder() => true;
@@ -279,9 +430,50 @@ internal sealed class MacUiView : NSView
     {
         Ticked?.Invoke(this, EventArgs.Empty);
         _host.ProcessTick(TimeSpan.FromSeconds(TickIntervalSeconds));
+        ReportMemory();
     }
 
-    private void OnHostInvalidated(object? sender, EventArgs e) => NeedsDisplay = true;
+    private void OnHostInvalidated(object? sender, EventArgs e)
+    {
+        if (_inDraw)
+        {
+            _invalidationDuringDraw = true;
+            return;
+        }
+
+        NeedsDisplay = true;
+    }
+
+    /// <summary>
+    /// Prints frame rate and memory use every few seconds when tracing is on. A UI that grows
+    /// without bound is either drawing far more often than it should (watch the frame rate) or
+    /// holding on to something for every frame (watch private memory against the frame count).
+    /// </summary>
+    private void ReportMemory()
+    {
+        if (!DebugTrace)
+        {
+            return;
+        }
+
+        var now = Environment.TickCount64;
+        var since = now - _reportedAt;
+        if (since < MemoryReportIntervalMs)
+        {
+            return;
+        }
+
+        var frames = _frames - _reportedFrames;
+        _reportedAt = now;
+        _reportedFrames = _frames;
+
+        using var process = System.Diagnostics.Process.GetCurrentProcess();
+        Trace(
+            $"stats: {frames * 1000d / since:F1} fps, {_frames} frames, {_buffersAllocated} buffers, " +
+            $"managed {GC.GetTotalMemory(false) / Mib} MB, allocated {GC.GetTotalAllocatedBytes() / Mib} MB, " +
+            $"resident {process.WorkingSet64 / Mib} MB, " +
+            $"buffer {_width}x{_height} at {_scale}x");
+    }
 
     /// <summary>Repaints whenever the palette is swapped, by the system or by the application.</summary>
     private void OnThemeChanged(object? sender, EventArgs e) => NeedsDisplay = true;
@@ -330,74 +522,163 @@ internal sealed class MacUiView : NSView
             return;
         }
 
-        ReleaseBuffer();
-
         var pixelWidth = width * scale;
         var pixelHeight = height * scale;
+
+        // Dragging a window edge asks for a frame at every intermediate size, and a fresh
+        // multi-megabyte bitmap per frame is native memory the garbage collector never sees the
+        // pressure from: one drag across a Retina screen reallocated twenty times, and the
+        // allocator was in no hurry to give any of it back. So the buffer grows with headroom
+        // (half again the size it needs) and only shrinks once the window is far smaller than it,
+        // which turns a whole drag into one allocation and keeps an in-and-out drag from thrashing.
+        if (_bitmap is not null && _scale == scale)
+        {
+            var fits = _bitmap.Width >= pixelWidth && _bitmap.Height >= pixelHeight;
+            var oversized = _bitmap.Width > pixelWidth * OversizedFactor ||
+                            _bitmap.Height > pixelHeight * OversizedFactor;
+
+            if (fits && !oversized)
+            {
+                _width = width;
+                _height = height;
+                return;
+            }
+        }
+
+        // Half again the size that is actually needed, so the next few sizes of the same drag fit
+        // the buffer that was just made. It is measured from the needed size rather than from the
+        // buffer being replaced, which is what keeps a shrinking window from growing its buffer and
+        // bounds the buffer to 1.5x the window instead of letting it compound.
+        var allocWidth = pixelWidth + pixelWidth / 2;
+        var allocHeight = pixelHeight + pixelHeight / 2;
+
+        ReleaseBuffer();
+
+        if (DebugTrace && _buffersAllocated > 0)
+        {
+            Trace($"buffer reallocated for {width}x{height} at {scale}x " +
+                  $"(#{_buffersAllocated + 1}, {allocWidth}x{allocHeight} pixels)");
+        }
 
         try
         {
             // Premultiplied BGRA, which is what CoreGraphics wants on a little endian machine with
             // ByteOrder32Little, so the same buffer can be handed to both Skia and CoreGraphics.
-            var info = new SKImageInfo(pixelWidth, pixelHeight, SKColorType.Bgra8888, SKAlphaType.Premul);
+            var info = new SKImageInfo(allocWidth, allocHeight, SKColorType.Bgra8888, SKAlphaType.Premul);
             _bitmap = new SKBitmap(info);
 
             var pixels = _bitmap.GetPixels();
-            _skia = SKSurface.Create(info, pixels, _bitmap.RowBytes);
-            if (_skia is null)
+            if (pixels == IntPtr.Zero)
             {
-                ReleaseBuffer();
-                return;
+                throw new InvalidOperationException($"SkiaSharp allocated no pixels for {allocWidth}x{allocHeight}.");
             }
 
-            // The bitmap owns the memory and outlives the provider, so CoreGraphics must not free it.
-            _provider = new CGDataProvider(pixels, _bitmap.ByteCount, ownBuffer: false);
-            _colorSpace = CGColorSpace.CreateDeviceRGB();
-            _image = new CGImage(
-                pixelWidth,
-                pixelHeight,
-                8,
-                32,
-                _bitmap.RowBytes,
-                _colorSpace,
-                CGBitmapFlags.PremultipliedFirst | CGBitmapFlags.ByteOrder32Little,
-                _provider,
-                null,
-                false,
-                CGColorRenderingIntent.Default);
+            _skia = SKSurface.Create(info, pixels, _bitmap.RowBytes)
+                ?? throw new InvalidOperationException($"SkiaSharp could not wrap {allocWidth}x{allocHeight} pixels in a surface.");
+
+            // The (memory, size, bool) overload reads that bool as "owns the buffer" and, when it is
+            // false, copies the whole block - which would memcpy every pixel of every frame, about
+            // 16 MB on a Retina window. The callback overload wraps the pixels where they are; the
+            // callback does nothing because SkiaSharp owns them and outlives the provider.
+            _provider = new CGDataProvider(pixels, _bitmap.ByteCount, static _ => { });
+
+            _colorSpace ??= CGColorSpace.CreateDeviceRGB()
+                ?? throw new InvalidOperationException("CoreGraphics has no device RGB colour space.");
 
             _width = width;
             _height = height;
             _scale = scale;
+            _bufferError = null;
+            _buffersAllocated++;
         }
         catch (Exception ex)
         {
-            Trace($"buffer {pixelWidth}x{pixelHeight} failed: {ex.GetType().Name}: {ex.Message}");
+            // Failing here silently is a window that never draws anything, which is the hardest
+            // kind of bug to report, so the reason is kept for DrawRect to put on screen.
+            _bufferError = $"{ex.GetType().Name}: {ex.Message}";
+            Console.Error.WriteLine($"[xplat] {pixelWidth}x{pixelHeight} drawing buffer failed: {_bufferError}");
             ReleaseBuffer();
         }
     }
 
     private void ReleaseBuffer()
     {
-        // The image and its provider read the bitmap's memory, so they have to go first.
-        _image?.Dispose();
-        _image = null;
-
-        _provider?.Dispose();
-        _provider = null;
-
-        _colorSpace?.Dispose();
-        _colorSpace = null;
-
+        // The surface writes into the bitmap's memory, so it has to go first.
         _skia?.Dispose();
         _skia = null;
+
+        // The provider points at the bitmap's pixels, so it goes before the bitmap does.
+        _provider?.Dispose();
+        _provider = null;
 
         _bitmap?.Dispose();
         _bitmap = null;
 
+        _colorSpace?.Dispose();
+        _colorSpace = null;
+
         _width = 0;
         _height = 0;
         _scale = 0;
+    }
+
+    /// <summary>
+    /// Paints the reason the UI cannot be drawn over the whole view. A window that draws nothing
+    /// says nothing, so every failure ends up here rather than on a console nobody is watching.
+    /// </summary>
+    private static void DrawDiagnostic(CGContext context, CGRect bounds, string message)
+    {
+        context.SaveState();
+        context.SetFillColor(0.55f, 0f, 0f, 1f);
+        context.FillRect(bounds);
+        context.RestoreState();
+
+        // NSString draws through the current NSGraphicsContext, so it picks up the flipped view
+        // coordinates on its own and needs no y-flip of its own.
+        var font = NSFont.SystemFontOfSize(13);
+        var color = NSColor.White;
+        if (font is null || color is null)
+        {
+            return;
+        }
+
+        var attributes = NSDictionary.FromObjectsAndKeys(
+            new object[] { font, color },
+            new object[] { NSStringAttributeKey.Font, NSStringAttributeKey.ForegroundColor });
+
+        if (attributes is null)
+        {
+            return;
+        }
+
+        var y = 12;
+        foreach (var line in Wrap(message, 96))
+        {
+            if (y + 18 > bounds.Height)
+            {
+                break;
+            }
+
+            using var text = new NSString(line);
+            text.DrawString(new CGRect(16, y, Math.Max(bounds.Width - 32, 0), 20), attributes);
+            y += 18;
+        }
+    }
+
+    /// <summary>Breaks a message into lines narrow enough to read on screen.</summary>
+    private static IEnumerable<string> Wrap(string message, int columns)
+    {
+        foreach (var paragraph in message.Split('\n'))
+        {
+            var line = paragraph.Trim();
+            while (line.Length > columns)
+            {
+                yield return line[..columns];
+                line = line[columns..];
+            }
+
+            yield return line;
+        }
     }
 
     private static void Trace(string message)
