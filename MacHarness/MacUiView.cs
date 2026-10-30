@@ -207,12 +207,13 @@ internal sealed class MacUiView : NSView
         {
             var canvas = _skia.Canvas;
             canvas.Save();
+            canvas.Scale(scale);
 
             // The buffer is larger than the window so that a drag does not reallocate it, and the
             // clear that starts every frame honours the clip, so without this each frame would also
-            // wipe all the headroom.
+            // wipe all the headroom. This is after the scale because the clip is in the same
+            // logical units the UI paints in, not in pixels.
             canvas.ClipRect(new SKRect(0, 0, _width, _height));
-            canvas.Scale(scale);
             _host.Paint(canvas);
             canvas.Restore();
             canvas.Flush();
