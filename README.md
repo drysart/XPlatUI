@@ -521,7 +521,10 @@ MacHarness.app/Contents/MacOS/MacHarness --render out.png 1280 760 --dark
 
 `MacUiView` is a plain `NSView`, flipped so y grows downwards like every other backend. Skia paints
 into an `SKBitmap` of premultiplied BGRA pixels, and `DrawRect` hands those pixels to CoreGraphics as
-a `CGImage` built over the same memory, so a frame costs no copy. There is no SkiaSharp view for
+a `CGImage` built over the same memory, so a frame costs no copy. The `CGImage` is rebuilt for every
+frame, because CoreGraphics treats an image as immutable and keeps whatever it decoded out of the
+provider's memory: one cached image would pin the window to the contents of the very first frame,
+which is drawn before the control tree exists. There is no SkiaSharp view for
 AppKit in SkiaSharp 4.x, which is why the view draws itself. Mouse and keyboard events are forwarded
 to `XPlatUiHost.Process*` from the `NSResponder` overrides, a 250 ms `NSTimer` drives `ProcessTick`
 (caret blinking) and doubles as the poll for a system appearance change
@@ -535,7 +538,9 @@ combination that the menu bar did not claim is swallowed instead of typing its l
 `Control` combinations reach the library as shortcuts. The system UI font (`SF Pro Text`) is handed
 to the library through `XPlatTheme.FontFamily`.
 
-Set `XPLATUI_DEBUG=1` to trace frames and buffer reallocation to stderr.
+Set `XPLATUI_DEBUG=1` to trace frames and buffer reallocation to stderr. If a frame cannot be
+produced at all, the view paints the reason over the whole window instead of leaving it blank, so a
+broken setup reports itself on screen rather than only on a console.
 
 ### Bundle size
 

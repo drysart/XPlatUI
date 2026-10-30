@@ -1,6 +1,7 @@
 using AppKit;
 using CoreGraphics;
 using Foundation;
+using ObjCRuntime;
 using SkiaSharp;
 using XPlatUI;
 
@@ -31,9 +32,8 @@ internal sealed class MacUiView : NSView
     private NSTrackingArea? _trackingArea;
     private SKBitmap? _bitmap;
     private SKSurface? _skia;
-    private CGDataProvider? _provider;
-    private CGImage? _image;
     private CGColorSpace? _colorSpace;
+    private string? _bufferError;
     private int _width;
     private int _height;
     private int _scale;
@@ -60,6 +60,11 @@ internal sealed class MacUiView : NSView
         {
             _host.Root = value;
             SyncHostSize();
+
+            // The host already asks for a repaint when its root changes, but it does so before the
+            // view knows the new tree needs a frame - and if the size did not change there is no
+            // layout pass either - so the first frame of the tree would otherwise wait for input.
+            NeedsDisplay = true;
         }
     }
 
@@ -75,6 +80,10 @@ internal sealed class MacUiView : NSView
         }
 
         _tickTimer = NSTimer.CreateRepeatingScheduledTimer(TickIntervalSeconds, _ => OnTick());
+
+        // Startup order is window first, control tree second, so make sure the tree gets a frame
+        // even though nothing has touched the view since it was put on screen.
+        NeedsDisplay = true;
     }
 
     /// <summary>
@@ -87,8 +96,18 @@ internal sealed class MacUiView : NSView
     {
         var context = NSGraphicsContext.CurrentContext?.CGContext;
         var bounds = Bounds;
-        if (context is null || bounds.Width <= 0 || bounds.Height <= 0)
+
+        // Neither of these should happen, and both of them look exactly like "the window is empty"
+        // from the outside, so they say so when tracing is on.
+        if (context is null)
         {
+            Trace("draw skipped: no CoreGraphics context");
+            return;
+        }
+
+        if (bounds.Width <= 0 || bounds.Height <= 0)
+        {
+            Trace($"draw skipped: empty bounds {bounds.Width}x{bounds.Height}");
             return;
         }
 
@@ -96,27 +115,75 @@ internal sealed class MacUiView : NSView
         SyncHostSize();
         EnsureBuffer((int)Math.Round(bounds.Width), (int)Math.Round(bounds.Height), scale);
 
-        if (_skia is null || _image is null)
+        if (_skia is null || _bitmap is null || _colorSpace is null)
         {
+            DrawDiagnostic(context, bounds, _bufferError ?? "the SkiaSharp drawing buffer could not be created");
             return;
         }
 
         Trace($"draw {_width}x{_height} at {_scale}x");
 
-        var canvas = _skia.Canvas;
-        canvas.Save();
-        canvas.Scale(scale);
-        _host.Paint(canvas);
-        canvas.Restore();
-        canvas.Flush();
+        try
+        {
+            var canvas = _skia.Canvas;
+            canvas.Save();
+            canvas.Scale(scale);
+            _host.Paint(canvas);
+            canvas.Restore();
+            canvas.Flush();
+        }
+        catch (Exception ex)
+        {
+            DrawDiagnostic(context, bounds, $"painting the UI failed: {ex.GetType().Name}: {ex.Message}");
+            return;
+        }
 
-        // The view is flipped, so the context is y-down; undo that for the image blit or the whole
-        // UI comes out upside down.
-        context.SaveState();
-        context.TranslateCTM(0, bounds.Height);
-        context.ScaleCTM(1, -1);
-        context.DrawImage(new CGRect(0, 0, bounds.Width, bounds.Height), _image);
-        context.RestoreState();
+        // CoreGraphics treats a CGImage as immutable and is free to keep the decode it made of the
+        // provider's memory, so one cached image would pin the window to whatever the buffer held
+        // when it was first drawn - and the first frame is drawn before the control tree exists,
+        // which is an empty window. A fresh image over the pixels that were just painted is what
+        // makes each frame show the current UI; the bitmap and its Skia surface stay cached.
+        CGDataProvider? provider = null;
+        CGImage? image = null;
+        try
+        {
+            provider = new CGDataProvider(_bitmap.GetPixels(), _bitmap.ByteCount, false);
+            image = new CGImage(
+                _bitmap.Width,
+                _bitmap.Height,
+                8,
+                32,
+                _bitmap.RowBytes,
+                _colorSpace,
+                CGBitmapFlags.PremultipliedFirst | CGBitmapFlags.ByteOrder32Little,
+                provider,
+                null,
+                false,
+                CGColorRenderingIntent.Default);
+
+            if (((INativeObject)image).Handle == IntPtr.Zero)
+            {
+                DrawDiagnostic(context, bounds, "CoreGraphics could not build an image from the SkiaSharp bitmap");
+                return;
+            }
+
+            // The view is flipped, so the context is y-down; undo that for the image blit or the
+            // whole UI comes out upside down.
+            context.SaveState();
+            context.TranslateCTM(0, bounds.Height);
+            context.ScaleCTM(1, -1);
+            context.DrawImage(new CGRect(0, 0, bounds.Width, bounds.Height), image);
+            context.RestoreState();
+        }
+        catch (Exception ex)
+        {
+            DrawDiagnostic(context, bounds, $"presenting the UI failed: {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            image?.Dispose();
+            provider?.Dispose();
+        }
     }
 
     public override bool AcceptsFirstResponder() => true;
@@ -343,61 +410,106 @@ internal sealed class MacUiView : NSView
             _bitmap = new SKBitmap(info);
 
             var pixels = _bitmap.GetPixels();
-            _skia = SKSurface.Create(info, pixels, _bitmap.RowBytes);
-            if (_skia is null)
+            if (pixels == IntPtr.Zero)
             {
-                ReleaseBuffer();
-                return;
+                throw new InvalidOperationException($"SkiaSharp allocated no pixels for {pixelWidth}x{pixelHeight}.");
             }
 
-            // The bitmap owns the memory and outlives the provider, so CoreGraphics must not free it.
-            _provider = new CGDataProvider(pixels, _bitmap.ByteCount, ownBuffer: false);
-            _colorSpace = CGColorSpace.CreateDeviceRGB();
-            _image = new CGImage(
-                pixelWidth,
-                pixelHeight,
-                8,
-                32,
-                _bitmap.RowBytes,
-                _colorSpace,
-                CGBitmapFlags.PremultipliedFirst | CGBitmapFlags.ByteOrder32Little,
-                _provider,
-                null,
-                false,
-                CGColorRenderingIntent.Default);
+            _skia = SKSurface.Create(info, pixels, _bitmap.RowBytes)
+                ?? throw new InvalidOperationException($"SkiaSharp could not wrap {pixelWidth}x{pixelHeight} pixels in a surface.");
+
+            _colorSpace ??= CGColorSpace.CreateDeviceRGB()
+                ?? throw new InvalidOperationException("CoreGraphics has no device RGB colour space.");
 
             _width = width;
             _height = height;
             _scale = scale;
+            _bufferError = null;
         }
         catch (Exception ex)
         {
-            Trace($"buffer {pixelWidth}x{pixelHeight} failed: {ex.GetType().Name}: {ex.Message}");
+            // Failing here silently is a window that never draws anything, which is the hardest
+            // kind of bug to report, so the reason is kept for DrawRect to put on screen.
+            _bufferError = $"{ex.GetType().Name}: {ex.Message}";
+            Console.Error.WriteLine($"[xplat] {pixelWidth}x{pixelHeight} drawing buffer failed: {_bufferError}");
             ReleaseBuffer();
         }
     }
 
     private void ReleaseBuffer()
     {
-        // The image and its provider read the bitmap's memory, so they have to go first.
-        _image?.Dispose();
-        _image = null;
-
-        _provider?.Dispose();
-        _provider = null;
-
-        _colorSpace?.Dispose();
-        _colorSpace = null;
-
+        // The surface writes into the bitmap's memory, so it has to go first.
         _skia?.Dispose();
         _skia = null;
 
         _bitmap?.Dispose();
         _bitmap = null;
 
+        _colorSpace?.Dispose();
+        _colorSpace = null;
+
         _width = 0;
         _height = 0;
         _scale = 0;
+    }
+
+    /// <summary>
+    /// Paints the reason the UI cannot be drawn over the whole view. A window that draws nothing
+    /// says nothing, so every failure ends up here rather than on a console nobody is watching.
+    /// </summary>
+    private static void DrawDiagnostic(CGContext context, CGRect bounds, string message)
+    {
+        context.SaveState();
+        context.SetFillColor(0.55f, 0f, 0f, 1f);
+        context.FillRect(bounds);
+        context.RestoreState();
+
+        // NSString draws through the current NSGraphicsContext, so it picks up the flipped view
+        // coordinates on its own and needs no y-flip of its own.
+        var font = NSFont.SystemFontOfSize(13);
+        var color = NSColor.White;
+        if (font is null || color is null)
+        {
+            return;
+        }
+
+        var attributes = NSDictionary.FromObjectsAndKeys(
+            new object[] { font, color },
+            new object[] { NSStringAttributeKey.Font, NSStringAttributeKey.ForegroundColor });
+
+        if (attributes is null)
+        {
+            return;
+        }
+
+        var y = 12;
+        foreach (var line in Wrap(message, 96))
+        {
+            if (y + 18 > bounds.Height)
+            {
+                break;
+            }
+
+            using var text = new NSString(line);
+            text.DrawString(new CGRect(16, y, Math.Max(bounds.Width - 32, 0), 20), attributes);
+            y += 18;
+        }
+    }
+
+    /// <summary>Breaks a message into lines narrow enough to read on screen.</summary>
+    private static IEnumerable<string> Wrap(string message, int columns)
+    {
+        foreach (var paragraph in message.Split('\n'))
+        {
+            var line = paragraph.Trim();
+            while (line.Length > columns)
+            {
+                yield return line[..columns];
+                line = line[columns..];
+            }
+
+            yield return line;
+        }
     }
 
     private static void Trace(string message)
