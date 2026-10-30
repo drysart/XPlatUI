@@ -40,6 +40,7 @@ internal sealed class MacUiView : NSView
     private NSTrackingArea? _trackingArea;
     private SKBitmap? _bitmap;
     private SKSurface? _skia;
+    private CGDataProvider? _provider;
     private CGColorSpace? _colorSpace;
     private string? _bufferError;
     private int _width;
@@ -181,7 +182,7 @@ internal sealed class MacUiView : NSView
         SyncHostSize();
         EnsureBuffer((int)Math.Round(bounds.Width), (int)Math.Round(bounds.Height), scale);
 
-        if (_skia is null || _bitmap is null || _colorSpace is null)
+        if (_skia is null || _bitmap is null || _provider is null || _colorSpace is null)
         {
             DrawDiagnostic(context, bounds, _bufferError ?? "the SkiaSharp drawing buffer could not be created");
             return;
@@ -211,12 +212,11 @@ internal sealed class MacUiView : NSView
         // provider's memory, so one cached image would pin the window to whatever the buffer held
         // when it was first drawn - and the first frame is drawn before the control tree exists,
         // which is an empty window. A fresh image over the pixels that were just painted is what
-        // makes each frame show the current UI; the bitmap and its Skia surface stay cached.
-        CGDataProvider? provider = null;
+        // makes each frame show the current UI; the bitmap, its Skia surface and the data provider
+        // over its pixels stay cached, so a frame allocates nothing but the image itself.
         CGImage? image = null;
         try
         {
-            provider = new CGDataProvider(_bitmap.GetPixels(), _bitmap.ByteCount, false);
             image = new CGImage(
                 _width * _scale,
                 _height * _scale,
@@ -225,7 +225,7 @@ internal sealed class MacUiView : NSView
                 _bitmap.RowBytes,
                 _colorSpace,
                 CGBitmapFlags.PremultipliedFirst | CGBitmapFlags.ByteOrder32Little,
-                provider,
+                _provider,
                 null,
                 false,
                 CGColorRenderingIntent.Default);
@@ -251,7 +251,6 @@ internal sealed class MacUiView : NSView
         finally
         {
             image?.Dispose();
-            provider?.Dispose();
         }
     }
 
@@ -544,6 +543,12 @@ internal sealed class MacUiView : NSView
             _skia = SKSurface.Create(info, pixels, _bitmap.RowBytes)
                 ?? throw new InvalidOperationException($"SkiaSharp could not wrap {pixelWidth}x{pixelHeight} pixels in a surface.");
 
+            // The (memory, size, bool) overload reads that bool as "owns the buffer" and, when it is
+            // false, copies the whole block - which would memcpy every pixel of every frame, about
+            // 16 MB on a Retina window. The callback overload wraps the pixels where they are; the
+            // callback does nothing because SkiaSharp owns them and outlives the provider.
+            _provider = new CGDataProvider(pixels, _bitmap.ByteCount, static _ => { });
+
             _colorSpace ??= CGColorSpace.CreateDeviceRGB()
                 ?? throw new InvalidOperationException("CoreGraphics has no device RGB colour space.");
 
@@ -568,6 +573,10 @@ internal sealed class MacUiView : NSView
         // The surface writes into the bitmap's memory, so it has to go first.
         _skia?.Dispose();
         _skia = null;
+
+        // The provider points at the bitmap's pixels, so it goes before the bitmap does.
+        _provider?.Dispose();
+        _provider = null;
 
         _bitmap?.Dispose();
         _bitmap = null;

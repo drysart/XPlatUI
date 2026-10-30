@@ -520,12 +520,15 @@ MacHarness.app/Contents/MacOS/MacHarness --render out.png 1280 760 --dark
 ```
 
 `MacUiView` is a plain `NSView`, flipped so y grows downwards like every other backend. Skia paints
-into an `SKBitmap` of premultiplied BGRA pixels, and `DrawRect` hands those pixels to CoreGraphics as
-a `CGImage` built over the same memory, so a frame costs no copy. The `CGImage` is rebuilt for every
-frame, because CoreGraphics treats an image as immutable and keeps whatever it decoded out of the
-provider's memory: one cached image would pin the window to the contents of the very first frame,
-which is drawn before the control tree exists. There is no SkiaSharp view for
-AppKit in SkiaSharp 4.x, which is why the view draws itself. Mouse and keyboard events are forwarded
+into an `SKBitmap` of premultiplied BGRA pixels, one `CGDataProvider` wraps those pixels where they
+are, and `DrawRect` builds a `CGImage` over that provider, so a frame costs no copy and allocates
+nothing but the image itself. The provider is built with the `Action<IntPtr>` overload on purpose:
+the `(IntPtr, int, bool)` overload reads its `bool` as *owns the buffer* and, when it is false,
+copies the whole block before wrapping it, which on a Retina window is a 16 MB `memcpy` per frame.
+The `CGImage` is rebuilt for every frame, because CoreGraphics treats an image as immutable and keeps
+whatever it decoded out of the provider's memory: one cached image would pin the window to the
+contents of the very first frame, which is drawn before the control tree exists. There is no
+SkiaSharp view for AppKit in SkiaSharp 4.x, which is why the view draws itself.
 to `XPlatUiHost.Process*` from the `NSResponder` overrides, a 250 ms `NSTimer` drives `ProcessTick`
 (caret blinking) and doubles as the poll for a system appearance change
 (`NSAppearance.FindBestMatch`), and a tracking area keeps `MouseMoved`/`MouseEntered`/`MouseExited`
