@@ -416,17 +416,7 @@ or right-click **Publish** in Visual Studio. The result is a **single** self-con
 `XPlatUIDemoApp.pdb` for debugging. Nothing else is needed to run it - the AOT build opens the real
 window and renders the demo.
 
-SkiaSharp only ships a dynamic `libSkiaSharp.dll`, so a native executable cannot simply link it. When
-`PublishAot` is on, `XPlatUIDemo.App.csproj` gzips the RID-specific `libSkiaSharp.dll` and embeds it in
-the assembly as the manifest resource `XPlatUI.Native.libSkiaSharp.dll.gz`; `Native/SkiaNativeLoader.cs`
-extracts it on first use to `%LOCALAPPDATA%\XPlatUI\native\<version>-<size>\libSkiaSharp.dll` (cached,
-so later runs just load it) and hands it to the runtime before SkiaSharp's first P/Invoke. A regular
-(non-AOT) build is untouched: the native library is resolved the usual way (from the package cache, or
-copied next to the executable for a RID-specific build) and the loader does nothing. If you would
-rather ship a loose `libSkiaSharp.dll`, set `EmbedSkiaSharpNative` to `false` - the publish then emits
-the executable and the DLL side by side again.
-
-NativeAOT needs the MSVC linker (`link.exe`). The profile switches to
+On Windows this needs the MSVC linker (`link.exe`). The profile switches to
 `IlcUseEnvironmentalTools` automatically once a VC environment is initialized, so the most
 reliable way to publish is from a *Developer PowerShell/Command Prompt for VS* (or a CI step that
 calls `vcvars64.bat` first):
@@ -439,9 +429,35 @@ dotnet publish XPlatUIDemo.App\XPlatUIDemo.App.csproj -p:PublishProfile=FolderPr
 From a plain shell the SDK locates the toolset itself with `vswhere.exe`; if that fails (for
 example a `vswhere.exe` error leaking into the link step), publish from a Developer prompt instead.
 
-The Skia embedding targets only run for the Windows target framework, so a `PublishAot` publish of
-any other target framework is unaffected by them. macOS and Linux are not published with AOT yet - see
-[Bundle size](#bundle-size).
+Linux publishes the same way, and does not need a `clang` or `lld` installation: the ILCompiler
+package carries its own toolchain.
+
+```
+dotnet publish XPlatUIDemo.App/XPlatUIDemo.App.csproj -c Release -r linux-x64 -p:PublishAot=true
+```
+
+The result is a **single** `publish/XPlatUIDemoApp` (~8.9 MB, a stripped ELF executable) plus an
+optional `XPlatUIDemoApp.dbg`. It is genuinely standalone - copy just that one file anywhere and it
+runs, window and all.
+
+SkiaSharp only ships a dynamic `libSkiaSharp.dll`/`libSkiaSharp.so`, so a native executable cannot
+simply link it. When `PublishAot` is on, `XPlatUIDemo.App.csproj` gzips the RID-specific native
+library and embeds it in the assembly as the manifest resource
+`XPlatUI.Native.libSkiaSharp.dll.gz` (or `...libSkiaSharp.so.gz`); `Native/SkiaNativeLoader.cs`
+extracts it on first use to `%LOCALAPPDATA%\XPlatUI\native\<version>-<size>\libSkiaSharp.dll`
+(`~/.local/share/XPlatUI/native/<version>-<size>/libSkiaSharp.so` on Linux, honouring
+`XDG_DATA_HOME`), which is cached so later runs just load it, and redirects SkiaSharp's P/Invoke at it
+before the first call into Skia. The redirect is not optional on Linux: `libSkiaSharp.so` carries no
+`SONAME`, so a library loaded by full path is not what `dlopen("libSkiaSharp.so")` resolves to. A
+regular (non-AOT) build is untouched: the native library is resolved the usual way (from the package
+cache, or copied next to the executable for a RID-specific build) and the loader does nothing. If you
+would rather ship a loose native library, set `EmbedSkiaSharpNative` to `false` - the publish then
+emits the executable and `libSkiaSharp.dll`/`libSkiaSharp.so` side by side again.
+
+The Skia embedding targets run for the Windows and Linux target frameworks - the two that are
+published with AOT. macOS is deliberately left out: an `.app` bundle already carries its native
+libraries as loose files, so there is nothing to fold into a single executable, and the bundle *is*
+the deliverable. See [Bundle size](#bundle-size).
 
 ## Running the application
 
@@ -694,8 +710,10 @@ Two details are easy to trip over:
 
 What is left is almost entirely native code that no trimmer can touch: `libSkiaSharp.dylib` is
 15.2 MB, `libcoreclr.dylib` 5.9 MB and `libclrjit.dylib` 3.0 MB out of the ~35 MB. The remaining
-~11 MB of managed assemblies is what a NativeAOT publish would remove; that is not wired up for
-macOS yet (the Windows build does publish AOT, see above).
+~11 MB of managed assemblies is what a NativeAOT publish would remove. It is not wired up for macOS
+because the `.app` bundle is already the unit of distribution: folding the runtime into the executable
+would not make the deliverable any smaller, only less debuggable. Windows and Linux do publish AOT
+(see [NativeAOT](#nativeaot)).
 
 The `macOS build` workflow publishes all three link modes, renders each bundle with `--render`,
 compares the *decoded* bitmaps (`sips` to BMP plus `cmp`, because a one pixel change rewrites most of

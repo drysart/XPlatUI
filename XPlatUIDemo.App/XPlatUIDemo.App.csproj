@@ -130,15 +130,15 @@
     <GZipFile Source="@(_SkiaSharpNativeLibrary->'%(FullPath)')" Destination="$(SkiaSharpNativeArchive)" />
   </Target>
 
-  <!-- The library now lives inside the executable, so keep it (and the debug symbols) out of the
-       publish directory; what is left is a single self-contained file. The symbols are .pdb on
-       Windows and .dbg on Linux. -->
+  <!-- The library now lives inside the executable, so keep it and its symbols out of the publish
+       directory. What is left is the executable and its own symbol file (.pdb on Windows, .dbg on
+       Linux), which the native compiler writes outside this item list. -->
   <Target Name="_ExcludeSkiaSharpNativeFromPublish"
           Condition="'$(PublishAot)' == 'true' and '$(EmbedSkiaSharpNative)' != 'false' and '$(SkiaSharpNativeFileName)' != ''"
           AfterTargets="ComputeFilesToPublish">
     <ItemGroup>
       <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)"
-                             Condition="'%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == '$(SkiaSharpNativeFileName)' or '%(ResolvedFileToPublish.Extension)' == '.pdb' or '%(ResolvedFileToPublish.Extension)' == '.dbg'" />
+                             Condition="'%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == '$(SkiaSharpNativeFileName)' or '%(ResolvedFileToPublish.Extension)' == '.pdb'" />
     </ItemGroup>
   </Target>
 
