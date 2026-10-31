@@ -23,7 +23,9 @@ namespace XPlatUI;
 /// a competing process.
 /// </para>
 /// <para>
-/// The name is scoped per user, so two users signed in at once each get their own instance.
+/// The name is scoped per user and the claim itself is machine-wide, so two users signed in at once
+/// each get their own instance while two launches by one user always meet, even when they come from
+/// different terminal sessions or login contexts.
 /// </para>
 /// </remarks>
 public sealed class XPlatInstanceLock : IDisposable
@@ -82,8 +84,11 @@ public sealed class XPlatInstanceLock : IDisposable
         var name = ScopedName(key);
 
         // Windows separates session-local from global kernel objects by prefix, and a per-user
-        // instance should stay session-local. Other platforms scope the name per user by hand.
-        var mutexName = OperatingSystem.IsWindows() ? @"Local\" + name : name;
+        // instance should stay session-local. Unix has the same split for a different reason: an
+        // unprefixed name is scoped to the POSIX session rather than to the machine, so a launch
+        // from another terminal session or login context would not see the claim at all. The name
+        // already carries the user, so a global claim is still a per-user one.
+        var mutexName = OperatingSystem.IsWindows() ? @"Local\" + name : @"Global\" + name;
         var mutex = new Mutex(initiallyOwned: false, mutexName);
 
         bool owned;
