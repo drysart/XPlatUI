@@ -35,6 +35,16 @@
     <OutputType>Exe</OutputType>
   </PropertyGroup>
 
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net10.0-macos'">
+    <!-- The macOS workload refuses to build unless Xcode's major.minor is *exactly* the version its
+         bindings were generated against (27.1 for workload 27.0.10742), so simply having a newer
+         Xcode installed fails a build that works perfectly - 27.2 compiles this app and renders it
+         pixel-identically. The check is skipped here so a local Mac stays usable after an Xcode
+         update; set this back to true to restore it. CI does not rely on the check either - the
+         macOS build workflow selects the Xcode the workload expects by hand. -->
+    <ValidateXcodeVersion>false</ValidateXcodeVersion>
+  </PropertyGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\XPlatUI\XPlatUI.csproj" />
     <ProjectReference Include="..\XPlatUI.Backend.Headless\XPlatUI.Backend.Headless.csproj" />

@@ -563,13 +563,18 @@ open XPlatUIDemo.App/bin/Debug/net10.0-macos/osx-arm64/XPlatUIDemoApp.app
 
 The macOS workload only accepts an Xcode whose major.minor version matches the one its bindings were
 generated against, and the error it raises (`requires Xcode 27.1`) is easy to mistake for a real
-problem. Install the Xcode it names - the `macOS build` workflow runs on the `xcode-27` image and
-switches to `/Applications/Xcode_27.1.app` for exactly this reason. Nothing here compiles native
-code, so as a last resort the check can be turned off instead:
+problem. `XPlatUIDemo.App.csproj` therefore sets `ValidateXcodeVersion` to `false` for
+`net10.0-macos`: a newer Xcode builds and renders this app unchanged, so the exact-match rule only
+ever gets in the way on a workstation that has been kept up to date. The guard is a property, so it
+can be turned back on per build:
 
 ```
-dotnet build XPlatUIDemo.App/XPlatUIDemo.App.csproj -p:ValidateXcodeVersion=false
+dotnet build XPlatUIDemo.App/XPlatUIDemo.App.csproj -p:ValidateXcodeVersion=true
 ```
+
+Nothing here compiles native code, so a mismatched Xcode cannot actually break the build. The
+`macOS build` workflow still selects the Xcode the workload expects (`/Applications/Xcode_27.1.app`
+on the `xcode-27` image) rather than relying on either setting.
 
 The bundle is produced by the build itself; its identity lives in `XPlatUIDemo.App/Info.plist`. It is
 signed ad-hoc, so a copy downloaded from CI needs `xattr -dr com.apple.quarantine XPlatUIDemoApp.app`

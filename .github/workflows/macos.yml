@@ -28,9 +28,9 @@ concurrency:
 jobs:
   build:
     name: Build the macOS app
-    # The macOS workload validates that Xcode's major.minor exactly matches the version its bindings
-    # were generated against (27.1 for workload 27.0.10742). macos-latest ships Xcode 26.6, so it can
-    # never satisfy that check; the xcode-27 image carries Xcode 27.1.
+    # The project turns the workload's Xcode version check off (see XPlatUIDemo.App.csproj), so any
+    # Xcode the SDK can find will do. The xcode-27 image carries the 27.x bindings the workload was
+    # generated against, which is what the app is actually developed and tested with.
     runs-on: xcode-27
     steps:
       - name: Check out
@@ -47,7 +47,7 @@ jobs:
         run: dotnet workload install macos
 
       # Pick the Xcode the workload was built against rather than whatever the image defaults to, so
-      # the workload's own version check passes on its own terms.
+      # the build runs against the same bindings a developer would have locally.
       - name: Select the Xcode the macOS workload expects
         run: |
           set -euo pipefail
@@ -63,7 +63,6 @@ jobs:
             sudo xcode-select -s "$chosen/Contents/Developer"
           else
             echo "::warning::Xcode 27.1 is not installed on this image; using the default Xcode."
-            echo "SKIP_XCODE_CHECK=true" >> "$GITHUB_ENV"
           fi
           xcode-select -p
           xcodebuild -version
@@ -71,17 +70,10 @@ jobs:
       - name: Build
         run: |
           set -o pipefail
-          # Nothing in this application needs the exact Xcode the bindings were generated against
-          # (there is no native code to compile), so if the image does not carry it the check is
-          # skipped instead of failing the job.
-          skip=""
-          if [ "${SKIP_XCODE_CHECK:-}" = "true" ]; then
-            skip="-p:ValidateXcodeVersion=false"
-          fi
           # -r matches the publishes below: the macOS SDK otherwise defaults to osx-x64, and the
           # rendered pixels then differ from an osx-arm64 build for reasons that have nothing to do
           # with trimming.
-          dotnet build XPlatUIDemo.App/XPlatUIDemo.App.csproj -c Release -r osx-arm64 --nologo $skip 2>&1 | tee "$RUNNER_TEMP/build.log"
+          dotnet build XPlatUIDemo.App/XPlatUIDemo.App.csproj -c Release -r osx-arm64 --nologo 2>&1 | tee "$RUNNER_TEMP/build.log"
 
       # MSBuild diagnostics are not workflow annotations, so lift the first few into the job
       # summary and into annotations: those are readable without downloading the raw log.
