@@ -1,7 +1,7 @@
 using SkiaSharp;
 using XPlatUI;
 
-namespace WinFormsApp3;
+namespace XPlatUI.Backend.Win32;
 
 /// <summary>
 /// Shows XPlat context menus on Windows. This is the whole of the Windows side of the feature:

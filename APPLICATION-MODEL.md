@@ -999,6 +999,56 @@ system appearance to report, so `XPlatTheme` keeps its default and a headless re
 the machine it runs on. That is also why the Linux render is now byte-identical with and without
 `DISPLAY` set: after the `--render` fix in §6.2 the headless path never touches GTK.
 
+### Step 3 notes
+
+Step 3 was split in two. **3a** moves the Win32 harness onto the model with no new features; **3b**
+adds `Win32DialogService` and the menu bar. What follows covers 3a.
+
+`XPlatUI.Backend.Win32` is a new `net10.0-windows` project holding everything that used to live in
+`WinFormsApp3/Native/`. `HarnessWindow.cs` split into `Win32WindowBackend` (the `HWND`, the message
+loop callbacks and the Skia surface) and `Win32ApplicationBackend` (the message loop, the `Invoke`
+queue, the nested modal loop and service registration). `Program.cs` shrank to the §2 shape, and
+`DemoUi`/`Form1`/`XPlatSurface`/`WinFormsClipboard` are gone: the harness is no longer a WinForms
+application at all.
+
+The render stayed byte-identical (89,937 bytes dark, 89,199 light), which took one non-obvious fix:
+`DemoUi.RenderToPng` builds a `HeadlessApplicationBackend`, which registers no `IXPlatSystemTheme`,
+so on a dark-mode machine the palette came out light. `Win32ApplicationBackend` therefore exposes its
+`SystemTheme` and the `--render` branch hands it to the render path. The alternative - letting the
+render path sniff the OS itself - would have put platform code back in the demo.
+
+Four behaviours changed on purpose:
+
+- **`UpdateHostSize()` now asks the host, not its own field.** The old version skipped the update when
+  the new size matched `_clientSize`, and `_clientSize` *always* matched: `XPlatWindow.ClientSize`
+  assigns through the backend setter before the `HWND` exists, and that setter stores the value and
+  returns early. So the very first `UpdateHostSize()` no-opped, `_host.ClientSize` stayed 0x0, and
+  the control tree was never laid out - a blank window. The host is the authority on whether it has
+  been told; the field is not.
+- **The caret blink timer is gone.** Blinking is driven by `XPlatApplication`'s tick timer through
+  `OnTick`, so there is one clock instead of two and the model does not need a second source of
+  `WM_TIMER` traffic.
+- **`WM_CLOSE` raises `CloseRequested` and returns 0** instead of calling `DestroyWindow`. Closing is
+  now a decision the model makes (D7's shutdown modes), so the backend may not act on it alone.
+- **`Win32MenuWindow` uses a per-window class name** (`XPlatUI.Window.N`). `UnregisterClassW` on a
+  shared name would break every other window still using it.
+
+Two lessons for anyone writing visual tests against this thing, both learned the hard way:
+
+- **A DPI-unaware capture host lies about size.** This machine runs at 200% scaling. `GetClientRect`
+  from a DPI-unaware process reported the 1280x760 window as 1280x760 *device* pixels, so a
+  `CopyFromScreen` at the virtualized origin grabbed a half-scale slice of the wrong place. Call
+  `SetThreadDpiAwarenessContext(-4)` before measuring anything.
+- **`PrintWindow` with `PW_CLIENTONLY` can return a stale frame.** It is the fast way to capture a
+  window and it works often enough to be convincing, but after typing or dismissing a popup it
+  returned the previous frame and made working features look broken. `CopyFromScreen` costs more and
+  tells the truth.
+
+Verified live in 3a: paint, resize, maximise/restore/minimise, hover, click, text entry, caret blink,
+clipboard copy and paste, dark title bar, `WS_THICKFRAME` removal for a non-resizable window, and both
+context-menu presentations (the Skia popup and `TrackPopupMenuEx`). Not verified: DPI changes across
+monitors, which needs a second monitor.
+
 ---
 
 ## 12. Decision status

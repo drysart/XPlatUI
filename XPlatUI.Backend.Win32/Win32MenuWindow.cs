@@ -2,7 +2,7 @@ using System.Runtime.InteropServices;
 using SkiaSharp;
 using XPlatUI;
 
-namespace WinFormsApp3;
+namespace XPlatUI.Backend.Win32;
 
 /// <summary>
 /// Shows an <see cref="XPlatContextMenu"/> in its own borderless popup window, drawn with Skia in
@@ -220,7 +220,7 @@ internal sealed class Win32MenuWindow : IDisposable
             NativeMethods.ShowWindow(_hwnd, NativeMethods.SwShowNoActivate);
             NativeMethods.SetWindowPos(
                 _hwnd,
-                NativeMethods.HwndTopmost,
+                NativeMethods.HwndTopMost,
                 x,
                 y,
                 width,

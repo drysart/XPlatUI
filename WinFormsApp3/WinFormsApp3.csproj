@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\XPlatUI\XPlatUI.csproj" />
+    <ProjectReference Include="..\XPlatUI.Backend.Win32\XPlatUI.Backend.Win32.csproj" />
     <ProjectReference Include="..\XPlatUIDemo\XPlatUIDemo.csproj" />
   </ItemGroup>
 

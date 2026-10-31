@@ -1,6 +1,6 @@
 using XPlatUI;
 
-namespace WinFormsApp3;
+namespace XPlatUI.Backend.Win32;
 
 /// <summary>
 /// Reads Windows' light/dark preference - Settings &gt; Personalisation &gt; Colours &gt;

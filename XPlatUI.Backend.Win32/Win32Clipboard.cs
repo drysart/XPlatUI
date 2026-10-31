@@ -3,7 +3,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using XPlatUI;
 
-namespace WinFormsApp3;
+namespace XPlatUI.Backend.Win32;
 
 /// <summary>
 /// Clipboard access for the Windows host, implemented directly over the Win32 clipboard so

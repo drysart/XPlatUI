@@ -1,11 +1,11 @@
 using System.Runtime.InteropServices;
 
-namespace WinFormsApp3;
+namespace XPlatUI.Backend.Win32;
 
 /// <summary>
-/// The Win32 surface used by the harness: window creation, GDI double buffering, input
-/// and clipboard helpers. Nothing here is needed by the UI library itself - a macOS or
-/// Linux host would call its own native API instead.
+/// The Win32 surface used by the Windows backend: window creation, GDI double buffering, input
+/// and clipboard helpers. Nothing here is needed by the UI library itself - a macOS or Linux
+/// backend calls its own native API instead.
 /// </summary>
 internal static class NativeMethods
 {
@@ -65,7 +65,12 @@ internal static class NativeMethods
     internal const int SwShowNoActivate = 4;
     internal const uint SwpNoZOrder = 0x0004;
     internal const uint SwpNoActivate = 0x0010;
+    internal const uint SwpFrameChanged = 0x0020;
     internal const uint SwpShowWindow = 0x0040;
+
+    /// <summary>SetWindowPos z-order insert-after values.</summary>
+    internal static readonly IntPtr HwndTopMost = new(-1);
+    internal static readonly IntPtr HwndTop = new(0);
 
     // Popup menu window.
     internal const uint WsPopup = 0x80000000;
@@ -74,8 +79,6 @@ internal static class NativeMethods
     internal const uint WsExTopmost = 0x00000008;
     internal const uint WsExLayered = 0x00080000;
     internal const int GwlpHwndParent = -8;
-    internal static readonly IntPtr HwndTopmost = new(-1);
-    internal static readonly IntPtr HwndTop = new(0);
 
     internal const uint WmActivate = 0x0006;
     internal const uint WmActivateApp = 0x001C;
@@ -126,10 +129,51 @@ internal static class NativeMethods
     // DPI.
     internal const uint SpiGetWorkArea = 0x0030;
     internal const uint MonitorDefaultToNearest = 0x00000002;
+    internal const uint MonitorInfoPrimary = 0x00000001;
+    internal static readonly IntPtr DpiAwarenessUnaware = new(-1);
+    internal static readonly IntPtr DpiAwarenessSystem = new(-2);
     internal static readonly IntPtr DpiAwarenessPerMonitorV2 = new(-4);
+
+    /// <summary><c>GetDpiForMonitor</c> mode: the effective (post-scaling) DPI.</summary>
+    internal const int MdtEffectiveDpi = 0;
+
+    /// <summary>The pseudo-window that owns a message-only window, which never appears on screen.</summary>
+    internal static readonly IntPtr HwndMessage = new(-3);
+
+    /// <summary>The parent console, for <c>AttachConsole</c>.</summary>
+    internal const uint AttachParentProcess = 0xFFFFFFFF;
+
+    // Window styles toggled by IXPlatWindowBackend.Resizable.
+    internal const uint WsThickFrame = 0x00040000;
+    internal const uint WsMinimizeBox = 0x00020000;
+    internal const uint WsMaximizeBox = 0x00010000;
+    internal const int GwlStyle = -16;
+
+    internal const uint SwpNoSize = 0x0001;
+    internal const uint SwpNoMove = 0x0002;
+    internal const int SwMinimize = 6;
+    internal const int SwMaximize = 3;
+    internal const int SwRestore = 9;
+
+    // WM_SIZE wParam values, which are also how a state change is observed.
+    internal const int SizeRestored = 0;
+    internal const int SizeMinimized = 1;
+    internal const int SizeMaximized = 2;
+
+    /// <summary>First message id an application may define. Backend loop messages live from here.</summary>
+    internal const uint WmApp = 0x8000;
+
+    /// <summary>Posted to the message-only window to drain queued <c>Invoke</c> callbacks.</summary>
+    internal const uint WmAppInvoke = WmApp + 1;
+
+    /// <summary>Posted to the message-only window to end the loop on the thread that runs it.</summary>
+    internal const uint WmAppQuit = WmApp + 2;
 
     [UnmanagedFunctionPointer(CallingConvention.Winapi)]
     internal delegate IntPtr WndProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+    [UnmanagedFunctionPointer(CallingConvention.Winapi)]
+    internal delegate bool MonitorEnumProc(IntPtr hMonitor, IntPtr hdc, ref RECT lprcMonitor, IntPtr dwData);
 
     [StructLayout(LayoutKind.Sequential)]
     internal struct POINT
@@ -347,6 +391,16 @@ internal static class NativeMethods
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     internal static extern bool GetMonitorInfoW(IntPtr hMonitor, ref MONITORINFO lpmi);
 
+    [DllImport("user32.dll")]
+    internal static extern bool EnumDisplayMonitors(IntPtr hdc, IntPtr lprcClip, MonitorEnumProc lpfnEnum, IntPtr dwData);
+
+    [DllImport("user32.dll")]
+    internal static extern uint GetDpiForSystem();
+
+    /// <summary>Returns an HRESULT; anything non-zero means the fallback DPI should be used.</summary>
+    [DllImport("Shcore.dll")]
+    internal static extern int GetDpiForMonitor(IntPtr hmonitor, int dpiType, out uint dpiX, out uint dpiY);
+
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern bool SetProcessDpiAwarenessContext(IntPtr value);
 
@@ -379,6 +433,24 @@ internal static class NativeMethods
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     internal static extern IntPtr SetWindowLongPtrW(IntPtr hwnd, int index, IntPtr value);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    internal static extern IntPtr GetWindowLongPtrW(IntPtr hwnd, int index);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    internal static extern bool SetWindowTextW(IntPtr hwnd, string lpString);
+
+    [DllImport("user32.dll")]
+    internal static extern bool GetWindowRect(IntPtr hwnd, out RECT lpRect);
+
+    [DllImport("user32.dll")]
+    internal static extern bool EnableWindow(IntPtr hwnd, bool bEnable);
+
+    [DllImport("user32.dll")]
+    internal static extern bool IsZoomed(IntPtr hwnd);
+
+    [DllImport("user32.dll")]
+    internal static extern bool IsIconic(IntPtr hwnd);
 
     [DllImport("user32.dll")]
     internal static extern bool GetCursorPos(out POINT lpPoint);

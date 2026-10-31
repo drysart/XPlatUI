@@ -1,39 +1,54 @@
+using System.Globalization;
 using System.Runtime.InteropServices;
 using SkiaSharp;
-using XPlatUI;
 
-namespace WinFormsApp3;
+namespace XPlatUI.Backend.Win32;
 
 /// <summary>
-/// The Windows host for the XPlat UI library, built directly on Win32 so the harness needs
-/// neither Windows Forms nor System.Drawing (and therefore stays trimmable / NativeAOT friendly).
-/// It owns an <see cref="XPlatUiHost"/>, rasterizes the control tree into a Skia surface backed by
-/// a GDI DIB section and forwards mouse/keyboard input. A macOS (NSView) or Linux (X11/Wayland)
-/// host would implement exactly the same duties with its own native API.
+/// One Win32 window, built directly on <c>user32</c> so nothing here needs Windows Forms or
+/// System.Drawing and the whole backend stays trimmable and NativeAOT friendly.
 /// </summary>
-internal sealed class HarnessWindow : IDisposable
+/// <remarks>
+/// <para>
+/// The window owns an <see cref="XPlatUiHost"/>, rasterizes the control tree into a Skia surface
+/// backed by a GDI DIB section, and forwards pointer, key and text input straight into the host.
+/// The model never sees input; it only sees the events raised here.
+/// </para>
+/// <para>
+/// The native window is created lazily, on the first <see cref="Show"/> or
+/// <see cref="ShowDialog"/>: <see cref="XPlatWindow"/> constructs the backend before the caller
+/// has had a chance to set <c>Title</c>, <c>ClientSize</c> or <c>Resizable</c>, so there is nothing
+/// worth creating a window for yet.
+/// </para>
+/// <para>
+/// Each window registers its own window class, because Win32 keeps the class name process-global
+/// and a per-window class is the only way to give two windows different icons or styles.
+/// </para>
+/// </remarks>
+internal sealed class Win32WindowBackend : IXPlatWindowBackend
 {
-    private const string ClassName = "XPlatUI.HarnessWindow";
-    private const string WindowTitle = "XPlat UI - SkiaSharp test harness";
-
-    /// <summary>The sample UI is designed against this logical (96 DPI) client size.</summary>
-    private const int DesignClientWidth = 1280;
-    private const int DesignClientHeight = 760;
-    private const int DesignMinimumWidth = 820;
-    private const int DesignMinimumHeight = 660;
-
-    /// <summary>Interval of the timer that drives time based UI behaviour (caret blinking).</summary>
-    private const int TickIntervalMs = 250;
-    private const int TickTimerId = 1;
+    private static int _nextClassId;
 
     private readonly XPlatUiHost _host = new();
+    private readonly Win32ApplicationBackend _application;
     private readonly NativeMethods.WndProc _wndProc;
     private readonly Dictionary<XPlatCursor, IntPtr> _cursors = new();
+    private readonly string _className;
 
     private IntPtr _hwnd;
     private IntPtr _moduleHandle;
     private bool _classRegistered;
     private bool _disposed;
+
+    private string _title = string.Empty;
+    private SKSize _clientSize = new(800f, 600f);
+    private SKSize _minimumClientSize;
+    private SKSize _maximumClientSize;
+    private SKPoint? _location;
+    private bool _resizable = true;
+    private bool _topMost;
+    private XPlatWindowState _state = XPlatWindowState.Normal;
+    private XPlatMenuBar? _menuBar;
 
     private float _scale = 1f;
     private IntPtr _memoryDc;
@@ -50,38 +65,354 @@ internal sealed class HarnessWindow : IDisposable
     private int _lastClickX;
     private int _lastClickY;
 
-    public HarnessWindow()
+    internal Win32WindowBackend(Win32ApplicationBackend application, XPlatWindow window)
     {
+        ArgumentNullException.ThrowIfNull(application);
+        ArgumentNullException.ThrowIfNull(window);
+
+        _application = application;
+
         // The delegate must stay rooted for as long as the window class points at it.
         _wndProc = WindowProc;
+
+        // One class per window: the name has to be unique process-wide, and UnregisterClassW in
+        // Dispose would otherwise pull the class out from under a sibling window.
+        _className = "XPlatUI.Window." + Interlocked.Increment(ref _nextClassId).ToString(CultureInfo.InvariantCulture);
 
         _host.Invalidated += (_, _) => Invalidate();
         _host.CursorChanged += (_, _) => ApplyCursor();
         XPlatTheme.Changed += OnThemeChanged;
     }
 
-    /// <summary>The platform independent UI host.</summary>
+    /// <inheritdoc />
     public XPlatUiHost Host => _host;
 
-    /// <summary>Sets the root of the control tree and lays it out to fill the window.</summary>
-    public XPlatControl? Root
+    /// <inheritdoc />
+    public float ScaleFactor => _scale;
+
+    /// <inheritdoc />
+    public XPlatScreen? Screen => _hwnd == IntPtr.Zero
+        ? _application.PrimaryScreen
+        : Win32ApplicationBackend.ScreenForWindow(_hwnd);
+
+    /// <inheritdoc />
+    public string Title
     {
-        get => _host.Root;
+        get => _title;
         set
         {
-            _host.Root = value;
-            UpdateHostSize();
+            _title = value ?? string.Empty;
+
+            if (_hwnd != IntPtr.Zero)
+            {
+                NativeMethods.SetWindowTextW(_hwnd, _title);
+            }
         }
     }
 
-    /// <summary>Device pixels per logical pixel.</summary>
-    public float DpiScale => _scale;
+    /// <inheritdoc />
+    public SKSize ClientSize
+    {
+        get => _clientSize;
+        set
+        {
+            if (value.Width <= 0f || value.Height <= 0f || _clientSize == value)
+            {
+                return;
+            }
 
-    /// <summary>The native window handle, needed by platform services such as the menu presenter.</summary>
-    public IntPtr Handle => _hwnd;
+            _clientSize = value;
 
-    /// <summary>Maps a logical client point to physical screen pixels.</summary>
-    public NativeMethods.POINT LogicalToScreen(SKPoint point)
+            if (_hwnd == IntPtr.Zero)
+            {
+                return;
+            }
+
+            var outer = OuterSizeFor(value.Width, value.Height);
+            NativeMethods.SetWindowPos(
+                _hwnd,
+                IntPtr.Zero,
+                0,
+                0,
+                outer.Width,
+                outer.Height,
+                NativeMethods.SwpNoMove | NativeMethods.SwpNoZOrder | NativeMethods.SwpNoActivate);
+        }
+    }
+
+    /// <inheritdoc />
+    public SKSize MinimumClientSize
+    {
+        get => _minimumClientSize;
+        set
+        {
+            _minimumClientSize = value;
+
+            // Win32 asks for the limit on every drag, so nothing has to be pushed to the window.
+        }
+    }
+
+    /// <inheritdoc />
+    public SKSize MaximumClientSize
+    {
+        get => _maximumClientSize;
+        set
+        {
+            _maximumClientSize = value;
+        }
+    }
+
+    /// <inheritdoc />
+    public SKPoint Location
+    {
+        get
+        {
+            if (_hwnd != IntPtr.Zero && NativeMethods.GetWindowRect(_hwnd, out var rect))
+            {
+                return new SKPoint(rect.Left / _scale, rect.Top / _scale);
+            }
+
+            return _location ?? SKPoint.Empty;
+        }
+        set
+        {
+            _location = value;
+
+            if (_hwnd == IntPtr.Zero)
+            {
+                return;
+            }
+
+            NativeMethods.SetWindowPos(
+                _hwnd,
+                IntPtr.Zero,
+                (int)MathF.Round(value.X * _scale),
+                (int)MathF.Round(value.Y * _scale),
+                0,
+                0,
+                NativeMethods.SwpNoSize | NativeMethods.SwpNoZOrder | NativeMethods.SwpNoActivate);
+        }
+    }
+
+    /// <inheritdoc />
+    public bool Resizable
+    {
+        get => _resizable;
+        set
+        {
+            if (_resizable == value)
+            {
+                return;
+            }
+
+            _resizable = value;
+            ApplyResizable();
+        }
+    }
+
+    /// <inheritdoc />
+    public bool TopMost
+    {
+        get => _topMost;
+        set
+        {
+            if (_topMost == value)
+            {
+                return;
+            }
+
+            _topMost = value;
+
+            if (_hwnd == IntPtr.Zero)
+            {
+                return;
+            }
+
+            NativeMethods.SetWindowPos(
+                _hwnd,
+                value ? NativeMethods.HwndTopMost : NativeMethods.HwndTop,
+                0,
+                0,
+                0,
+                0,
+                NativeMethods.SwpNoMove | NativeMethods.SwpNoSize | NativeMethods.SwpNoActivate);
+        }
+    }
+
+    /// <summary>
+    /// The window's display state. <see cref="XPlatWindowState.FullScreen"/> maps to a maximized
+    /// window for now; true borderless full screen needs a style save/restore that is not worth
+    /// carrying until a control asks for it.
+    /// </summary>
+    public XPlatWindowState State
+    {
+        get => _hwnd == IntPtr.Zero ? _state : CurrentState();
+        set
+        {
+            _state = value;
+
+            if (_hwnd == IntPtr.Zero)
+            {
+                return;
+            }
+
+            var show = value switch
+            {
+                XPlatWindowState.Minimized => NativeMethods.SwMinimize,
+                XPlatWindowState.Maximized or XPlatWindowState.FullScreen => NativeMethods.SwMaximize,
+                _ => NativeMethods.SwRestore,
+            };
+
+            NativeMethods.ShowWindow(_hwnd, show);
+        }
+    }
+
+    /// <summary>
+    /// The window's menu bar, or null for none. Stored but not drawn yet: menu bar rendering is a
+    /// separate piece of work from moving the harness onto the application model.
+    /// </summary>
+    public XPlatMenuBar? MenuBar
+    {
+        get => _menuBar;
+        set => _menuBar = value;
+    }
+
+    /// <summary>The native window handle, or <see cref="IntPtr.Zero"/> before the window is shown.</summary>
+    internal IntPtr Handle => _hwnd;
+
+    /// <inheritdoc />
+    public void Show(IXPlatWindowBackend? owner)
+    {
+        if (!EnsureCreated(owner))
+        {
+            return;
+        }
+
+        Present();
+    }
+
+    /// <inheritdoc />
+    public void ShowDialog(IXPlatWindowBackend? owner)
+    {
+        if (!EnsureCreated(owner))
+        {
+            return;
+        }
+
+        var ownerHandle = (owner as Win32WindowBackend)?._hwnd ?? IntPtr.Zero;
+
+        if (ownerHandle != IntPtr.Zero)
+        {
+            NativeMethods.EnableWindow(ownerHandle, false);
+        }
+
+        try
+        {
+            Present();
+
+            // The nested loop ends when this window is destroyed, which is the same signal
+            // XPlatWindow uses to decide whether the dialog ever reported a close.
+            _application.RunNestedLoop(() => _hwnd != IntPtr.Zero);
+        }
+        finally
+        {
+            if (ownerHandle != IntPtr.Zero)
+            {
+                NativeMethods.EnableWindow(ownerHandle, true);
+            }
+        }
+    }
+
+    /// <inheritdoc />
+    public void Activate()
+    {
+        if (_hwnd == IntPtr.Zero)
+        {
+            return;
+        }
+
+        NativeMethods.SetForegroundWindow(_hwnd);
+        NativeMethods.SetFocus(_hwnd);
+    }
+
+    /// <inheritdoc />
+    public void Close()
+    {
+        if (!_disposed)
+        {
+            CloseRequested?.Invoke(this, EventArgs.Empty);
+        }
+    }
+
+    /// <inheritdoc />
+    public void SetTitleBarAppearance(bool dark) => NativeMethods.SetDarkTitleBar(_hwnd, dark);
+
+    /// <inheritdoc />
+    public event EventHandler? Shown;
+
+    /// <inheritdoc />
+    public event EventHandler? CloseRequested;
+
+    /// <inheritdoc />
+    public event EventHandler? Closed;
+
+    /// <inheritdoc />
+    public event EventHandler? Activated;
+
+    /// <inheritdoc />
+    public event EventHandler? Deactivated;
+
+    /// <inheritdoc />
+    public event EventHandler? ClientSizeChanged;
+
+    /// <inheritdoc />
+    public event EventHandler? ScaleChanged;
+
+    /// <inheritdoc />
+    public event EventHandler? StateChanged;
+
+    /// <inheritdoc />
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+
+        XPlatTheme.Changed -= OnThemeChanged;
+
+        if (_hwnd != IntPtr.Zero)
+        {
+            NativeMethods.DestroyWindow(_hwnd);
+            _hwnd = IntPtr.Zero;
+        }
+
+        ReleaseBuffer();
+
+        if (_classRegistered)
+        {
+            NativeMethods.UnregisterClassW(_className, _moduleHandle);
+            _classRegistered = false;
+        }
+
+        // System cursors are shared, so the cached handles are dropped without being destroyed.
+        _cursors.Clear();
+
+        _application.RemoveWindow(this);
+        Closed?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>Forwards a key press to the tree; returns true when the UI consumed it.</summary>
+    internal bool TryHandleKeyDown(IntPtr wParam)
+    {
+        var key = MapKey((int)wParam);
+        return key != XPlatKey.None && _host.ProcessKeyDown(key, CurrentModifiers());
+    }
+
+    /// <summary>Maps a logical client point to physical screen pixels, for native menus.</summary>
+    internal NativeMethods.POINT LogicalToScreen(SKPoint point)
     {
         var screen = new NativeMethods.POINT
         {
@@ -93,16 +424,18 @@ internal sealed class HarnessWindow : IDisposable
         return screen;
     }
 
-    /// <summary>Maps physical screen pixels to a logical client point.</summary>
-    public SKPoint ScreenToLogical(NativeMethods.POINT point)
+    private bool EnsureCreated(IXPlatWindowBackend? owner)
     {
-        NativeMethods.ScreenToClient(_hwnd, ref point);
-        return new SKPoint(point.X / _scale, point.Y / _scale);
-    }
+        if (_hwnd != IntPtr.Zero)
+        {
+            return true;
+        }
 
-    /// <summary>Registers the window class and creates and shows the window.</summary>
-    public bool Create()
-    {
+        if (_disposed)
+        {
+            return false;
+        }
+
         _moduleHandle = NativeMethods.GetModuleHandleW(null);
 
         var windowClass = new NativeMethods.WNDCLASSEXW
@@ -111,7 +444,7 @@ internal sealed class HarnessWindow : IDisposable
             style = NativeMethods.CsHRedraw | NativeMethods.CsVRedraw | NativeMethods.CsDblClks,
             lpfnWndProc = Marshal.GetFunctionPointerForDelegate(_wndProc),
             hInstance = _moduleHandle,
-            lpszClassName = ClassName,
+            lpszClassName = _className,
         };
 
         var icon = NativeMethods.LoadIconW(IntPtr.Zero, new IntPtr(NativeMethods.IdiApplication));
@@ -127,65 +460,86 @@ internal sealed class HarnessWindow : IDisposable
 
         // Create the window first: its DPI can only be queried once it exists, and sizing against
         // the wrong scale would crop the logical layout on high-DPI displays.
-        var provisional = OuterSizeFor(DesignClientWidth, DesignClientHeight);
-        var work = NativeMethods.GetPrimaryWorkArea();
-        var x = work.Left + Math.Max(((work.Right - work.Left) - provisional.Width) / 2, 0);
-        var y = work.Top + Math.Max(((work.Bottom - work.Top) - provisional.Height) / 2, 0);
+        var provisional = OuterSizeFor(_clientSize.Width, _clientSize.Height);
+        var ownerHandle = (owner as Win32WindowBackend)?._hwnd ?? IntPtr.Zero;
 
         _hwnd = NativeMethods.CreateWindowExW(
             0,
-            ClassName,
-            WindowTitle,
-            NativeMethods.WsOverlappedWindow,
-            x,
-            y,
-            provisional.Width,
-            provisional.Height,
-            IntPtr.Zero,
+            _className,
+            _title,
+            StyleFor(),
+            0,
+            0,
+            Math.Max(provisional.Width, 1),
+            Math.Max(provisional.Height, 1),
+            ownerHandle,
             IntPtr.Zero,
             _moduleHandle,
             IntPtr.Zero);
 
         if (_hwnd == IntPtr.Zero)
         {
+            if (_classRegistered)
+            {
+                NativeMethods.UnregisterClassW(_className, _moduleHandle);
+                _classRegistered = false;
+            }
+
             return false;
         }
 
-        ApplyDpi(NativeMethods.GetDpiForWindow(_hwnd));
+        _scale = ScaleOf(NativeMethods.GetDpiForWindow(_hwnd));
+        PlaceInitially();
+        ApplyResizable();
 
-        // DWM only honours this on Windows 10 1809+, and only affects the non-client area.
-        NativeMethods.SetDarkTitleBar(_hwnd, XPlatTheme.IsDarkMode);
+        if (_topMost)
+        {
+            NativeMethods.SetWindowPos(
+                _hwnd,
+                NativeMethods.HwndTopMost,
+                0,
+                0,
+                0,
+                0,
+                NativeMethods.SwpNoMove | NativeMethods.SwpNoSize | NativeMethods.SwpNoActivate);
+        }
 
-        NativeMethods.SetTimer(_hwnd, (nuint)TickTimerId, TickIntervalMs, IntPtr.Zero);
-        NativeMethods.ShowWindow(_hwnd, NativeMethods.SwShow);
-        NativeMethods.UpdateWindow(_hwnd);
+        UpdateHostSize();
         return true;
     }
 
-    /// <summary>
-    /// The XPlat tree lays out in logical (96 DPI) units, so the window is resized to the display
-    /// scale; otherwise the sample UI would be cropped on high-DPI screens.
-    /// </summary>
-    private void ApplyDpi(uint dpi)
+    private void Present()
     {
-        _scale = dpi > 0 ? dpi / 96f : 1f;
+        NativeMethods.SetDarkTitleBar(_hwnd, XPlatTheme.IsDarkMode);
 
-        if (_hwnd == IntPtr.Zero)
+        // The presenter needs a live HWND, so it can only be installed once the window exists.
+        XPlatContextMenuPresenter.Current = new Win32ContextMenuPresenter(_hwnd, LogicalToScreen);
+
+        NativeMethods.ShowWindow(_hwnd, NativeMethods.SwShow);
+        NativeMethods.UpdateWindow(_hwnd);
+
+        Shown?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>Puts the window on the primary display's working area, honouring an explicit location.</summary>
+    private void PlaceInitially()
+    {
+        var outer = OuterSizeFor(_clientSize.Width, _clientSize.Height);
+
+        int x;
+        int y;
+
+        if (_location is { } location)
         {
-            return;
+            x = (int)MathF.Round(location.X * _scale);
+            y = (int)MathF.Round(location.Y * _scale);
         }
-
-        var work = NativeMethods.GetWorkArea(_hwnd);
-        var frame = OuterSizeFor(0, 0);
-        var workWidth = Math.Max((work.Right - work.Left) - frame.Width, 1);
-        var workHeight = Math.Max((work.Bottom - work.Top) - frame.Height, 1);
-
-        var clientWidth = Math.Max(ToDevicePixels(DesignClientWidth, workWidth), 1);
-        var clientHeight = Math.Max(ToDevicePixels(DesignClientHeight, workHeight), 1);
-        var outer = OuterSizeFor(clientWidth, clientHeight);
-
-        var x = work.Left + Math.Max(((work.Right - work.Left) - outer.Width) / 2, 0);
-        var y = work.Top + Math.Max(((work.Bottom - work.Top) - outer.Height) / 2, 0);
+        else
+        {
+            var work = NativeMethods.GetPrimaryWorkArea();
+            x = work.Left + Math.Max(((work.Right - work.Left) - outer.Width) / 2, 0);
+            y = work.Top + Math.Max(((work.Bottom - work.Top) - outer.Height) / 2, 0);
+        }
 
         NativeMethods.SetWindowPos(
             _hwnd,
@@ -197,66 +551,46 @@ internal sealed class HarnessWindow : IDisposable
             NativeMethods.SwpNoZOrder | NativeMethods.SwpNoActivate);
     }
 
-    /// <summary>Runs the Win32 message pump until the window closes; returns the process exit code.</summary>
-    public int Run()
+    private void ApplyResizable()
     {
-        while (true)
-        {
-            var result = NativeMethods.GetMessageW(out var message, IntPtr.Zero, 0, 0);
-            if (result == 0)
-            {
-                return (int)message.wParam;
-            }
-
-            if (result < 0)
-            {
-                return -1;
-            }
-
-            // Swallowing the key here (instead of in the window procedure) keeps TranslateMessage
-            // from also turning it into a WM_CHAR, which would double up text input.
-            if (message.message == NativeMethods.WmKeyDown && TryHandleKeyDown(message.wParam))
-            {
-                continue;
-            }
-
-            NativeMethods.TranslateMessage(ref message);
-            NativeMethods.DispatchMessageW(ref message);
-        }
-    }
-
-    public void Dispose()
-    {
-        if (_disposed)
+        if (_hwnd == IntPtr.Zero)
         {
             return;
         }
 
-        _disposed = true;
+        var style = (uint)(long)NativeMethods.GetWindowLongPtrW(_hwnd, NativeMethods.GwlStyle);
+        const uint frame = NativeMethods.WsThickFrame | NativeMethods.WsMaximizeBox | NativeMethods.WsMinimizeBox;
+        style = _resizable ? style | frame : style & ~frame;
 
-        XPlatTheme.Changed -= OnThemeChanged;
+        NativeMethods.SetWindowLongPtrW(_hwnd, NativeMethods.GwlStyle, new IntPtr(style));
+        NativeMethods.SetWindowPos(
+            _hwnd,
+            IntPtr.Zero,
+            0,
+            0,
+            0,
+            0,
+            NativeMethods.SwpNoMove | NativeMethods.SwpNoSize | NativeMethods.SwpNoZOrder |
+            NativeMethods.SwpNoActivate | NativeMethods.SwpFrameChanged);
+    }
 
-        if (_hwnd != IntPtr.Zero)
+    private uint StyleFor() => _resizable
+        ? NativeMethods.WsOverlappedWindow
+        : NativeMethods.WsOverlappedWindow & ~(NativeMethods.WsThickFrame | NativeMethods.WsMaximizeBox | NativeMethods.WsMinimizeBox);
+
+    private XPlatWindowState CurrentState()
+    {
+        if (NativeMethods.IsIconic(_hwnd))
         {
-            NativeMethods.KillTimer(_hwnd, (nuint)TickTimerId);
-            NativeMethods.DestroyWindow(_hwnd);
-            _hwnd = IntPtr.Zero;
+            return XPlatWindowState.Minimized;
         }
 
-        ReleaseBuffer();
-
-        if (_classRegistered)
-        {
-            NativeMethods.UnregisterClassW(ClassName, _moduleHandle);
-            _classRegistered = false;
-        }
-
-        // System cursors are shared, so the cached handles are dropped without being destroyed.
-        _cursors.Clear();
+        return NativeMethods.IsZoomed(_hwnd) ? XPlatWindowState.Maximized : XPlatWindowState.Normal;
     }
 
     private IntPtr WindowProc(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam)
     {
+        // Messages raised while CreateWindowExW is still running arrive before _hwnd is assigned.
         if (_hwnd == IntPtr.Zero)
         {
             _hwnd = hwnd;
@@ -279,7 +613,7 @@ internal sealed class HarnessWindow : IDisposable
                 return new IntPtr(1);
 
             case NativeMethods.WmSize:
-                OnSize(NativeMethods.LowWord(lParam), NativeMethods.HighWord(lParam));
+                OnSize(NativeMethods.LowWord(lParam), NativeMethods.HighWord(lParam), (uint)wParam);
                 return IntPtr.Zero;
 
             case NativeMethods.WmDpiChanged:
@@ -290,10 +624,14 @@ internal sealed class HarnessWindow : IDisposable
                 OnGetMinMaxInfo(lParam);
                 return IntPtr.Zero;
 
-            case NativeMethods.WmTimer:
-                if (wParam == TickTimerId)
+            case NativeMethods.WmActivate:
+                if (NativeMethods.LowWord(wParam) == 0)
                 {
-                    _host.ProcessTick(TimeSpan.FromMilliseconds(TickIntervalMs));
+                    Deactivated?.Invoke(this, EventArgs.Empty);
+                }
+                else
+                {
+                    Activated?.Invoke(this, EventArgs.Empty);
                 }
 
                 return IntPtr.Zero;
@@ -366,13 +704,12 @@ internal sealed class HarnessWindow : IDisposable
                 return OnContextMenu(lParam) ? IntPtr.Zero : NativeMethods.DefWindowProcW(hwnd, message, wParam, lParam);
 
             case NativeMethods.WmClose:
-                NativeMethods.DestroyWindow(hwnd);
+                // The model decides: Closing may cancel, in which case the window stays up.
+                CloseRequested?.Invoke(this, EventArgs.Empty);
                 return IntPtr.Zero;
 
             case NativeMethods.WmDestroy:
-                NativeMethods.KillTimer(hwnd, (nuint)TickTimerId);
                 _hwnd = IntPtr.Zero;
-                NativeMethods.PostQuitMessage(0);
                 return IntPtr.Zero;
         }
 
@@ -432,7 +769,7 @@ internal sealed class HarnessWindow : IDisposable
         canvas.Flush();
     }
 
-    private void OnSize(int width, int height)
+    private void OnSize(int width, int height, uint sizeType)
     {
         if (width <= 0 || height <= 0)
         {
@@ -442,16 +779,29 @@ internal sealed class HarnessWindow : IDisposable
         EnsureBuffer(width, height);
         UpdateHostSize();
         Invalidate();
+        RaiseStateChanged(sizeType);
+    }
+
+    private void RaiseStateChanged(uint sizeType)
+    {
+        var state = sizeType switch
+        {
+            NativeMethods.SizeMinimized => XPlatWindowState.Minimized,
+            NativeMethods.SizeMaximized => XPlatWindowState.Maximized,
+            _ => XPlatWindowState.Normal,
+        };
+
+        if (state == _state)
+        {
+            return;
+        }
+
+        _state = state;
+        StateChanged?.Invoke(this, EventArgs.Empty);
     }
 
     private void OnDpiChanged(IntPtr hwnd, IntPtr wParam, IntPtr lParam)
     {
-        var dpi = NativeMethods.HighWord(wParam);
-        if (dpi > 0)
-        {
-            _scale = dpi / 96f;
-        }
-
         // Follow the rectangle Windows suggests so the window keeps its logical size.
         var suggested = Marshal.PtrToStructure<NativeMethods.RECT>(lParam);
         NativeMethods.SetWindowPos(
@@ -462,14 +812,39 @@ internal sealed class HarnessWindow : IDisposable
             suggested.Right - suggested.Left,
             suggested.Bottom - suggested.Top,
             NativeMethods.SwpNoZOrder | NativeMethods.SwpNoActivate);
+
+        // The high word of wParam is the new DPI; the low word is the direction of the change.
+        var scale = ScaleOf((uint)NativeMethods.HighWord(wParam));
+        if (MathF.Abs(scale - _scale) < 0.001f)
+        {
+            return;
+        }
+
+        _scale = scale;
+
+        // WM_SIZE above ran against the old scale; re-measure so the host sees logical pixels.
+        UpdateHostSize();
+        ScaleChanged?.Invoke(this, EventArgs.Empty);
     }
 
     private void OnGetMinMaxInfo(IntPtr lParam)
     {
         var info = Marshal.PtrToStructure<NativeMethods.MINMAXINFO>(lParam);
-        var minimum = OuterSizeFor(ToDevicePixels(DesignMinimumWidth, int.MaxValue), ToDevicePixels(DesignMinimumHeight, int.MaxValue));
-        info.ptMinTrackSize.X = minimum.Width;
-        info.ptMinTrackSize.Y = minimum.Height;
+
+        if (_minimumClientSize.Width > 0f || _minimumClientSize.Height > 0f)
+        {
+            var minimum = OuterSizeFor(_minimumClientSize.Width, _minimumClientSize.Height);
+            info.ptMinTrackSize.X = minimum.Width;
+            info.ptMinTrackSize.Y = minimum.Height;
+        }
+
+        if (_maximumClientSize.Width > 0f || _maximumClientSize.Height > 0f)
+        {
+            var maximum = OuterSizeFor(_maximumClientSize.Width, _maximumClientSize.Height);
+            info.ptMaxTrackSize.X = maximum.Width;
+            info.ptMaxTrackSize.Y = maximum.Height;
+        }
+
         Marshal.StructureToPtr(info, lParam, false);
     }
 
@@ -524,8 +899,8 @@ internal sealed class HarnessWindow : IDisposable
             Y = NativeMethods.HighWord(lParam),
         };
 
-        // (-1, -1) means the keyboard asked for the menu. The harness has no per-control anchor
-        // to hang it off, so it opens at the pointer, which is where the user is looking.
+        // (-1, -1) means the keyboard asked for the menu. There is no per-control anchor to hang
+        // it off here, so it opens at the pointer, which is where the user is looking.
         if (screen.X == -1 && screen.Y == -1 && !NativeMethods.GetCursorPos(out screen))
         {
             return false;
@@ -545,13 +920,6 @@ internal sealed class HarnessWindow : IDisposable
         _host.ProcessTextInput(character.ToString());
     }
 
-    /// <summary>Forwards a key press; returns true when the UI consumed it.</summary>
-    private bool TryHandleKeyDown(IntPtr wParam)
-    {
-        var key = MapKey((int)wParam);
-        return key != XPlatKey.None && _host.ProcessKeyDown(key, CurrentModifiers());
-    }
-
     private void UpdateHostSize()
     {
         if (_hwnd == IntPtr.Zero)
@@ -564,7 +932,19 @@ internal sealed class HarnessWindow : IDisposable
             return;
         }
 
-        _host.SetClientSize(client.Right / _scale, client.Bottom / _scale);
+        var size = new SKSize(client.Right / _scale, client.Bottom / _scale);
+        _clientSize = size;
+
+        // The host is the authority on whether anything actually changed: _clientSize can already
+        // hold this value because the model assigned ClientSize before the window existed, and in
+        // that case the host has still never been told and the control tree has never been laid out.
+        if (size == _host.ClientSize)
+        {
+            return;
+        }
+
+        _host.SetClientSize(size.Width, size.Height);
+        ClientSizeChanged?.Invoke(this, EventArgs.Empty);
     }
 
     private void Invalidate()
@@ -577,6 +957,12 @@ internal sealed class HarnessWindow : IDisposable
 
     private SKPoint ToLogical(IntPtr lParam) =>
         new(NativeMethods.LowWord(lParam) / _scale, NativeMethods.HighWord(lParam) / _scale);
+
+    private SKPoint ScreenToLogical(NativeMethods.POINT point)
+    {
+        NativeMethods.ScreenToClient(_hwnd, ref point);
+        return new SKPoint(point.X / _scale, point.Y / _scale);
+    }
 
     private static XPlatModifiers CurrentModifiers()
     {
@@ -679,14 +1065,18 @@ internal sealed class HarnessWindow : IDisposable
         };
     }
 
-    private int ToDevicePixels(int logicalPixels, int limit) =>
-        Math.Max(Math.Min((int)MathF.Round(logicalPixels * _scale), limit), 0);
+    private static float ScaleOf(uint dpi) => dpi > 0 ? dpi / 96f : 1f;
 
-    private (int Width, int Height) OuterSizeFor(int clientWidth, int clientHeight)
+    private (int Width, int Height) OuterSizeFor(float clientWidth, float clientHeight)
     {
-        var rect = new NativeMethods.RECT { Right = clientWidth, Bottom = clientHeight };
+        var rect = new NativeMethods.RECT
+        {
+            Right = Math.Max((int)MathF.Round(clientWidth * _scale), 0),
+            Bottom = Math.Max((int)MathF.Round(clientHeight * _scale), 0),
+        };
+
         var dpi = (uint)MathF.Round(_scale * 96f);
-        NativeMethods.AdjustWindowRectExForDpi(ref rect, NativeMethods.WsOverlappedWindow, false, 0, dpi == 0 ? 96u : dpi);
+        NativeMethods.AdjustWindowRectExForDpi(ref rect, StyleFor(), false, 0, dpi == 0 ? 96u : dpi);
         return (rect.Right - rect.Left, rect.Bottom - rect.Top);
     }
 
