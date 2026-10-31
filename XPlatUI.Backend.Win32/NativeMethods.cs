@@ -724,6 +724,18 @@ internal static class NativeMethods
     internal const uint ClsCtxInprocServer = 0x00000001;
     internal const int ErrorCancelled = unchecked((int)0x800704C7);
 
+    // Apartment initialization. The shell's file dialogs are in-proc COM objects that only work on
+    // a single-threaded apartment.
+    internal const uint CoInitApartmentThreaded = 0x00000002;
+    internal const int SOk = 0;
+    internal const int SFalse = 1;
+
+    [DllImport("ole32.dll", ExactSpelling = true)]
+    internal static extern int CoInitializeEx(IntPtr reserved, uint flags);
+
+    [DllImport("ole32.dll", ExactSpelling = true)]
+    internal static extern void CoUninitialize();
+
     [DllImport("ole32.dll", ExactSpelling = true)]
     internal static extern int CoCreateInstance(
         in Guid classId,

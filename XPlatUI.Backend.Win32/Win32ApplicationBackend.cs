@@ -35,6 +35,7 @@ public sealed class Win32ApplicationBackend : IXPlatApplicationBackend
     private IntPtr _moduleHandle;
     private IntPtr _hwndMessage;
     private bool _classRegistered;
+    private bool _comInitialized;
     private int _uiThreadId;
 
     /// <summary>
@@ -56,6 +57,13 @@ public sealed class Win32ApplicationBackend : IXPlatApplicationBackend
     /// </remarks>
     public IXPlatSystemTheme SystemTheme { get; } = new Win32SystemTheme();
 
+    /// <summary>
+    /// True when the UI thread is in a single-threaded COM apartment, which the shell's file dialogs
+    /// require. False means <see cref="IXPlatDialogService.OpenFile"/> and friends will refuse rather
+    /// than hang; see <see cref="InitializeCom"/>.
+    /// </summary>
+    internal bool IsSingleThreadedApartment { get; private set; }
+
     /// <inheritdoc />
     public void Initialize(XPlatApplication application)
     {
@@ -72,6 +80,8 @@ public sealed class Win32ApplicationBackend : IXPlatApplicationBackend
         }
 
         ApplyDpiAwareness(options.DpiAwareness);
+
+        IsSingleThreadedApartment = InitializeCom();
 
         Win32ContextMenuPresenter.ForceClassicMenu = ForceClassicMenus;
 
@@ -176,6 +186,7 @@ public sealed class Win32ApplicationBackend : IXPlatApplicationBackend
         services.AddSingleton<Win32Clipboard>();
         services.AddSingleton<IXPlatClipboard>(static provider => provider.GetRequiredService<Win32Clipboard>());
         services.AddSingleton(SystemTheme);
+        services.AddSingleton(this);
         services.AddSingleton<IXPlatDialogService, Win32DialogService>();
     }
 
@@ -225,6 +236,12 @@ public sealed class Win32ApplicationBackend : IXPlatApplicationBackend
         {
             NativeMethods.UnregisterClassW(MessageWindowClass, _moduleHandle);
             _classRegistered = false;
+        }
+
+        if (_comInitialized)
+        {
+            NativeMethods.CoUninitialize();
+            _comInitialized = false;
         }
     }
 
@@ -459,6 +476,33 @@ public sealed class Win32ApplicationBackend : IXPlatApplicationBackend
         };
 
         NativeMethods.SetProcessDpiAwarenessContext(context);
+    }
+
+    /// <summary>
+    /// Claims the UI thread's COM apartment for the life of the application, and reports whether it
+    /// ended up single-threaded.
+    /// </summary>
+    /// <remarks>
+    /// The shell's file dialogs are in-proc COM objects that need a single-threaded apartment:
+    /// <c>IFileDialog::Show</c> never returns on a multi-threaded one, and never even creates its
+    /// window, which reads as an application that froze the moment the user asked for a file.
+    /// <para>
+    /// The apartment is decided before this can run - the runtime initializes the thread as MTA
+    /// unless the entry point carries <see cref="STAThreadAttribute"/> - so this confirms the
+    /// apartment rather than choosing it. <c>CoInitializeEx</c> fails with
+    /// <c>RPC_E_CHANGED_MODE</c> on a thread that is already MTA, and no amount of COM calls
+    /// afterwards can change it. When that happens the backend carries on: the clipboard and every
+    /// window still work, and the file dialogs throw with an explanation instead of hanging.
+    /// </para>
+    /// </remarks>
+    private bool InitializeCom()
+    {
+        var hr = NativeMethods.CoInitializeEx(IntPtr.Zero, NativeMethods.CoInitApartmentThreaded);
+
+        // S_FALSE means the thread was already STA, which is the usual case: [STAThread] on Main
+        // got there first. Either way one CoUninitialize balances this call.
+        _comInitialized = hr is NativeMethods.SOk or NativeMethods.SFalse;
+        return _comInitialized;
     }
 
     private static XPlatScreen ToScreen(IntPtr monitor, NativeMethods.RECT bounds)

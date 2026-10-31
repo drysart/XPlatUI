@@ -51,6 +51,13 @@ internal static class Program
     /// a native window and everything inside it is drawn with SkiaSharp, so the whole application
     /// stays trimmable and can be published with NativeAOT.
     /// </summary>
+    /// <remarks>
+    /// The attribute is not decoration: the runtime reads it before <c>Main</c> runs and initializes
+    /// the thread as a single-threaded COM apartment, which is the only thing that can do so. Windows
+    /// needs it for the shell's file dialogs, whose <c>IFileDialog::Show</c> never returns on a
+    /// multi-threaded apartment. It is ignored on macOS and Linux.
+    /// </remarks>
+    [STAThread]
     private static int Main(string[] args)
     {
 #if WINDOWS

@@ -927,6 +927,28 @@ Dialogs are **v1** (D12). Concretely:
 `XPlatApplication.Dialogs` (§4.1) is the convenience accessor; `Services.GetService<IXPlatDialogService>()`
 is the general path a control or view model uses (§5.5).
 
+### 9.1 The Windows apartment requirement
+
+`IFileDialog` is an in-proc COM object, and `IFileDialog::Show` **never returns** on a multi-threaded
+apartment — it does not even create its window. The failure mode is therefore an application that
+freezes the instant the user asks for a file, with nothing thrown, nothing logged and nothing for
+`UnhandledException` to report. `MessageBoxW` is plain `user32`, so a message box keeps working on the
+same thread, which makes the symptom look like "only the file dialogs are broken".
+
+The apartment is chosen **before `Main` runs**, by the runtime, from `[STAThread]` on the entry point.
+Nothing a backend can do afterwards changes it: `CoInitializeEx` on a thread the runtime already made
+MTA fails with `RPC_E_CHANGED_MODE`, and `Thread.GetApartmentState` reports `MTA` even on threads where
+COM was never initialized, so it is not evidence either way. Consequences:
+
+- **An application's entry point must carry `[STAThread]`.** It is ignored on macOS and Linux, so it
+  costs nothing to have on all three.
+- `Win32ApplicationBackend.Initialize` still calls `CoInitializeEx(STA)` — as a *confirmation*, and to
+  take the reference count `CoUninitialize` releases in `Shutdown`.
+- `Win32DialogService.OpenFile` / `SaveFile` / `PickFolder` check
+  `Win32ApplicationBackend.IsSingleThreadedApartment` and throw `InvalidOperationException` naming
+  `[STAThread]` when it is false. Turning a silent hang into a loud exception is the whole point: this
+  is the one failure in the model that no amount of error handling above it could ever catch.
+
 ---
 
 ## 10. Everything else the model should own

@@ -22,11 +22,28 @@ namespace XPlatUI.Backend.Win32;
 /// source-generated COM so the whole thing survives NativeAOT, where built-in COM interop is
 /// trimmed away.
 /// </para>
+/// <para>
+/// The file dialogs are also the one part of this backend that needs the UI thread to be a
+/// single-threaded COM apartment. <c>IFileDialog::Show</c> never returns - and never creates its
+/// window - on a multi-threaded apartment, so rather than hang, <see cref="OpenFile"/> and the rest
+/// throw when the thread is MTA. A message box is plain <c>user32</c> and needs neither COM nor an
+/// apartment.
+/// </para>
 /// </remarks>
 internal sealed class Win32DialogService : IXPlatDialogService
 {
     /// <summary>The application name a message box falls back to when no title is given.</summary>
     private static readonly string FallbackTitle = "XPlat UI";
+
+    private readonly Win32ApplicationBackend _backend;
+
+    /// <summary>Creates the service, which asks <paramref name="backend"/> about the COM apartment.</summary>
+    /// <param name="backend">The backend whose UI thread will host the dialogs.</param>
+    public Win32DialogService(Win32ApplicationBackend backend)
+    {
+        ArgumentNullException.ThrowIfNull(backend);
+        _backend = backend;
+    }
 
     /// <inheritdoc />
     public XPlatDialogResult ShowMessage(XPlatMessageBoxOptions options, XPlatWindow? owner)
@@ -61,6 +78,7 @@ internal sealed class Win32DialogService : IXPlatDialogService
     public string? OpenFile(XPlatFileDialogOptions options, XPlatWindow? owner)
     {
         ArgumentNullException.ThrowIfNull(options);
+        RequireSingleThreadedApartment();
 
         return ShowFileDialog(
             Win32ComInterfaces.FileOpenDialogClass,
@@ -73,6 +91,7 @@ internal sealed class Win32DialogService : IXPlatDialogService
     public string? SaveFile(XPlatFileDialogOptions options, XPlatWindow? owner)
     {
         ArgumentNullException.ThrowIfNull(options);
+        RequireSingleThreadedApartment();
 
         return ShowFileDialog(
             Win32ComInterfaces.FileSaveDialogClass,
@@ -85,6 +104,7 @@ internal sealed class Win32DialogService : IXPlatDialogService
     public string? PickFolder(XPlatFileDialogOptions options, XPlatWindow? owner)
     {
         ArgumentNullException.ThrowIfNull(options);
+        RequireSingleThreadedApartment();
 
         // FOS_PICKFOLDERS turns the same dialog into a folder picker; the file-only flags would
         // then reject every folder the user picks, so they are left off.
@@ -93,6 +113,25 @@ internal sealed class Win32DialogService : IXPlatDialogService
             FileOpenDialogOptions.PickFolders | FileOpenDialogOptions.PathMustExist,
             options,
             owner);
+    }
+
+    /// <summary>
+    /// Fails loudly when the UI thread is not a single-threaded apartment, because
+    /// <c>IFileDialog::Show</c> blocks forever there instead of returning an error.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The UI thread is a multi-threaded apartment.</exception>
+    private void RequireSingleThreadedApartment()
+    {
+        if (_backend.IsSingleThreadedApartment)
+        {
+            return;
+        }
+
+        throw new InvalidOperationException(
+            "The shell's file dialogs need a single-threaded COM apartment, and the UI thread is " +
+            "multi-threaded, so IFileDialog::Show would never return. Add [STAThread] to the entry " +
+            "point: the runtime reads it before Main runs and initializes the thread as STA, which " +
+            "no COM call made later can do.");
     }
 
     private static unsafe string? ShowFileDialog(
