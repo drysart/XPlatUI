@@ -10,8 +10,8 @@ namespace XPlatUI;
 /// text input from an <see cref="XPlatUiHost"/>.
 /// </summary>
 /// <remarks>
-/// Adapters should call <see cref="XPlatUiHost.ProcessTick"/> from a timer so the caret
-/// blinks, and should install a platform clipboard into <see cref="XPlatClipboard.Current"/>.
+/// The caret blinks from a timer this control owns, which only runs while the text box has focus.
+/// Adapters only need to install a platform clipboard into <see cref="XPlatClipboard.Current"/>.
 /// </remarks>
 public class XPlatTextBox : XPlatControl
 {
@@ -20,6 +20,7 @@ public class XPlatTextBox : XPlatControl
 
     private static readonly TimeSpan CaretBlinkInterval = TimeSpan.FromMilliseconds(530);
 
+    private readonly XPlatTimer _caretTimer;
     private XPlatFont _font = XPlatTheme.DefaultFont;
     private string _placeholderText = string.Empty;
     private int _caret;
@@ -28,7 +29,6 @@ public class XPlatTextBox : XPlatControl
     private bool _caretVisible = true;
     private bool _caretActive;
     private bool _selecting;
-    private TimeSpan _blinkElapsed;
     private int _maxLength;
     private bool _readOnly;
     private bool _isPassword;
@@ -38,6 +38,7 @@ public class XPlatTextBox : XPlatControl
     {
         TabStop = true;
         Cursor = XPlatCursor.IBeam;
+        _caretTimer = CreateTimer(CaretBlinkInterval, OnCaretTimerTick);
         BorderWidth = 1f;
         CornerRadius = 6f;
         Padding = new XPlatThickness(8f, 6f);
@@ -585,26 +586,6 @@ public class XPlatTextBox : XPlatControl
         base.OnTextChanged(e);
     }
 
-    protected override void OnTick(TimeSpan elapsed)
-    {
-        base.OnTick(elapsed);
-
-        if (!IsFocused || !Enabled)
-        {
-            return;
-        }
-
-        _blinkElapsed += elapsed;
-        if (_blinkElapsed < CaretBlinkInterval)
-        {
-            return;
-        }
-
-        _blinkElapsed = TimeSpan.Zero;
-        _caretVisible = !_caretVisible;
-        Invalidate();
-    }
-
     protected override void OnGotFocus(EventArgs e)
     {
         base.OnGotFocus(e);
@@ -618,7 +599,7 @@ public class XPlatTextBox : XPlatControl
         base.OnLostFocus(e);
         _selecting = false;
         _caretVisible = true;
-        _blinkElapsed = TimeSpan.Zero;
+        _caretTimer.Stop();
         Invalidate();
     }
 
@@ -642,6 +623,8 @@ public class XPlatTextBox : XPlatControl
             _selecting = false;
             ReleaseMouseCapture();
         }
+
+        _caretTimer.Enabled = Enabled && IsFocused;
 
         base.OnEnabledChanged(e);
     }
@@ -706,7 +689,23 @@ public class XPlatTextBox : XPlatControl
     private void ResetCaretBlink()
     {
         _caretVisible = true;
-        _blinkElapsed = TimeSpan.Zero;
+
+        // Restarting is the point: the caret stays solid for a whole interval after any activity,
+        // and the timer only runs at all while this control has focus.
+        _caretTimer.Enabled = IsFocused && Enabled;
+    }
+
+    private void OnCaretTimerTick(object? sender, EventArgs e)
+    {
+        // The control tree belongs to the caller, so this timer can outlive the application. Once
+        // that happens XPlatTimer ticks inline on a pool thread, which must not touch the UI.
+        if (XPlatApplication.Current is null || !IsFocused || !Enabled)
+        {
+            return;
+        }
+
+        _caretVisible = !_caretVisible;
+        Invalidate();
     }
 
     /// <summary>

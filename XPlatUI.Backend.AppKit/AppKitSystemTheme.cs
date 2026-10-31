@@ -6,8 +6,8 @@ namespace XPlatUI.Backend.AppKit;
 /// <summary>
 /// The system light/dark preference, read from AppKit's effective appearance. AppKit has no
 /// notification for an appearance change that is guaranteed to fire for every case (it arrives as
-/// KVO on <c>effectiveAppearance</c>), so the backend polls instead: the UI already ticks four
-/// times a second for the caret, which makes the change look immediate.
+/// KVO on <c>effectiveAppearance</c>), so the backend polls instead: the application backend
+/// already runs a poll for queued work, which makes the change look immediate.
 /// </summary>
 public sealed class AppKitSystemTheme : IXPlatSystemTheme
 {

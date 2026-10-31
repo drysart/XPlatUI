@@ -529,7 +529,7 @@ public sealed class Gtk4ApplicationBackend : IXPlatApplicationBackend
         }
 
         // A default-priority timeout keeps firing inside nested modal loops and while a dialog is
-        // pumping the context, so the caret keeps blinking and queued work keeps running.
+        // pumping the context, so queued work keeps running there.
         _pollSource = GLib.Functions.TimeoutAdd(0, (uint)PollInterval.TotalMilliseconds, _poll);
     }
 

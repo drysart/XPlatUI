@@ -29,6 +29,7 @@ public class XPlatControl : IDisposable
     private bool _disposed;
     private XPlatUiHost? _host;
     private XPlatControlCollection? _controls;
+    private List<XPlatTimer>? _timers;
     private List<SKRect>? _selectionRects;
     private SKColor? _backColor;
     private bool _backColorAssigned;
@@ -651,6 +652,27 @@ public class XPlatControl : IDisposable
 
     public void ReleaseMouseCapture() => Host?.ReleaseMouseCapture(this);
 
+    /// <summary>
+    /// Creates a timer owned by this control: it is disposed with the control, so a control that
+    /// animates never has to override <see cref="Dispose(bool)"/> just to release its clock.
+    /// </summary>
+    /// <param name="interval">The interval between ticks; must be positive.</param>
+    /// <param name="handler">The handler for the timer's <see cref="XPlatTimer.Tick"/> event.</param>
+    /// <returns>The new timer, which starts out stopped.</returns>
+    /// <remarks>
+    /// Only run it while it is actually needed. A timer that keeps ticking for a control nobody is
+    /// looking at is exactly the cost that makes a single application-wide tick a bad fit.
+    /// </remarks>
+    protected XPlatTimer CreateTimer(TimeSpan interval, EventHandler handler)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+
+        var timer = new XPlatTimer(interval);
+        timer.Tick += handler;
+        (_timers ??= []).Add(timer);
+        return timer;
+    }
+
     /// <summary>Requests a repaint of the surface hosting this control.</summary>
     public void Invalidate()
     {
@@ -756,14 +778,6 @@ public class XPlatControl : IDisposable
         }
     }
 
-    internal void RaiseTick(TimeSpan elapsed)
-    {
-        if (Enabled)
-        {
-            OnTick(elapsed);
-        }
-    }
-
     internal void RaiseGotFocus()
     {
         IsFocused = true;
@@ -853,14 +867,6 @@ public class XPlatControl : IDisposable
 
     protected virtual void OnTextInput(XPlatTextInputEventArgs e) => TextInput?.Invoke(this, e);
 
-    /// <summary>
-    /// Called periodically by the host while this control has focus. Controls that animate
-    /// (for example the caret of an <see cref="XPlatTextBox"/>) override this.
-    /// </summary>
-    protected virtual void OnTick(TimeSpan elapsed)
-    {
-    }
-
     protected virtual void OnGotFocus(EventArgs e) => GotFocus?.Invoke(this, e);
 
     protected virtual void OnLostFocus(EventArgs e) => LostFocus?.Invoke(this, e);
@@ -916,17 +922,30 @@ public class XPlatControl : IDisposable
 
         _disposed = true;
 
-        if (disposing && _controls is not null)
+        if (disposing)
         {
-            var children = _controls.ToArray();
-            _controls.Clear();
-            foreach (var child in children)
+            if (_timers is not null)
             {
-                child.Parent = null;
-                child.Dispose();
+                foreach (var timer in _timers)
+                {
+                    timer.Dispose();
+                }
+
+                _timers = null;
             }
 
-            _controls = null;
+            if (_controls is not null)
+            {
+                var children = _controls.ToArray();
+                _controls.Clear();
+                foreach (var child in children)
+                {
+                    child.Parent = null;
+                    child.Dispose();
+                }
+
+                _controls = null;
+            }
         }
     }
 }

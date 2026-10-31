@@ -227,14 +227,17 @@ var password = new XPlatTextBox { Dock = DockStyle.Top, IsPassword = true };
 var readOnly = new XPlatTextBox { Dock = DockStyle.Top, ReadOnly = true, Text = "fixed" };
 ```
 
-The library itself stays platform free, so two things remain the adapter's job:
+The library itself stays platform free, so one thing remains the adapter's job:
 
 * **Clipboard** - implement `IXPlatClipboard` (`GetText`/`SetText`, plus the optional
   `GetHtml`/`SetHtml` pair) and assign an instance to `XPlatClipboard.Current` once at startup;
   without one an in-process fallback is used. The Win32 backend installs `Win32Clipboard`
   (`Win32Clipboard.cs`), which publishes a real `HTML Format` payload.
-* **Caret blink** - call `host.ProcessTick(elapsed)` from a timer (the Win32 backend uses a
-  250 ms `WM_TIMER`) so the caret blinks. Tests can call `host.ProcessTick(...)` directly.
+
+The caret blinks on its own: `XPlatTextBox` owns an `XPlatTimer` at the blink interval and only
+runs it while it has focus, so an idle application has no timer running at all. A control that
+animates does the same through `CreateTimer`, which hands back an `XPlatTimer` the control owns
+and that is disposed with it.
 
 ### Selection and the clipboard
 
@@ -384,7 +387,7 @@ loop and the platform-wide services; `IXPlatWindowBackend` owns one native windo
    then `Host.Paint(canvas)`.
 4. Forward pointer, key and text events into `Host.ProcessMouseMove/Down/Up/Leave`,
    `ProcessKeyDown/Up`, `ProcessTextInput` and `ProcessContextMenu`, dividing coordinates by the
-   scale factor. A timer calls `Host.ProcessTick(elapsed)`.
+   scale factor. There is no tick to forward: a control that needs time runs its own timer.
 5. Raise `Shown`, `CloseRequested`, `Closed`, `Activated`, `Deactivated`, `ClientSizeChanged`,
    `ScaleChanged` and `StateChanged`; the model turns them into `XPlatWindow` events.
 6. `RegisterServices` adds the platform services to MEDI's `IServiceCollection` - the clipboard, the
@@ -517,8 +520,7 @@ driver on the first resize, because the renderer still holds the previous frame'
 the price of that - about 1.3 ms of a 4.4 ms frame at 2560x1452 on llvmpipe.
 
 Everything else mirrors the Win32 backend: `Gtk.GestureClick`, `Gtk.EventControllerMotion` and
-`Gtk.EventControllerKey` feed `XPlatUiHost.Process*`, a 250 ms `GLib` timeout drives
-`ProcessTick` (caret blinking), and the system appearance is read from
+`Gtk.EventControllerKey` feed `XPlatUiHost.Process*`, and the system appearance is read from
 `org.gnome.desktop.interface color-scheme` (falling back to `GTK_THEME` and
 `GtkSettings.GtkApplicationPreferDarkTheme`). Context menus are real `Gtk.Popover`s, and the desktop
 UI font (`GtkSettings.GtkFontName`) is handed to the library through `XPlatTheme.FontFamily`, so the
@@ -625,8 +627,7 @@ buffer outgrows the window, each frame clips the canvas to the window before pai
 applied *after* the scale, in the same logical units the controls paint in, or it would only cover
 the top left `1/scale` of the view. Mouse and
 keyboard events are forwarded to `XPlatUiHost.Process*` from the `NSResponder` overrides, a 250 ms
-`NSTimer` drives `ProcessTick`
-(caret blinking) and doubles as the poll for a system appearance change
+`NSTimer` drains the UI-thread queue and doubles as the poll for a system appearance change
 (`NSAppearance.FindBestMatch`), and a tracking area keeps `MouseMoved`/`MouseEntered`/`MouseExited`
 coming so hover states and cursors work.
 
