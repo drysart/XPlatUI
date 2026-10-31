@@ -692,4 +692,50 @@ internal static class NativeMethods
 
     [DllImport("dwmapi.dll")]
     private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
+
+    // Message box: the flags, the ids it returns, and the one call.
+    internal const uint MbOk = 0x00000000;
+    internal const uint MbOkCancel = 0x00000001;
+    internal const uint MbAbortRetryIgnore = 0x00000002;
+    internal const uint MbYesNoCancel = 0x00000003;
+    internal const uint MbYesNo = 0x00000004;
+    internal const uint MbRetryCancel = 0x00000005;
+    internal const uint MbIconError = 0x00000010;
+    internal const uint MbIconQuestion = 0x00000020;
+    internal const uint MbIconWarning = 0x00000030;
+    internal const uint MbIconInformation = 0x00000040;
+    internal const uint MbDefButton1 = 0x00000000;
+    internal const uint MbDefButton2 = 0x00000100;
+    internal const uint MbDefButton3 = 0x00000200;
+    internal const uint MbTopMost = 0x00040000;
+
+    internal const int IdOk = 1;
+    internal const int IdCancel = 2;
+    internal const int IdAbort = 3;
+    internal const int IdRetry = 4;
+    internal const int IdIgnore = 5;
+    internal const int IdYes = 6;
+    internal const int IdNo = 7;
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    internal static extern int MessageBoxW(IntPtr hwnd, string text, string caption, uint type);
+
+    // COM activation for the file dialogs.
+    internal const uint ClsCtxInprocServer = 0x00000001;
+    internal const int ErrorCancelled = unchecked((int)0x800704C7);
+
+    [DllImport("ole32.dll", ExactSpelling = true)]
+    internal static extern int CoCreateInstance(
+        in Guid classId,
+        IntPtr outer,
+        uint context,
+        in Guid interfaceId,
+        out IntPtr instance);
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    internal static extern int SHCreateItemFromParsingName(
+        string path,
+        IntPtr bindContext,
+        in Guid interfaceId,
+        out IntPtr item);
 }

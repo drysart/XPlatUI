@@ -878,8 +878,10 @@ public interface IXPlatDialogService
 }
 ```
 
-Backed by `MessageBoxW` / `GetOpenFileNameW` on Windows, `NSAlert` / `NSOpenPanel` on macOS, and
-`Gtk.AlertDialog` / `Gtk.FileDialog` on GTK. The service arrives through `RegisterServices` (§5.6)
+Backed by `MessageBoxW` / `IFileDialog` on Windows, `NSAlert` / `NSOpenPanel` on macOS, and
+`Gtk.AlertDialog` / `Gtk.FileDialog` on GTK. `IFileDialog` rather than `GetOpenFileNameW` because only
+the former can pick a *folder* (`FOS_PICKFOLDERS`), and `PickFolder` is one of the four calls. The
+service arrives through `RegisterServices` (§5.6)
 rather than as a nullable member on the backend interface, so the headless backend supplies a scripted
 implementation instead of a native one — which is also how modal-dialog code paths become testable.
 
@@ -1048,6 +1050,43 @@ Verified live in 3a: paint, resize, maximise/restore/minimise, hover, click, tex
 clipboard copy and paste, dark title bar, `WS_THICKFRAME` removal for a non-resizable window, and both
 context-menu presentations (the Skia popup and `TrackPopupMenuEx`). Not verified: DPI changes across
 monitors, which needs a second monitor.
+
+**3b** adds `Win32DialogService` (§9) and the demo strip that exercises it. Notes:
+
+- **Source-generated COM, not `[ComImport]`.** NativeAOT trims built-in COM interop away, so the
+  `IFileDialog` declarations are `[GeneratedComInterface]` (`Win32ComInterfaces.cs`). The cost is
+  `<AllowUnsafeBlocks>` in `XPlatUI.Backend.Win32`, because the generated marshallers work in pointers
+  (`ComInterfaceMarshaller<IFileDialog>.ConvertToManaged((void*)unknown)`).
+- **`SetFileTypes` cannot express "an array of structs that each hold two strings".** `COMDLG_FILTERSPEC`
+  is `{ LPCWSTR name; LPCWSTR spec; }`, so `ComDlgFilterSpec` holds raw `IntPtr`s allocated with
+  `Marshal.StringToHGlobalUni` and freed after the call; multiple patterns in one filter are joined
+  with `;`, which is what the dialog expects anyway.
+- **`FOS_PICKFOLDERS` is incompatible with the file-only flags.** It is applied on its own; combining
+  it with `FOS_FILEMUSTEXIST` rejects every folder.
+- **Control code needs its window to parent a dialog.** `XPlatUiHost` gained `Window` (assigned by
+  `XPlatWindow`) and `XPlatControl` gained `Window`, so `control.Window?.Application.Dialogs` reaches
+  the service from anywhere in a control tree without threading a parameter through the layout code.
+- **`FinalReleaseComObject` is not for source-generated wrappers.** It throws
+  `PlatformNotSupportedException`/`ArgumentException` for them; `Release` swallows both, because the
+  wrapper's own finalizer handles the count.
+
+Verified end to end on Windows: message box (`YesNoCancel`, default `Yes` → `Yes`), open
+(`C:\Windows\win.ini`, honouring `InitialDirectory`), save (`%TEMP%\probe-save.txt`), folder
+(`C:\Windows`), and cancel returning `null` for both the message box and the folder picker.
+
+Two more lessons, this time for anyone automating a native dialog:
+
+- **Never `SendKeys` an absolute path into a folder picker.** The keystrokes go to the *rename* field,
+  not the location bar, and Windows answers with "A file name can't contain any of the following
+  characters: \ / : * ? \" < > |". The open and save dialogs do accept a path in their file-name box;
+  the folder picker does not.
+- **A `#32770` folder picker has no Win32 `Button` children.** Its chrome is DirectUI, so `GetDlgItem`
+  plus `BM_CLICK` finds a control that is not the accept button and silently does nothing - which reads
+  as "the dialog was cancelled" if you then close it. `WM_COMMAND` with `IDOK` is what actually accepts.
+
+The sample grew a **Dialogs** strip in 3b, so the design client size moved from 1280x760 to **1280x820**
+(minimum 820x716) to keep the card table the same height. That makes the step 2 baselines obsolete:
+the Windows render is now **93,727 bytes dark / 92,945 light**.
 
 ---
 

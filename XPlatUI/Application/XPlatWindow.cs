@@ -63,6 +63,7 @@ public sealed partial class XPlatWindow : IDisposable
         Backend = _application.Backend.CreateWindow(this);
         Host = Backend.Host;
         Host.Services = _scope.ServiceProvider;
+        Host.Window = this;
 
         if (!string.IsNullOrEmpty(title))
         {

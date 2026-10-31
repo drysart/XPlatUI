@@ -74,6 +74,12 @@ public sealed class XPlatUiHost
     /// </summary>
     public IServiceProvider? Services { get; set; }
 
+    /// <summary>
+    /// The window this host draws, or null when the host is used standalone. Assigned by
+    /// <see cref="XPlatWindow"/> so that code inside a control can parent dialogs on its window.
+    /// </summary>
+    public XPlatWindow? Window { get; set; }
+
     /// <summary>Resolves <typeparamref name="TService"/> from <see cref="Services"/>, or null when there is none.</summary>
     /// <typeparam name="TService">The service to resolve.</typeparam>
     public TService? GetService<TService>() where TService : class =>

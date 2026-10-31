@@ -13,10 +13,10 @@ namespace WinFormsApp3;
 internal static class Program
 {
     /// <summary>The sample UI is designed against this logical (96 DPI) client size.</summary>
-    private static readonly SKSize DesignClientSize = new(1280f, 760f);
+    private static readonly SKSize DesignClientSize = new(1280f, 820f);
 
     /// <summary>Below this the sample layout has nothing left to squeeze.</summary>
-    private static readonly SKSize DesignMinimumClientSize = new(820f, 660f);
+    private static readonly SKSize DesignMinimumClientSize = new(820f, 716f);
 
     /// <summary>Drives caret blinking and any other time-based UI behaviour.</summary>
     private static readonly TimeSpan TickInterval = TimeSpan.FromMilliseconds(250);

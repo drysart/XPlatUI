@@ -6,6 +6,9 @@
     <Nullable>enable</Nullable>
     <RootNamespace>XPlatUI.Backend.Win32</RootNamespace>
     <IsAotCompatible>true</IsAotCompatible>
+    <!-- The source-generated COM marshallers behind the file dialogs emit pointer code. This is the
+         only reason; the backend's own source stays pointer-free. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <ItemGroup>

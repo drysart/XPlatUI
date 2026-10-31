@@ -114,6 +114,13 @@ public class XPlatControl : IDisposable
     /// <typeparam name="TService">The service to resolve.</typeparam>
     public TService? GetService<TService>() where TService : class => Host?.GetService<TService>();
 
+    /// <summary>
+    /// The window this control is shown in, or null when it is not in one. Resolved through
+    /// <see cref="Host"/>, like <see cref="Services"/>.
+    /// </summary>
+    /// <remarks>Useful for parenting a dialog on the window the user is looking at.</remarks>
+    public XPlatWindow? Window => Host?.Window;
+
     /// <summary>Text shown by the control. Simple controls use it directly.</summary>
     public virtual string Text
     {
