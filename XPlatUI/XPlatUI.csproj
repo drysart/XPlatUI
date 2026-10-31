@@ -11,6 +11,9 @@
 
   <ItemGroup>
     <PackageReference Include="SkiaSharp" Version="4.154.0" />
+    <!-- The application model's container. Referenced here so IServiceCollection and every
+         ecosystem package's Add* extension arrive transitively; apps add nothing (D11). -->
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.14" />
   </ItemGroup>
 
 </Project>
