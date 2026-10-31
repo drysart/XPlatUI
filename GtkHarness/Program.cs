@@ -32,13 +32,22 @@ internal static class Program
     /// </summary>
     private static int Main(string[] args)
     {
-        // Registers the native library resolver for the GTK/GDK/GLib bindings.
-        Gtk.Module.Initialize();
+        // Headless render of the sample UI, handy for visual checks and CI:
+        //   GtkHarness --render output.png [width height] [--dark|--light]
+        // This has to come before anything touches a GTK type. GDK's initialisation prints
+        // "Failed to open display" and terminates the process with exit code 1 when there is no
+        // display, and it does so from Gtk.Module.Initialize() - too early for InitCheck to report
+        // it - so a render path that loads GTK cannot run on a headless machine. Nothing in the
+        // renderer needs GTK: DemoUi.RenderToPng is pure XPlatUI plus SkiaSharp.
+        if (args.Length > 0 && args[0] == "--render")
+        {
+            return RenderSample(args);
+        }
 
-        // InitCheck rather than Init: with no display (the --render path) Init would abort, and the
-        // headless renderer does not need GTK. The application initialises GTK again anyway, which
-        // is idempotent.
-        Gtk.Functions.InitCheck();
+        // Registers the native library resolver for the GTK/GDK/GLib bindings. This also opens the
+        // display, so without one it ends the process with exit code 1; the render path above
+        // returns before reaching it.
+        Gtk.Module.Initialize();
 
         // Draw with the desktop's own UI font rather than SkiaSharp's default, so the controls match
         // the rest of the desktop. Must happen before any control is created.
@@ -46,13 +55,6 @@ internal static class Program
 
         // Give the UI library a real clipboard; the library itself stays platform free.
         XPlatClipboard.Current = new GtkClipboard();
-
-        // Headless render of the sample UI, handy for visual checks and CI:
-        //   GtkHarness --render output.png [width height] [--dark|--light]
-        if (args.Length > 0 && args[0] == "--render")
-        {
-            return RenderSample(args);
-        }
 
         // Likewise for the desktop's light/dark preference. GTK has to be running before it can be
         // read, so the value is refreshed from OnActivate.
@@ -142,8 +144,10 @@ internal static class Program
         var width = args.Length > 2 && int.TryParse(args[2], out var w) ? w : DesignClientWidth;
         var height = args.Length > 3 && int.TryParse(args[3], out var h) ? h : DesignClientHeight;
 
-        XPlatSystemTheme.Current = new GtkSystemTheme();
-        XPlatSystemTheme.Refresh();
+        // Deliberately no GtkSystemTheme here: reading it goes through Gtk.Settings, which needs a
+        // display. With no backend installed XPlatSystemTheme falls back to light, and --dark and
+        // --light still force a palette, so the output stays deterministic - which is what a CI
+        // screenshot wants anyway.
         ApplyAppearanceOverride(args);
 
         DemoUi.RenderToPng(path, width, height);

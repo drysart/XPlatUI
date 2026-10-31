@@ -476,11 +476,20 @@ Everything else mirrors the Win32 harness: `Gtk.GestureClick`, `Gtk.EventControl
 UI font (`GtkSettings.GtkFontName`) is handed to the library through `XPlatTheme.FontFamily`, so the
 controls look native on GNOME.
 
-The same headless switches work:
+The same headless switches work, and they run before any GTK type is loaded, so they need no display
+at all - no Xvfb, and they work over ssh:
 
 ```
 dotnet GtkHarness.dll --render out.png 1280 760 --dark
 ```
+
+That ordering is load-bearing rather than tidy. `Gtk.Module.Initialize()` opens the display and
+terminates the process with exit code 1 when there is none, and it does so before
+`Gtk.Functions.InitCheck()` could report the failure, so anything GTK-dependent in the render path
+makes it unusable on a headless machine. The renderer therefore reads neither `GtkSettings` nor
+GSettings: it takes the palette from `--dark` / `--light` (light by default) and SkiaSharp's default
+typeface instead of the desktop UI font. That also makes CI screenshots deterministic, at the cost of
+the render not using the same font as the window does.
 
 Set `XPLATUI_DEBUG=1` to trace host work (frames, buffer reallocation) to stderr.
 
