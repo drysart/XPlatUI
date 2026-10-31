@@ -9,9 +9,10 @@ window, running a message loop, installing the clipboard/theme/context-menu serv
 native Skia library, reacting to DPI and appearance changes — is written three times, once per
 harness, in three different styles. This document designs the layer that absorbs all of it.
 
-Status of this document: **draft for review. Design only — no code has been written.** Decisions are
-numbered **D1**–**D11**; the ones already settled are marked **decided**, and the ones that still
-need a call are collected in §12.
+Status of this document: **design settled, migration complete.** Decisions are numbered **D1**–**D13**;
+every one is settled and recorded in §12. All six migration steps in §11 have landed on
+`feature/application-model`, each with its own notes section. §1 describes the state *before* the
+migration and is kept as the record of what the model had to absorb.
 
 ---
 
@@ -956,8 +957,9 @@ library; it does not re-enter it.
 
 ## 11. Migration
 
-Each step is independently buildable and mergeable. Nothing in the existing harnesses changes until
-step 3.
+Each step was independently buildable and mergeable, and each landed on `feature/application-model`
+with a notes section below it. The steps are ordered so that the riskiest one (step 2, the only one
+that touches the painting path) is provably pixel-neutral before anything is deleted.
 
 | # | Step | Scope | Done when |
 |---|---|---|---|
@@ -1230,6 +1232,73 @@ distinct colours, the light backgrounds, the accent blue and the demo's orange -
 nothing but two harmless `libEGL` DRI3 warnings. Drag-resize, DPI, cursor shapes, context menus, the
 menu bar, keyboard input, caret blinking and the four dialogs were exercised by hand on the same
 session.
+
+### Step 6 notes
+
+`XPlatUIDemo.App` replaces `WinFormsApp3`, `GtkHarness` and `MacHarness`. It is one project with one
+`Program.cs`, and it builds a different target framework on each OS:
+
+```xml
+<TargetFramework Condition="$([MSBuild]::IsOSPlatform('windows'))">net10.0-windows</TargetFramework>
+<TargetFramework Condition="$([MSBuild]::IsOSPlatform('osx'))">net10.0-macos</TargetFramework>
+<TargetFramework Condition="$([MSBuild]::IsOSPlatform('linux'))">net10.0</TargetFramework>
+```
+
+Three things follow from that, and each was load-bearing rather than cosmetic:
+
+- **`net10.0-macos` must never be evaluated on Windows or Linux.** It pulls the macOS workload and
+  Xcode; a `TargetFrameworks` list containing it makes restore fail on a machine that will never run
+  the macOS build. Selecting one framework per OS keeps the outer build single-TFM.
+- **A portable `net10.0` build on a Mac would compile the wrong branch.** `WINDOWS` and `MACOS` are
+  both undefined there, so `Program.cs` would fall through to the GTK code and link
+  `XPlatUI.Backend.Gtk4`. One framework per OS keeps the `#if` blocks honest instead of relying on
+  the developer to remember a `-f` switch.
+- **The solution can therefore list the app unconditionally.** `WinFormsApp3.slnx` has six projects
+  and `XPlatUIDemo.App` resolves to a different TFM on each machine, which is what makes "three CI
+  jobs build one project" true rather than aspirational.
+
+`AssemblyName` is `XPlatUIDemoApp`, not `XPlatUIDemo`: the macOS SDK names the `.app` bundle after the
+assembly, and `XPlatUIDemo` is already the shared sample library. `Info.plist` uses
+`CFBundleExecutable` `XPlatUIDemoApp` and `CFBundleIdentifier` `com.xplatui.demo`, and `app.manifest`
+keeps the PerMonitorV2 DPI declaration that used to live in `WinFormsApp3`.
+
+The three harnesses did not agree on the design client size and the difference is real, not drift.
+Windows and macOS use **1280x820** (minimum 820x716); GTK uses **1280x760** (minimum 820x660) because
+GTK has no global menu bar, so the backend packs the menu strip inside the client area and the window
+needs those 60 points back. Both figures are in `Program.cs` next to the reasoning.
+
+Ordering in `Main` is unchanged from step 5 and still matters. `--render` is handled first and paints
+through the headless backend, so it never touches GTK; only the live GTK path calls
+`Gtk.Module.Initialize()`, and it does so *before* options are parsed because
+`Gtk4SystemTheme.PreferredFontFamily()` reads `Gtk.Settings`. On Windows the render path has no
+`XPlatApplication` to install `IXPlatSystemTheme`, so `ApplyAppearanceOverride` assigns
+`Win32ApplicationBackend().SystemTheme` to `XPlatSystemTheme.Current` directly; macOS instead takes the
+static `AppKitSystemTheme.PreferredFontFamily()`, which needs no application object.
+
+Verified after the move:
+
+- Solution build on Windows: **0 errors**, and the only warning in the whole solution is the
+  pre-existing `GirCore1007` on `Gtk4DialogService.cs` (obsolete `AlertDialog` constructor).
+- `dotnet build XPlatUIDemo.App/XPlatUIDemo.App.csproj -c Debug -r osx-arm64
+  -p:ValidateXcodeVersion=false` on `ssh mac`: **0 warnings, 0 errors**.
+- All four render baselines are byte-identical to their recorded values: Windows 93,727 dark /
+  92,945 light, macOS 163,795 / 164,747, Linux 122,364 / 123,501.
+- The macOS bundle launches (`open XPlatUIDemoApp.app`) and reports a 1280x852 window - the 820-point
+  client plus the 32-point title bar - under bundle id `com.xplatui.demo`.
+- `dotnet publish -p:PublishProfile=FolderProfile` from a `vcvars64` prompt emits exactly two files:
+  `XPlatUIDemoApp.exe` (8,839,168 bytes, of which 5,452,785 is the embedded gzip of
+  `libSkiaSharp.dll`) and `XPlatUIDemoApp.pdb`. No `libSkiaSharp.dll` is published. Running the
+  executable from that directory renders 93,727 / 92,945 bytes - the baselines again, which is the
+  proof that `SkiaNativeLoader` extracted and loaded the embedded native library - and launching it
+  normally opens a live window titled `XPlat UI - Win32` with a 38 MB working set.
+
+`GtkHarness` also held two zero-byte files, `GtkBackend.cs` and `XPlatCanvas.cs`, left behind by an
+earlier rename and referenced by nothing; they went with the rest of the directory.
+
+One packaging fix came out of the move: `Properties/PublishProfiles/FolderProfile.pubxml` is ignored
+by `.gitignore`'s `*.pubxml` rule, so the profile the README has always pointed at was never actually
+in the repository and a fresh clone published without AOT. It is now tracked (`git add -f`) because it
+is a project-level build recipe, not per-user publish settings.
 
 ---
 

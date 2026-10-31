@@ -47,9 +47,9 @@ so work can stop after any step with the tree in a working state.
 
 Every step is checked with a throwaway console app that references `XPlatUI`, builds an
 `XPlatUiHost`, drives `ProcessMouseDown`/`ProcessMouseMove`/`ProcessMouseUp` with logical
-points, paints into an `SKBitmap` and inspects pixels and `Selection.Ranges`. The harness
-demo is re-rendered with `WinFormsApp3.exe --render <png> <w> <h>` and, from step 7 on, the
-AOT single-file publish is repeated.
+points, paints into an `SKBitmap` and inspects pixels and `Selection.Ranges`. The demo is
+re-rendered with `XPlatUIDemoApp.exe --render <png> <w> <h>` and, from step 7 on, the AOT
+single-file publish is repeated.
 
 ## Progress
 

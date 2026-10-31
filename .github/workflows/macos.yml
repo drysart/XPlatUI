@@ -1,8 +1,8 @@
-name: macOS harness
+name: macOS build
 
-# MacHarness targets net10.0-macos, so it needs the macOS workload and can only be built on a Mac.
-# This job is the compile check for it: it builds the bundle and then renders the sample UI
-# headlessly, which also proves the library itself runs on the machine.
+# XPlatUIDemo.App targets net10.0-macos on macOS, so it needs the macOS workload and can only be
+# built on a Mac. This job is the compile check for it: it builds the bundle and then renders the
+# sample UI headlessly, which also proves the library itself runs on the machine.
 
 on:
   push:
@@ -10,14 +10,16 @@ on:
     branches: [master, 'feature/**']
     paths:
       - '.github/workflows/macos.yml'
-      - 'MacHarness/**'
+      - 'XPlatUIDemo.App/**'
       - 'XPlatUI/**'
+      - 'XPlatUI.Backend.*/**'
       - 'XPlatUIDemo/**'
   pull_request:
     paths:
       - '.github/workflows/macos.yml'
-      - 'MacHarness/**'
+      - 'XPlatUIDemo.App/**'
       - 'XPlatUI/**'
+      - 'XPlatUI.Backend.*/**'
       - 'XPlatUIDemo/**'
   workflow_dispatch:
 
@@ -27,7 +29,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build MacHarness
+    name: Build the macOS app
     # The macOS workload validates that Xcode's major.minor exactly matches the version its bindings
     # were generated against (27.1 for workload 27.0.10742). macos-latest ships Xcode 26.6, so it can
     # never satisfy that check; the xcode-27 image carries Xcode 27.1.
@@ -71,9 +73,9 @@ jobs:
       - name: Build
         run: |
           set -o pipefail
-          # Nothing in this harness needs the exact Xcode the bindings were generated against (there
-          # is no native code to compile), so if the image does not carry it the check is skipped
-          # instead of failing the job.
+          # Nothing in this application needs the exact Xcode the bindings were generated against
+          # (there is no native code to compile), so if the image does not carry it the check is
+          # skipped instead of failing the job.
           skip=""
           if [ "${SKIP_XCODE_CHECK:-}" = "true" ]; then
             skip="-p:ValidateXcodeVersion=false"
@@ -81,7 +83,7 @@ jobs:
           # -r matches the publishes below: the macOS SDK otherwise defaults to osx-x64, and the
           # rendered pixels then differ from an osx-arm64 build for reasons that have nothing to do
           # with trimming.
-          dotnet build MacHarness/MacHarness.csproj -c Release -r osx-arm64 --nologo $skip 2>&1 | tee "$RUNNER_TEMP/build.log"
+          dotnet build XPlatUIDemo.App/XPlatUIDemo.App.csproj -c Release -r osx-arm64 --nologo $skip 2>&1 | tee "$RUNNER_TEMP/build.log"
 
       # MSBuild diagnostics are not workflow annotations, so lift the first few into the job
       # summary and into annotations: those are readable without downloading the raw log.
@@ -114,10 +116,10 @@ jobs:
       - name: Render the sample UI headlessly
         run: |
           set -euo pipefail
-          APP="$(find MacHarness/bin/Release -path '*MacHarness.app/Contents/MacOS/MacHarness' -type f | head -n 1)"
+          APP="$(find XPlatUIDemo.App/bin/Release -path '*XPlatUIDemoApp.app/Contents/MacOS/XPlatUIDemoApp' -type f | head -n 1)"
           if [ -z "$APP" ]; then
-            echo "::error::The build did not produce a MacHarness.app bundle."
-            find MacHarness/bin/Release -maxdepth 6 \( -name '*.app' -o -name 'MacHarness' \) | head -n 20
+            echo "::error::The build did not produce an XPlatUIDemoApp.app bundle."
+            find XPlatUIDemo.App/bin/Release -maxdepth 6 \( -name '*.app' -o -name 'XPlatUIDemoApp' \) | head -n 20
             exit 1
           fi
           echo "app: $APP"
@@ -158,7 +160,7 @@ jobs:
 
           # The build bundle is measured before anything is published, because a publish writes to the
           # same directory: measuring it afterwards would just measure the last publish again.
-          "$BUILD_BUNDLE/Contents/MacOS/MacHarness" --render "$RUNNER_TEMP/xplatui-build.png" > /dev/null 2>&1
+          "$BUILD_BUNDLE/Contents/MacOS/XPlatUIDemoApp" --render "$RUNNER_TEMP/xplatui-build.png" > /dev/null 2>&1
           manifest "$BUILD_BUNDLE" > "$RUNNER_TEMP/files-build.txt"
           build_mb="$(apparent_mb "$BUILD_BUNDLE")"
           build_files="$(file_count "$BUILD_BUNDLE")"
@@ -172,7 +174,7 @@ jobs:
             echo '| --- | --- | --- | --- | --- | --- |'
           } >> "$GITHUB_STEP_SUMMARY"
 
-          pubdir="MacHarness/bin/Release/net10.0-macos/osx-arm64"
+          pubdir="XPlatUIDemo.App/bin/Release/net10.0-macos/osx-arm64"
           ref=""
           for link in None SdkOnly Full; do
             # The bundle is written next to the build output, not into the publish directory, so it
@@ -183,20 +185,20 @@ jobs:
               # The only way to turn the trimmer off is LinkMode=None together with TrimMode=copy.
               extra="-p:TrimMode=copy"
             fi
-            dotnet publish MacHarness/MacHarness.csproj -c Release -r osx-arm64 --nologo \
+            dotnet publish XPlatUIDemo.App/XPlatUIDemo.App.csproj -c Release -r osx-arm64 --nologo \
               -p:LinkMode=$link -p:CreatePackage=false $extra 2>&1 | tee "$RUNNER_TEMP/publish-$link.log"
-            app="$pubdir/MacHarness.app"
+            app="$pubdir/XPlatUIDemoApp.app"
             if [ ! -d "$app" ]; then
               echo "::error::publish with LinkMode=$link produced no .app bundle in $pubdir"
               find "$pubdir" -maxdepth 1 | head -n 20
               exit 1
             fi
-            "$app/Contents/MacOS/MacHarness" --render "$RUNNER_TEMP/xplatui-$link.png" \
+            "$app/Contents/MacOS/XPlatUIDemoApp" --render "$RUNNER_TEMP/xplatui-$link.png" \
               > "$RUNNER_TEMP/render-$link.log" 2>&1
             if [ -z "$ref" ]; then
               ref="$RUNNER_TEMP/xplatui-$link.png"
               # Rendering the same bundle twice says whether this is a usable reference at all.
-              "$app/Contents/MacOS/MacHarness" --render "$RUNNER_TEMP/refcheck.png" > /dev/null 2>&1
+              "$app/Contents/MacOS/XPlatUIDemoApp" --render "$RUNNER_TEMP/refcheck.png" > /dev/null 2>&1
               if cmp -s "$ref" "$RUNNER_TEMP/refcheck.png"; then
                 verdict="reference (stable)"
               else
@@ -215,7 +217,7 @@ jobs:
             echo "- \`LinkMode=$link\` largest files: $(largest "$app")" >> "$GITHUB_STEP_SUMMARY"
             echo "::notice::LinkMode=$link: $mb, $(file_count "$app") files, $(dll_count "$app") dlls, $(dims "$RUNNER_TEMP/xplatui-$link.png"); $verdict; $(grep -h '^Font:' "$RUNNER_TEMP/render-$link.log" || true); largest: $(largest "$app")"
             manifest "$app" > "$RUNNER_TEMP/files-$link.txt"
-            ditto -c -k --sequesterRsrc --keepParent "$app" "$RUNNER_TEMP/MacHarness-$link.app.zip"
+            ditto -c -k --sequesterRsrc --keepParent "$app" "$RUNNER_TEMP/XPlatUIDemoApp-$link.app.zip"
           done
 
           px="$(pixel_diff "$ref" "$RUNNER_TEMP/xplatui-build.png")"
@@ -256,6 +258,6 @@ jobs:
       - name: Upload the app bundles
         uses: actions/upload-artifact@v4
         with:
-          name: MacHarness-app
-          path: ${{ runner.temp }}/MacHarness-*.app.zip
+          name: XPlatUIDemoApp-bundles
+          path: ${{ runner.temp }}/XPlatUIDemoApp-*.app.zip
           if-no-files-found: error

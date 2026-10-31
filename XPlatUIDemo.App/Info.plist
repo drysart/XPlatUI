@@ -7,9 +7,9 @@
 	<key>CFBundleDisplayName</key>
 	<string>XPlat UI</string>
 	<key>CFBundleIdentifier</key>
-	<string>com.xplatui.macharness</string>
+	<string>com.xplatui.demo</string>
 	<key>CFBundleExecutable</key>
-	<string>MacHarness</string>
+	<string>XPlatUIDemoApp</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleInfoDictionaryVersion</key>

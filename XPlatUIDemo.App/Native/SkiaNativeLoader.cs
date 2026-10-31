@@ -1,15 +1,20 @@
+#if WINDOWS
 using System.IO.Compression;
 using System.Reflection;
 using System.Runtime.InteropServices;
 
-namespace WinFormsApp3;
+namespace XPlatUI.Demo.App;
 
 /// <summary>
 /// A NativeAOT publish produces a single native executable, so SkiaSharp's native library cannot
-/// simply sit next to it. When the harness is published with AOT the build embeds a compressed copy
-/// of <c>libSkiaSharp.dll</c> as a manifest resource; this extracts it into a per-user cache and
-/// loads it before SkiaSharp's first P/Invoke.
+/// simply sit next to it. When the application is published with AOT the build embeds a compressed
+/// copy of <c>libSkiaSharp.dll</c> as a manifest resource; this extracts it into a per-user cache
+/// and loads it before SkiaSharp's first P/Invoke.
 /// </summary>
+/// <remarks>
+/// Windows only: macOS and Linux get <c>libSkiaSharp.dylib</c> and <c>libSkiaSharp.so</c> as loose
+/// files from their native asset packages, and neither is published with AOT yet.
+/// </remarks>
 internal static class SkiaNativeLoader
 {
     private const string NativeLibraryFileName = "libSkiaSharp.dll";
@@ -85,3 +90,4 @@ internal static class SkiaNativeLoader
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SetDllDirectory(string path);
 }
+#endif

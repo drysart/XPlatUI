@@ -1,9 +1,8 @@
 <Solution>
-  <Project Path="GtkHarness/GtkHarness.csproj" />
-  <Project Path="WinFormsApp3/WinFormsApp3.csproj" />
   <Project Path="XPlatUI.Backend.Gtk4/XPlatUI.Backend.Gtk4.csproj" />
   <Project Path="XPlatUI.Backend.Headless/XPlatUI.Backend.Headless.csproj" />
   <Project Path="XPlatUI.Backend.Win32/XPlatUI.Backend.Win32.csproj" />
   <Project Path="XPlatUIDemo/XPlatUIDemo.csproj" />
+  <Project Path="XPlatUIDemo.App/XPlatUIDemo.App.csproj" />
   <Project Path="XPlatUI/XPlatUI.csproj" />
 </Solution>
