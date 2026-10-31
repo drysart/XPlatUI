@@ -93,8 +93,8 @@ internal static class Backend
 ```
 
 Two source files. No `#if` in application logic. `--render` passes `headless: true` and paints the same
-control tree offscreen; `--dark`, `--light`, DPI, appearance tracking, clipboard, context menus and the
-caret timer all come from the model.
+control tree offscreen; `--dark`, `--light`, DPI, appearance tracking, clipboard, context menus and
+caret blinking all come from the model.
 
 The `#if` symbols above are measured, not assumed: `WINDOWS` is defined for `net10.0-windows`, `MACOS` for `net10.0-macos`, and neither for a portable `net10.0` build on either host (§6.1).
 
@@ -312,9 +312,13 @@ public sealed class XPlatTimer : IDisposable
 ```
 
 Nothing in the application model runs a timer. Time-based behaviour belongs to the control that
-needs it: `XPlatTextBox` blinks its caret from an `XPlatTimer` it creates through
-`XPlatControl.CreateTimer`, starts when it takes focus and stops when it loses it. A timer the
-control owns is disposed with the control, so there is nothing to remember at shutdown.
+needs it, and behaviour that more than one control wants lives in a helper those controls share:
+`XPlatCaret` owns the timer that blinks the insertion caret and follows its control's focus and
+enabled state, so it runs only while the caret is on screen. `XPlatTextBox` is one line -
+`new XPlatCaret(this)` - and any future editable control gets the identical caret the same way.
+A control that animates something else uses `XPlatControl.CreateTimer` directly. A timer a control
+owns is disposed with the control, so there is nothing to remember at shutdown; `Own` exists for
+helpers like the caret, which are disposed the same way.
 
 That is deliberate, and it replaced an application-wide tick. A single tick is cheap but wrong in
 two ways: it runs whether or not the focused control cares (work every 100-250 ms for a control
@@ -972,7 +976,7 @@ Tier 1 **is** the v1 scope (D12, D13).
 | Window creation, show/close, sizing, placement | Currently 759 lines of P/Invoke on Windows alone. |
 | Platform-service bootstrap (Skia native load, clipboard, system theme, context-menu presenter, default font) | Three harnesses each wire it by hand; a missed one is a silent null-ref. |
 | DPI awareness + `ScaleChanged` | `SetProcessDpiAwarenessContext` must run before any window; the model owns "before". |
-| Control-owned timers → caret blink | Caret blink without an idle clock, and the seam for animation later. |
+| Control-owned timers → caret blink | Caret blink without an idle clock, and the seam for animation later. `XPlatCaret` is the shared caret; `CreateTimer` is the seam. |
 | `Screens` + working-area clamping | Default window size/placement is currently platform-specific. |
 | `Exit`/`ExitCode`, `ShutdownMode`, cancellable `Exit` | Needed to make `Run()` return sanely. |
 | `Invoke`/`BeginInvoke`/`CheckAccess` | The only safe cross-thread entry point. |
@@ -1082,9 +1086,9 @@ Four behaviours changed on purpose:
   the control tree was never laid out - a blank window. The host is the authority on whether it has
   been told; the field is not.
 - **The caret blink timer moved, and later moved back.** The Win32 harness's own `WM_TIMER` went
-  away in step 3 in favour of one application-wide tick. It came back as a timer the text box owns
-  (§4.5), because the shared tick ran whether or not anything wanted it and quantised the blink to
-  the tick's interval.
+  away in step 3 in favour of one application-wide tick. It came back as a timer the caret owns
+  (§4.5) - `XPlatCaret`, which the text box builds and positions - because the shared tick ran
+  whether or not anything wanted it and quantised the blink to the tick's interval.
 - **`WM_CLOSE` raises `CloseRequested` and returns 0** instead of calling `DestroyWindow`. Closing is
   now a decision the model makes (D7's shutdown modes), so the backend may not act on it alone.
 - **`Win32MenuWindow` uses a per-window class name** (`XPlatUI.Window.N`). `UnregisterClassW` on a

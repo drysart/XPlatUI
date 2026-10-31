@@ -200,6 +200,7 @@ placeholder text and horizontal scrolling are all implemented by the control its
 | --- | --- |
 | `Text`, `TextChanged` | Current value. Control characters (including line breaks) are stripped so the field stays single line |
 | `CaretIndex`, `SelectionStart`, `SelectionLength`, `SelectedText`, `HasSelection` | Selection state; the caret is `0 … Text.Length` |
+| `Caret` | The `XPlatCaret` that draws and blinks the insertion point; its `BlinkInterval`, `Width` and `Color` can be changed |
 | `Select(start, length)`, `SelectAll()`, `ClearSelection()` | Programmatic selection |
 | `MaxLength` | Characters the user may type (`0` = unlimited); enforced for insertions and replacements |
 | `ReadOnly` | Selection and copy still work; typing, paste, cut and delete are blocked |
@@ -234,10 +235,12 @@ The library itself stays platform free, so one thing remains the adapter's job:
   without one an in-process fallback is used. The Win32 backend installs `Win32Clipboard`
   (`Win32Clipboard.cs`), which publishes a real `HTML Format` payload.
 
-The caret blinks on its own: `XPlatTextBox` owns an `XPlatTimer` at the blink interval and only
-runs it while it has focus, so an idle application has no timer running at all. A control that
-animates does the same through `CreateTimer`, which hands back an `XPlatTimer` the control owns
-and that is disposed with it.
+The caret is a control of its own: `XPlatCaret` owns the timer that blinks it and follows its
+control's focus and enabled state, so it only runs while the caret is actually on screen and an
+idle application has no timer running at all. `XPlatTextBox.Caret` exposes the instance it uses, so
+its interval, width and color can be changed, and a new editable control gets the same caret with
+`new XPlatCaret(this)`. A control that animates something else does the same through `CreateTimer`,
+which hands back an `XPlatTimer` the control owns and that is disposed with it.
 
 ### Selection and the clipboard
 

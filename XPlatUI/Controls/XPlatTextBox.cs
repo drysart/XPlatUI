@@ -10,24 +10,20 @@ namespace XPlatUI;
 /// text input from an <see cref="XPlatUiHost"/>.
 /// </summary>
 /// <remarks>
-/// The caret blinks from a timer this control owns, which only runs while the text box has focus.
-/// Adapters only need to install a platform clipboard into <see cref="XPlatClipboard.Current"/>.
+/// The caret is an <see cref="XPlatCaret"/>, so it looks and blinks like the caret of every other
+/// editable control and only runs a timer while this text box has focus. Adapters only need to
+/// install a platform clipboard into <see cref="XPlatClipboard.Current"/>.
 /// </remarks>
 public class XPlatTextBox : XPlatControl
 {
-    private const float CaretWidth = 1.5f;
     private const float HorizontalCaretPadding = 2f;
 
-    private static readonly TimeSpan CaretBlinkInterval = TimeSpan.FromMilliseconds(530);
-
-    private readonly XPlatTimer _caretTimer;
+    private readonly XPlatCaret _caret;
     private XPlatFont _font = XPlatTheme.DefaultFont;
     private string _placeholderText = string.Empty;
-    private int _caret;
+    private int _caretIndex;
     private int _anchor;
     private float _scrollX;
-    private bool _caretVisible = true;
-    private bool _caretActive;
     private bool _selecting;
     private int _maxLength;
     private bool _readOnly;
@@ -38,7 +34,7 @@ public class XPlatTextBox : XPlatControl
     {
         TabStop = true;
         Cursor = XPlatCursor.IBeam;
-        _caretTimer = CreateTimer(CaretBlinkInterval, OnCaretTimerTick);
+        _caret = new XPlatCaret(this);
         BorderWidth = 1f;
         CornerRadius = 6f;
         Padding = new XPlatThickness(8f, 6f);
@@ -78,19 +74,22 @@ public class XPlatTextBox : XPlatControl
         }
     }
 
+    /// <summary>The insertion point's caret, which this text box owns and positions.</summary>
+    public XPlatCaret Caret => _caret;
+
     /// <summary>Index of the insertion point (0 .. <see cref="XPlatControl.Text"/>.Length).</summary>
     public int CaretIndex
     {
-        get => _caret;
+        get => _caretIndex;
         set => MoveCaretTo(value, extendSelection: false);
     }
 
     /// <summary>Lower bound of the selection; equals <see cref="CaretIndex"/> when nothing is selected.</summary>
-    public int SelectionStart => Math.Min(_caret, _anchor);
+    public int SelectionStart => Math.Min(_caretIndex, _anchor);
 
-    public int SelectionLength => Math.Abs(_caret - _anchor);
+    public int SelectionLength => Math.Abs(_caretIndex - _anchor);
 
-    public bool HasSelection => _caret != _anchor;
+    public bool HasSelection => _caretIndex != _anchor;
 
     public string SelectedText => HasSelection ? Text.Substring(SelectionStart, SelectionLength) : string.Empty;
 
@@ -177,8 +176,8 @@ public class XPlatTextBox : XPlatControl
         int end = Math.Clamp(start + Math.Max(0, length), start, Text.Length);
 
         _anchor = start;
-        _caret = end;
-        ResetCaretBlink();
+        _caretIndex = end;
+        _caret.ResetBlink();
         EnsureCaretVisible();
         Invalidate();
     }
@@ -193,7 +192,7 @@ public class XPlatTextBox : XPlatControl
             return;
         }
 
-        _anchor = _caret;
+        _anchor = _caretIndex;
         Invalidate();
     }
 
@@ -395,12 +394,7 @@ public class XPlatTextBox : XPlatControl
             canvas.DrawText(text, originX, baseline, SKTextAlign.Left, _font.SkFont, paint);
         }
 
-        if (IsFocused && Enabled && _caretActive && _caretVisible)
-        {
-            float caretX = originX + MeasureX(display, _caret);
-            paint.Color = XPlatTheme.Caret;
-            canvas.DrawRect(new SKRect(caretX, top, caretX + CaretWidth, top + lineHeight), paint);
-        }
+        _caret.Draw(canvas, originX + MeasureX(display, _caretIndex), top, lineHeight);
 
         canvas.Restore();
     }
@@ -436,8 +430,8 @@ public class XPlatTextBox : XPlatControl
         }
         else
         {
-            _anchor = _caret = index;
-            ResetCaretBlink();
+            _anchor = _caretIndex = index;
+            _caret.ResetBlink();
             EnsureCaretVisible();
             Invalidate();
         }
@@ -481,12 +475,12 @@ public class XPlatTextBox : XPlatControl
         switch (e.Key)
         {
             case XPlatKey.Left:
-                MoveCaretTo(control ? PreviousWordIndex(_caret) : _caret - 1, shift);
+                MoveCaretTo(control ? PreviousWordIndex(_caretIndex) : _caretIndex - 1, shift);
                 e.Handled = true;
                 break;
 
             case XPlatKey.Right:
-                MoveCaretTo(control ? NextWordIndex(_caret) : _caret + 1, shift);
+                MoveCaretTo(control ? NextWordIndex(_caretIndex) : _caretIndex + 1, shift);
                 e.Handled = true;
                 break;
 
@@ -511,9 +505,9 @@ public class XPlatTextBox : XPlatControl
                 {
                     ReplaceRange(SelectionStart, SelectionLength, string.Empty);
                 }
-                else if (_caret > 0)
+                else if (_caretIndex > 0)
                 {
-                    ReplaceRange(_caret - 1, 1, string.Empty);
+                    ReplaceRange(_caretIndex - 1, 1, string.Empty);
                 }
 
                 break;
@@ -529,9 +523,9 @@ public class XPlatTextBox : XPlatControl
                 {
                     ReplaceRange(SelectionStart, SelectionLength, string.Empty);
                 }
-                else if (_caret < Text.Length)
+                else if (_caretIndex < Text.Length)
                 {
-                    ReplaceRange(_caret, 1, string.Empty);
+                    ReplaceRange(_caretIndex, 1, string.Empty);
                 }
 
                 break;
@@ -579,7 +573,7 @@ public class XPlatTextBox : XPlatControl
 
     protected override void OnTextChanged(EventArgs e)
     {
-        _caret = Math.Clamp(_caret, 0, Text.Length);
+        _caretIndex = Math.Clamp(_caretIndex, 0, Text.Length);
         _anchor = Math.Clamp(_anchor, 0, Text.Length);
         ClampScroll();
 
@@ -598,16 +592,14 @@ public class XPlatTextBox : XPlatControl
     {
         base.OnLostFocus(e);
         _selecting = false;
-        _caretVisible = true;
-        _caretTimer.Stop();
         Invalidate();
     }
 
     protected override void OnSelectionCleared(EventArgs e)
     {
         base.OnSelectionCleared(e);
-        _caretActive = false;
-        _anchor = _caret;
+        _caret.Deactivate();
+        _anchor = _caretIndex;
     }
 
     protected override void OnBoundsChanged(EventArgs e)
@@ -623,8 +615,6 @@ public class XPlatTextBox : XPlatControl
             _selecting = false;
             ReleaseMouseCapture();
         }
-
-        _caretTimer.Enabled = Enabled && IsFocused;
 
         base.OnEnabledChanged(e);
     }
@@ -663,10 +653,10 @@ public class XPlatTextBox : XPlatControl
             }
         }
 
-        _anchor = _caret = start + replacement.Length;
+        _anchor = _caretIndex = start + replacement.Length;
         Text = Text.Remove(start, length).Insert(start, replacement);
 
-        ResetCaretBlink();
+        _caret.ResetBlink();
         EnsureCaretVisible();
         Invalidate();
     }
@@ -675,48 +665,25 @@ public class XPlatTextBox : XPlatControl
     {
         ActivateCaret();
 
-        _caret = Math.Clamp(index, 0, Text.Length);
+        _caretIndex = Math.Clamp(index, 0, Text.Length);
         if (!extendSelection)
         {
-            _anchor = _caret;
+            _anchor = _caretIndex;
         }
 
-        ResetCaretBlink();
+        _caret.ResetBlink();
         EnsureCaretVisible();
         Invalidate();
     }
 
-    private void ResetCaretBlink()
-    {
-        _caretVisible = true;
-
-        // Restarting is the point: the caret stays solid for a whole interval after any activity,
-        // and the timer only runs at all while this control has focus.
-        _caretTimer.Enabled = IsFocused && Enabled;
-    }
-
-    private void OnCaretTimerTick(object? sender, EventArgs e)
-    {
-        // The control tree belongs to the caller, so this timer can outlive the application. Once
-        // that happens XPlatTimer ticks inline on a pool thread, which must not touch the UI.
-        if (XPlatApplication.Current is null || !IsFocused || !Enabled)
-        {
-            return;
-        }
-
-        _caretVisible = !_caretVisible;
-        Invalidate();
-    }
-
     /// <summary>
-    /// Marks the caret as live and tells the host that this text box is taking over the
-    /// selection, so any selection elsewhere in the UI is cleared first.
+    /// Takes the caret and tells the host that this text box is taking over the selection, so any
+    /// selection elsewhere in the UI is cleared first.
     /// </summary>
     private void ActivateCaret()
     {
-        _caretActive = true;
+        _caret.Activate();
         ClaimSelection();
-        ResetCaretBlink();
     }
 
     private void EnsureCaretVisible()
@@ -728,7 +695,7 @@ public class XPlatTextBox : XPlatControl
             return;
         }
 
-        float caretX = MeasureX(DisplayText, _caret);
+        float caretX = MeasureX(DisplayText, _caretIndex);
         if (caretX - _scrollX > width - HorizontalCaretPadding)
         {
             _scrollX = caretX - width + HorizontalCaretPadding;
@@ -745,7 +712,7 @@ public class XPlatTextBox : XPlatControl
     {
         float width = ContentRect.Width;
         float textWidth = _font.MeasureWidth(DisplayText);
-        float max = MathF.Max(0f, textWidth - width + HorizontalCaretPadding + CaretWidth);
+        float max = MathF.Max(0f, textWidth - width + HorizontalCaretPadding + _caret.Width);
         _scrollX = Math.Clamp(_scrollX, 0f, max);
     }
 

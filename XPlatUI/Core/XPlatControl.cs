@@ -29,7 +29,7 @@ public class XPlatControl : IDisposable
     private bool _disposed;
     private XPlatUiHost? _host;
     private XPlatControlCollection? _controls;
-    private List<XPlatTimer>? _timers;
+    private List<IDisposable>? _resources;
     private List<SKRect>? _selectionRects;
     private SKColor? _backColor;
     private bool _backColorAssigned;
@@ -653,6 +653,21 @@ public class XPlatControl : IDisposable
     public void ReleaseMouseCapture() => Host?.ReleaseMouseCapture(this);
 
     /// <summary>
+    /// Registers a disposable that belongs to this control, so it is disposed with the control and
+    /// nothing has to override <see cref="Dispose(bool)"/> just to release what it built.
+    /// </summary>
+    /// <param name="resource">The resource to take ownership of.</param>
+    /// <returns>The same resource, so a call can wrap a construction.</returns>
+    protected internal T Own<T>(T resource)
+        where T : IDisposable
+    {
+        ArgumentNullException.ThrowIfNull(resource);
+
+        (_resources ??= []).Add(resource);
+        return resource;
+    }
+
+    /// <summary>
     /// Creates a timer owned by this control: it is disposed with the control, so a control that
     /// animates never has to override <see cref="Dispose(bool)"/> just to release its clock.
     /// </summary>
@@ -663,14 +678,13 @@ public class XPlatControl : IDisposable
     /// Only run it while it is actually needed. A timer that keeps ticking for a control nobody is
     /// looking at is exactly the cost that makes a single application-wide tick a bad fit.
     /// </remarks>
-    protected XPlatTimer CreateTimer(TimeSpan interval, EventHandler handler)
+    protected internal XPlatTimer CreateTimer(TimeSpan interval, EventHandler handler)
     {
         ArgumentNullException.ThrowIfNull(handler);
 
         var timer = new XPlatTimer(interval);
         timer.Tick += handler;
-        (_timers ??= []).Add(timer);
-        return timer;
+        return Own(timer);
     }
 
     /// <summary>Requests a repaint of the surface hosting this control.</summary>
@@ -924,14 +938,15 @@ public class XPlatControl : IDisposable
 
         if (disposing)
         {
-            if (_timers is not null)
+            if (_resources is not null)
             {
-                foreach (var timer in _timers)
+                // Reverse order, so whatever was built on top of something else goes first.
+                for (int i = _resources.Count - 1; i >= 0; i--)
                 {
-                    timer.Dispose();
+                    _resources[i].Dispose();
                 }
 
-                _timers = null;
+                _resources = null;
             }
 
             if (_controls is not null)
