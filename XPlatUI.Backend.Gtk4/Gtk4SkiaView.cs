@@ -25,8 +25,8 @@ namespace XPlatUI.Backend.Gtk4;
 /// child above the main child, so the picture has to be the main child.
 /// </para>
 /// <para>
-/// The view does not run a timer. Time based behaviour (caret blinking) is driven by
-/// <see cref="XPlatApplication"/>'s single tick, which calls into every shown window's host.
+/// The view does not run a timer. Time based behaviour is the business of whichever control needs
+/// it: a control that animates owns an <see cref="XPlatTimer"/> and only runs it while it matters.
 /// </para>
 /// </remarks>
 public sealed class Gtk4SkiaView : IDisposable

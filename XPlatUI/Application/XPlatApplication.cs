@@ -38,8 +38,6 @@ public sealed partial class XPlatApplication : IDisposable
     private ExceptionDispatchInfo? _handlerFault;
     private IReadOnlyList<XPlatScreen>? _screens;
     private IXPlatDialogService? _dialogs;
-    private XPlatTimer? _tickTimer;
-    private long _lastTick;
     private int _uiThreadId;
     private int _exitCode;
     private bool _exitRequested;
@@ -217,7 +215,6 @@ public sealed partial class XPlatApplication : IDisposable
 
                 if (!_exitRequested)
                 {
-                    StartTickTimer();
                     _exitCode = Backend.Run();
                 }
             }
@@ -446,41 +443,6 @@ public sealed partial class XPlatApplication : IDisposable
     }
 
     /// <summary>
-    /// One timer drives every window's animation and caret blink, so idle cost does not grow with
-    /// the number of open windows.
-    /// </summary>
-    private void StartTickTimer()
-    {
-        if (Options.TickInterval <= TimeSpan.Zero)
-        {
-            return;
-        }
-
-        _lastTick = Environment.TickCount64;
-        _tickTimer = new XPlatTimer(Options.TickInterval);
-        _tickTimer.Tick += OnTick;
-        _tickTimer.Start();
-    }
-
-    private void OnTick(object? sender, EventArgs e)
-    {
-        Guard(() =>
-        {
-            var now = Environment.TickCount64;
-            var elapsed = TimeSpan.FromMilliseconds(now - _lastTick);
-            _lastTick = now;
-
-            foreach (var window in _windows.ToArray())
-            {
-                if (window.IsShown && !window.IsClosed)
-                {
-                    window.Host.ProcessTick(elapsed);
-                }
-            }
-        });
-    }
-
-    /// <summary>
     /// Reports an exception caught where it cannot be allowed to propagate - a platform callback
     /// such as a window procedure, whose caller is native code with no way to unwind a managed
     /// exception. Exceptions the model refuses to swallow are rethrown, which at such a boundary
@@ -601,12 +563,6 @@ public sealed partial class XPlatApplication : IDisposable
         _tornDown = true;
         _running = false;
         XPlatTheme.Changed -= OnThemeChanged;
-
-        if (_tickTimer is not null)
-        {
-            _tickTimer.Dispose();
-            _tickTimer = null;
-        }
 
         if (_runCalled)
         {

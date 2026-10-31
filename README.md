@@ -200,6 +200,7 @@ placeholder text and horizontal scrolling are all implemented by the control its
 | --- | --- |
 | `Text`, `TextChanged` | Current value. Control characters (including line breaks) are stripped so the field stays single line |
 | `CaretIndex`, `SelectionStart`, `SelectionLength`, `SelectedText`, `HasSelection` | Selection state; the caret is `0 … Text.Length` |
+| `Caret` | The `XPlatCaret` that draws and blinks the insertion point; its `BlinkInterval`, `Width` and `Color` can be changed |
 | `Select(start, length)`, `SelectAll()`, `ClearSelection()` | Programmatic selection |
 | `MaxLength` | Characters the user may type (`0` = unlimited); enforced for insertions and replacements |
 | `ReadOnly` | Selection and copy still work; typing, paste, cut and delete are blocked |
@@ -227,14 +228,19 @@ var password = new XPlatTextBox { Dock = DockStyle.Top, IsPassword = true };
 var readOnly = new XPlatTextBox { Dock = DockStyle.Top, ReadOnly = true, Text = "fixed" };
 ```
 
-The library itself stays platform free, so two things remain the adapter's job:
+The library itself stays platform free, so one thing remains the adapter's job:
 
 * **Clipboard** - implement `IXPlatClipboard` (`GetText`/`SetText`, plus the optional
   `GetHtml`/`SetHtml` pair) and assign an instance to `XPlatClipboard.Current` once at startup;
   without one an in-process fallback is used. The Win32 backend installs `Win32Clipboard`
   (`Win32Clipboard.cs`), which publishes a real `HTML Format` payload.
-* **Caret blink** - call `host.ProcessTick(elapsed)` from a timer (the Win32 backend uses a
-  250 ms `WM_TIMER`) so the caret blinks. Tests can call `host.ProcessTick(...)` directly.
+
+The caret is a control of its own: `XPlatCaret` owns the timer that blinks it and follows its
+control's focus and enabled state, so it only runs while the caret is actually on screen and an
+idle application has no timer running at all. `XPlatTextBox.Caret` exposes the instance it uses, so
+its interval, width and color can be changed, and a new editable control gets the same caret with
+`new XPlatCaret(this)`. A control that animates something else does the same through `CreateTimer`,
+which hands back an `XPlatTimer` the control owns and that is disposed with it.
 
 ### Selection and the clipboard
 
@@ -384,7 +390,7 @@ loop and the platform-wide services; `IXPlatWindowBackend` owns one native windo
    then `Host.Paint(canvas)`.
 4. Forward pointer, key and text events into `Host.ProcessMouseMove/Down/Up/Leave`,
    `ProcessKeyDown/Up`, `ProcessTextInput` and `ProcessContextMenu`, dividing coordinates by the
-   scale factor. A timer calls `Host.ProcessTick(elapsed)`.
+   scale factor. There is no tick to forward: a control that needs time runs its own timer.
 5. Raise `Shown`, `CloseRequested`, `Closed`, `Activated`, `Deactivated`, `ClientSizeChanged`,
    `ScaleChanged` and `StateChanged`; the model turns them into `XPlatWindow` events.
 6. `RegisterServices` adds the platform services to MEDI's `IServiceCollection` - the clipboard, the
@@ -517,8 +523,7 @@ driver on the first resize, because the renderer still holds the previous frame'
 the price of that - about 1.3 ms of a 4.4 ms frame at 2560x1452 on llvmpipe.
 
 Everything else mirrors the Win32 backend: `Gtk.GestureClick`, `Gtk.EventControllerMotion` and
-`Gtk.EventControllerKey` feed `XPlatUiHost.Process*`, a 250 ms `GLib` timeout drives
-`ProcessTick` (caret blinking), and the system appearance is read from
+`Gtk.EventControllerKey` feed `XPlatUiHost.Process*`, and the system appearance is read from
 `org.gnome.desktop.interface color-scheme` (falling back to `GTK_THEME` and
 `GtkSettings.GtkApplicationPreferDarkTheme`). Context menus are real `Gtk.Popover`s, and the desktop
 UI font (`GtkSettings.GtkFontName`) is handed to the library through `XPlatTheme.FontFamily`, so the
@@ -625,8 +630,7 @@ buffer outgrows the window, each frame clips the canvas to the window before pai
 applied *after* the scale, in the same logical units the controls paint in, or it would only cover
 the top left `1/scale` of the view. Mouse and
 keyboard events are forwarded to `XPlatUiHost.Process*` from the `NSResponder` overrides, a 250 ms
-`NSTimer` drives `ProcessTick`
-(caret blinking) and doubles as the poll for a system appearance change
+`NSTimer` drains the UI-thread queue and doubles as the poll for a system appearance change
 (`NSAppearance.FindBestMatch`), and a tracking area keeps `MouseMoved`/`MouseEntered`/`MouseExited`
 coming so hover states and cursors work.
 

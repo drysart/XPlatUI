@@ -549,8 +549,8 @@ public sealed class AppKitApplicationBackend : IXPlatApplicationBackend
         }
 
         // Repeating, and not scheduled: the run loop is the one that starts it, in common modes, so
-        // it keeps firing while a modal dialog or a live resize owns the loop. Without that the
-        // caret would stop blinking for as long as a dialog is open.
+        // it keeps firing while a modal dialog or a live resize owns the loop, which is what keeps
+        // queued work - including control timers - running there.
         _pollTimer = NSTimer.CreateRepeatingTimer(PollInterval, _ => OnPoll());
         NSRunLoop.Main.AddTimer(_pollTimer, NSRunLoopMode.Common);
     }

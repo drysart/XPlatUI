@@ -338,12 +338,6 @@ public sealed class XPlatUiHost
     public void ProcessTextInput(string text) =>
         Guard(() => _focused?.RaiseTextInput(new XPlatTextInputEventArgs(text)));
 
-    /// <summary>
-    /// Advances time-based behaviour (such as the text caret blink) of the focused control.
-    /// Adapters call this from a timer, typically every 100-250 ms.
-    /// </summary>
-    public void ProcessTick(TimeSpan elapsed) => Guard(() => _focused?.RaiseTick(elapsed));
-
     /// <summary>Moves keyboard focus to the given control (null clears focus).</summary>
     public void SetFocus(XPlatControl? control)
     {

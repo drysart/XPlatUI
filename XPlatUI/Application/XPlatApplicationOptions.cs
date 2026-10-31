@@ -44,12 +44,6 @@ public sealed class XPlatApplicationOptions
     public XPlatDpiAwareness DpiAwareness { get; set; } = XPlatDpiAwareness.PerMonitor;
 
     /// <summary>
-    /// How often the application's tick runs, which is what drives caret blinking and animations.
-    /// Defaults to 250 ms.
-    /// </summary>
-    public TimeSpan TickInterval { get; set; } = TimeSpan.FromMilliseconds(250);
-
-    /// <summary>
     /// Windows only: attach to the parent console so diagnostics from a GUI executable are visible
     /// when it is started from a terminal.
     /// </summary>

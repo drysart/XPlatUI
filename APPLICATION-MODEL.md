@@ -93,8 +93,8 @@ internal static class Backend
 ```
 
 Two source files. No `#if` in application logic. `--render` passes `headless: true` and paints the same
-control tree offscreen; `--dark`, `--light`, DPI, appearance tracking, clipboard, context menus and the
-caret timer all come from the model.
+control tree offscreen; `--dark`, `--light`, DPI, appearance tracking, clipboard, context menus and
+caret blinking all come from the model.
 
 The `#if` symbols above are measured, not assumed: `WINDOWS` is defined for `net10.0-windows`, `MACOS` for `net10.0-macos`, and neither for a portable `net10.0` build on either host (§6.1).
 
@@ -182,7 +182,7 @@ not claim is fatal. Concretely:
 explicit choice. This differs from WinForms, whose `Application.ThreadException` is implicitly
 swallowed: a UI that continues after a fault is usually broken in ways the user cannot see.
 - Dispatch points that are already covered: `Startup`, showing a window before the loop,
-`WindowOpened`, `WindowClosed`, `ThemeChanged`, the tick, `Exiting`, and any action queued with
+`WindowOpened`, `WindowClosed`, `ThemeChanged`, `Exiting`, and any action queued with
 `BeginInvoke`. Synchronous `Invoke` is deliberately not covered, because its exception already
 reaches the caller that is waiting for it.
 - Anything the model does not dispatch itself - a window procedure, an AppKit delegate override, a
@@ -209,7 +209,6 @@ public sealed class XPlatApplicationOptions
 	public bool? ForcedDarkMode { get; set; }                    // --dark / --light
 	public string? FontFamily { get; set; }                      // null = platform default
 	public XPlatDpiAwareness DpiAwareness { get; set; } = XPlatDpiAwareness.PerMonitor;
-	public TimeSpan TickInterval { get; set; } = TimeSpan.FromMilliseconds(250);  // caret blink
 	public bool AttachConsole { get; set; }                      // Windows: diagnostics to parent console
 	public XPlatMenuBar? MenuBar { get; set; }                 // application-wide default; see §10
 	public Action<IServiceCollection>? ConfigureServices { get; set; }   // see §5.3
@@ -312,10 +311,23 @@ public sealed class XPlatTimer : IDisposable
 }
 ```
 
-The application owns one internal timer at `Options.TickInterval` for caret blinking and drives it
-through `Host.ProcessTick`. A single timer for all windows keeps the idle cost flat and matches the
-existing `ProcessTick(TimeSpan)` contract. Public `XPlatTimer` is the seam animations and polling
-will use later; it is a thin wrapper over the same platform timer.
+Nothing in the application model runs a timer. Time-based behaviour belongs to the control that
+needs it, and behaviour that more than one control wants lives in a helper those controls share:
+`XPlatCaret` owns the timer that blinks the insertion caret and follows its control's focus and
+enabled state, so it runs only while the caret is on screen. `XPlatTextBox` is one line -
+`new XPlatCaret(this)` - and any future editable control gets the identical caret the same way.
+A control that animates something else uses `XPlatControl.CreateTimer` directly. A timer a control
+owns is disposed with the control, so there is nothing to remember at shutdown; `Own` exists for
+helpers like the caret, which are disposed the same way.
+
+That is deliberate, and it replaced an application-wide tick. A single tick is cheap but wrong in
+two ways: it runs whether or not the focused control cares (work every 100-250 ms for a control
+that wants none), and it caps whatever the control does to the tick's resolution. An idle window
+now has no timer at all, and a control that animates picks its own interval - the caret uses its
+real 530 ms blink instead of accumulating 250 ms ticks until they add up.
+
+`XPlatTimer` itself is public, so application code uses the same mechanism for polling, debouncing
+or animation. Its `Tick` always arrives on the UI thread.
 
 ### 4.6 Main window and multi-window
 
@@ -364,8 +376,8 @@ Rules:
 - `ShowDialog()` disables the owner and runs a nested loop; it returns once the window has closed.
 - Process-wide services (`XPlatClipboard`, `XPlatSystemTheme`, `XPlatTheme`) are shared by every
   window. The context-menu presenter is per window, which the existing interface already implies.
-- There is **one** tick timer for the process. It drives every visible, non-minimized window's
-  `Host.ProcessTick`, so a hidden or minimized window costs nothing.
+- No timer is process-wide, so nothing has to be suspended when a window is hidden or minimized:
+  a control-owned timer only runs while its control has focus.
 - Focus is per window. Closing the focused window does not clear another window's
   `Host.FocusedControl`.
 - `ThemeChanged` is broadcast to every window, which then repaints.
@@ -869,22 +881,20 @@ Main()
 	   ├─ show windows shown before Run()   Shown fires; MainWindow defaults to the first
 	   ├─ backend.Run()                      ← the platform message loop
 	   │    ├─ input  → Host.Process*        routed to the window that received it
-	   │    ├─ tick   → Host.ProcessTick     one timer, every visible non-minimized window
 	   │    └─ theme  → XPlatSystemTheme.Refresh() + ThemeChanged + invalidate all windows
 	   ├─ loop ends: Exit() called, ShutdownMode condition met, or the platform quits
 	   ├─ Exit event                         cancellable
 	   └─ teardown, in this order:
 			1. dismiss open context menus / popups
-			2. dispose the tick timer, so no tick can arrive against a half-torn-down tree
-			3. close and dispose every window, then dispose that window's service scope
-			4. dispose the root provider (disposes application-scoped services), then clear the static slots
-			5. backend.Shutdown()
+			2. close and dispose every window, then dispose that window's service scope
+			3. dispose the root provider (disposes application-scoped services), then clear the static slots
+			4. backend.Shutdown()
   └─ return ExitCode
 ```
 
 Teardown order matters and is exactly what is hand-coded (differently) in all three harnesses today.
-Step 2's "detach the surface before disposing the host" is the macOS `CGImage`/`SKSurface` lifetime
-rule that the README documents; centralising it removes a class of crash-on-exit bug.
+The macOS `CGImage`/`SKSurface` lifetime rule that the README documents lives inside window
+disposal; centralising it removes a class of crash-on-exit bug.
 
 **Threading.** Everything public on `XPlatApplication`, `XPlatWindow` and `XPlatControl` is
 UI-thread only. `Invoke`/`BeginInvoke` are the only cross-thread entry points, and `CheckAccess()`
@@ -966,7 +976,7 @@ Tier 1 **is** the v1 scope (D12, D13).
 | Window creation, show/close, sizing, placement | Currently 759 lines of P/Invoke on Windows alone. |
 | Platform-service bootstrap (Skia native load, clipboard, system theme, context-menu presenter, default font) | Three harnesses each wire it by hand; a missed one is a silent null-ref. |
 | DPI awareness + `ScaleChanged` | `SetProcessDpiAwarenessContext` must run before any window; the model owns "before". |
-| Single tick timer → `ProcessTick` | Caret blink, and the seam for animation later. |
+| Control-owned timers → caret blink | Caret blink without an idle clock, and the seam for animation later. `XPlatCaret` is the shared caret; `CreateTimer` is the seam. |
 | `Screens` + working-area clamping | Default window size/placement is currently platform-specific. |
 | `Exit`/`ExitCode`, `ShutdownMode`, cancellable `Exit` | Needed to make `Run()` return sanely. |
 | `Invoke`/`BeginInvoke`/`CheckAccess` | The only safe cross-thread entry point. |
@@ -1035,7 +1045,7 @@ comparable across platforms).
 
 ### Step 2 notes
 
-Four deviations from the sketches above, all deliberate:
+Three deviations from the sketches above, all deliberate:
 
 - **`Closing` uses `CancelEventArgs`.** `EventHandler<CancelEventArgs>`, not a custom type, so the
   handler signature matches WinForms and needs no using-directive archaeology.
@@ -1043,8 +1053,6 @@ Four deviations from the sketches above, all deliberate:
   to `Cancel`, so an early-return path cannot be mistaken for `OK`.
 - **`XPlatWindow.ScaleChanged` re-runs `PerformLayout()` and `Invalidate()` before raising the event**,
   because a scale change invalidates every cached measurement in the tree.
-- **The tick timer is torn down before the windows**, which is what §8 now says: the original order
-  disposed it after them, leaving a window where a tick could land on a disposed control tree.
 
 The headless backend deliberately registers no `IXPlatSystemTheme`. With no display there is no
 system appearance to report, so `XPlatTheme` keeps its default and a headless render never depends on
@@ -1077,9 +1085,10 @@ Four behaviours changed on purpose:
   returns early. So the very first `UpdateHostSize()` no-opped, `_host.ClientSize` stayed 0x0, and
   the control tree was never laid out - a blank window. The host is the authority on whether it has
   been told; the field is not.
-- **The caret blink timer is gone.** Blinking is driven by `XPlatApplication`'s tick timer through
-  `OnTick`, so there is one clock instead of two and the model does not need a second source of
-  `WM_TIMER` traffic.
+- **The caret blink timer moved, and later moved back.** The Win32 harness's own `WM_TIMER` went
+  away in step 3 in favour of one application-wide tick. It came back as a timer the caret owns
+  (§4.5) - `XPlatCaret`, which the text box builds and positions - because the shared tick ran
+  whether or not anything wanted it and quantised the blink to the tick's interval.
 - **`WM_CLOSE` raises `CloseRequested` and returns 0** instead of calling `DestroyWindow`. Closing is
   now a decision the model makes (D7's shutdown modes), so the backend may not act on it alone.
 - **`Win32MenuWindow` uses a per-window class name** (`XPlatUI.Window.N`). `UnregisterClassW` on a
@@ -1252,7 +1261,7 @@ fine and then misbehaved at run time:
   registered through `EnterModal`/`ExitModal` - the same shape as an AppKit modal session - and
   `Quit()` has to end the nested loops *before* the application, or `Run()` never returns. Queued
   `Invoke` work drains from `GLib.Functions.IdleAdd`, and a 250 ms `GLib.Functions.TimeoutAdd` keeps
-  the tick and the caret blinking alive inside a modal loop or a dialog pump.
+  queued work - including control timers - running inside a modal loop or a dialog pump.
 - **`Gtk.Window.OnCloseRequest` returning `true` vetoes destruction.** That is how the model's
   cancellable `Closing` gets to run; the backend raises `CloseRequested` and lets the model decide.
 - **GTK4 removed `gtk_window_set_position`.** `XPlatWindow.Location` is recorded and ignored, and
@@ -1362,7 +1371,7 @@ choices worth recording are these:
   backends need no null check and no `InternalsVisibleTo`.
 - **`XPlatUiHost` and `XPlatWindow` are guarded in the core, not per backend.** `ProcessMouseMove`,
   `ProcessMouseDown`, `ProcessMouseUp`, `ProcessMouseLeave`, `ProcessContextMenu`, `ProcessKeyDown`,
-  `ProcessKeyUp`, `ProcessTextInput`, `ProcessTick`, `Paint` and the `XPlatWindow.OnBackend*` handlers
+  `ProcessKeyUp`, `ProcessTextInput`, `Paint` and the `XPlatWindow.OnBackend*` handlers
   are the funnels every platform's native callback goes through, so one guard per funnel covers
   Windows, macOS and Linux at once. Only the Win32 `WindowProc` needed a backend-local guard, because
   it sees messages that never reach the host.

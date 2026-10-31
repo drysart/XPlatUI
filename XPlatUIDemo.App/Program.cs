@@ -43,9 +43,6 @@ internal static class Program
     private static readonly SKSize DesignMinimumClientSize = new(820f, 660f);
 #endif
 
-    /// <summary>Drives caret blinking and any other time-based UI behaviour.</summary>
-    private static readonly TimeSpan TickInterval = TimeSpan.FromMilliseconds(250);
-
     /// <summary>
     /// Entry point. The program deliberately avoids Windows Forms and System.Drawing: the window is
     /// a native window and everything inside it is drawn with SkiaSharp, so the whole application
@@ -92,7 +89,6 @@ internal static class Program
             ApplicationName = "XPlat UI",
             FontFamily = PreferredFontFamily(),
             ForcedDarkMode = ForcedDarkMode(args),
-            TickInterval = TickInterval,
 #if WINDOWS
             // A WinExe has no console of its own; borrow the parent's so diagnostics are visible.
             AttachConsole = true,
