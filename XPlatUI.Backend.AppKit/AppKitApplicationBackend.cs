@@ -501,7 +501,7 @@ public sealed class AppKitApplicationBackend : IXPlatApplicationBackend
         // application is hidden would leave it invisible.
         if (native.Hidden)
         {
-            native.Unhide(null);
+            native.Unhide(native);
         }
 
         Activated?.Invoke(this, EventArgs.Empty);
