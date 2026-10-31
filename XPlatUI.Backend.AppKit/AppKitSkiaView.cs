@@ -3,25 +3,21 @@ using CoreGraphics;
 using Foundation;
 using ObjCRuntime;
 using SkiaSharp;
-using XPlatUI;
 
-namespace MacHarness;
+namespace XPlatUI.Backend.AppKit;
 
 /// <summary>
-/// The macOS host for the XPlat UI library: a plain AppKit <see cref="NSView"/> that owns an
-/// <see cref="XPlatUiHost"/>, rasterizes the control tree with SkiaSharp into a BGRA bitmap and
-/// blits it into the view in <see cref="DrawRect"/>. Input arrives as AppKit events and is
-/// forwarded to the host in the same form the Win32 and GTK harnesses use.
+/// The view an <see cref="AppKitWindowBackend"/> draws into: a plain AppKit <see cref="NSView"/>
+/// that rasterizes the control tree of the <see cref="XPlatUiHost"/> it is given with SkiaSharp
+/// into a BGRA bitmap and blits it into the view in <see cref="DrawRect"/>. Input arrives as AppKit
+/// events and is forwarded to the host in the same form the Win32 and GTK backends use.
 /// <para>
 /// The bitmap route is deliberate: there is no SkiaSharp view for AppKit in SkiaSharp 4.x, and a
 /// view that draws itself is both simpler and more predictable than a CALayer backed one.
 /// </para>
 /// </summary>
-internal sealed class MacUiView : NSView
+internal sealed class AppKitSkiaView : NSView
 {
-    /// <summary>Interval of the timer that drives time based UI behaviour (caret blinking).</summary>
-    private const double TickIntervalSeconds = 0.25;
-
     /// <summary>Set <c>XPLATUI_DEBUG=1</c> to trace host work to stderr, which helps on odd setups.</summary>
     private static readonly bool DebugTrace =
         Environment.GetEnvironmentVariable("XPLATUI_DEBUG") is "1" or "true";
@@ -37,9 +33,8 @@ internal sealed class MacUiView : NSView
 
     private const long Mib = 1024 * 1024;
 
-    private readonly XPlatUiHost _host = new();
+    private readonly XPlatUiHost _host;
 
-    private NSTimer? _tickTimer;
     private NSTrackingArea? _trackingArea;
     private SKBitmap? _bitmap;
     private SKSurface? _skia;
@@ -60,59 +55,24 @@ internal sealed class MacUiView : NSView
     private long _reportedAt;
     private long _reportedFrames;
 
-    public MacUiView()
+    /// <summary>Creates a view that draws and drives <paramref name="host"/>.</summary>
+    public AppKitSkiaView(XPlatUiHost host)
     {
+        ArgumentNullException.ThrowIfNull(host);
+
+        _host = host;
         _host.Invalidated += OnHostInvalidated;
         _host.CursorChanged += OnHostCursorChanged;
         XPlatTheme.Changed += OnThemeChanged;
         _reportedAt = Environment.TickCount64;
     }
 
-    /// <summary>Raised once per tick, before the UI is ticked.</summary>
-    public event EventHandler? Ticked;
-
-    /// <summary>The platform independent UI host.</summary>
+    /// <summary>The platform independent UI host this view paints.</summary>
     public XPlatUiHost Host => _host;
-
-    /// <summary>Sets the root of the control tree and lays it out to fill the view.</summary>
-    public XPlatControl? Root
-    {
-        get => _host.Root;
-        set
-        {
-            _host.Root = value;
-            SyncHostSize();
-
-            // The host already asks for a repaint when its root changes, but it does so before the
-            // view knows the new tree needs a frame - and if the size did not change there is no
-            // layout pass either - so the first frame of the tree would otherwise wait for input.
-            NeedsDisplay = true;
-        }
-    }
 
     /// <summary>Top-left origin, y down: the coordinate space the UI library draws in.</summary>
     public override bool IsFlipped => true;
 
-    /// <summary>Starts the tick timer that drives caret blinking and other time based behaviour.</summary>
-    public void Start()
-    {
-        if (_tickTimer is not null)
-        {
-            return;
-        }
-
-        _tickTimer = NSTimer.CreateRepeatingScheduledTimer(TickIntervalSeconds, _ => OnTick());
-
-        // Startup order is window first, control tree second, so make sure the tree gets a frame
-        // even though nothing has touched the view since it was put on screen.
-        NeedsDisplay = true;
-    }
-
-    /// <summary>
-    /// Feeds one of the standard editing accelerators into the UI, so the focused control handles
-    /// it exactly as it would a key press. The menu bar routes Command+X/C/V/A here.
-    /// </summary>
-    public void SendAccelerator(XPlatKey key) => _host.ProcessKeyDown(key, XPlatModifiers.Control);
 
     public override void DrawRect(CGRect dirtyRect)
     {
@@ -348,7 +308,7 @@ internal sealed class MacUiView : NSView
     public override void KeyDown(NSEvent theEvent)
     {
         var modifiers = ModifiersFrom(theEvent);
-        var key = MacKeyMap.ToKey(theEvent.KeyCode);
+        var key = AppKitKeyMap.ToKey(theEvent.KeyCode);
 
         if (key != XPlatKey.None && _host.ProcessKeyDown(key, modifiers))
         {
@@ -370,7 +330,7 @@ internal sealed class MacUiView : NSView
 
         // Everything else is text. The characters already carry the effect of Shift, the keyboard
         // layout and Option dead keys, so nothing has to be composed here.
-        var text = MacKeyMap.ToText(theEvent);
+        var text = AppKitKeyMap.ToText(theEvent);
         if (text.Length > 0)
         {
             _host.ProcessTextInput(text);
@@ -379,7 +339,7 @@ internal sealed class MacUiView : NSView
 
     public override void KeyUp(NSEvent theEvent)
     {
-        var key = MacKeyMap.ToKey(theEvent.KeyCode);
+        var key = AppKitKeyMap.ToKey(theEvent.KeyCode);
         if (key != XPlatKey.None)
         {
             _host.ProcessKeyUp(key, ModifiersFrom(theEvent));
@@ -399,10 +359,6 @@ internal sealed class MacUiView : NSView
             XPlatTheme.Changed -= OnThemeChanged;
             _host.Invalidated -= OnHostInvalidated;
             _host.CursorChanged -= OnHostCursorChanged;
-
-            _tickTimer?.Invalidate();
-            _tickTimer?.Dispose();
-            _tickTimer = null;
 
             if (_trackingArea is not null)
             {
@@ -426,13 +382,6 @@ internal sealed class MacUiView : NSView
         ApplyCursor();
     }
 
-    private void OnTick()
-    {
-        Ticked?.Invoke(this, EventArgs.Empty);
-        _host.ProcessTick(TimeSpan.FromSeconds(TickIntervalSeconds));
-        ReportMemory();
-    }
-
     private void OnHostInvalidated(object? sender, EventArgs e)
     {
         if (_inDraw)
@@ -448,8 +397,9 @@ internal sealed class MacUiView : NSView
     /// Prints frame rate and memory use every few seconds when tracing is on. A UI that grows
     /// without bound is either drawing far more often than it should (watch the frame rate) or
     /// holding on to something for every frame (watch private memory against the frame count).
+    /// The application backend calls this from the timer that polls the system appearance.
     /// </summary>
-    private void ReportMemory()
+    internal void ReportStatistics()
     {
         if (!DebugTrace)
         {
@@ -502,11 +452,11 @@ internal sealed class MacUiView : NSView
         return new SKPoint((float)point.X, (float)point.Y);
     }
 
-    private static XPlatModifiers ModifiersFrom(NSEvent theEvent) => MacKeyMap.ToModifiers(theEvent.ModifierFlags);
+    private static XPlatModifiers ModifiersFrom(NSEvent theEvent) => AppKitKeyMap.ToModifiers(theEvent.ModifierFlags);
 
     private static int ClickCountFrom(NSEvent theEvent) => Math.Max((int)theEvent.ClickCount, 1);
 
-    private void SyncHostSize()
+    internal void SyncHostSize()
     {
         var bounds = Bounds;
         if (bounds.Width > 0 && bounds.Height > 0)

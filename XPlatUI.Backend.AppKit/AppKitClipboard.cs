@@ -1,13 +1,12 @@
 using AppKit;
-using XPlatUI;
 
-namespace MacHarness;
+namespace XPlatUI.Backend.AppKit;
 
 /// <summary>
 /// The macOS clipboard. Unlike Win32 and X11 there is nothing to pump: NSPasteboard reads and
 /// writes synchronously, so the library can call it straight from a menu command.
 /// </summary>
-internal sealed class MacClipboard : IXPlatClipboard
+internal sealed class AppKitClipboard : IXPlatClipboard
 {
     private const string PlainTextType = "public.utf8-plain-text";
     private const string HtmlType = "public.html";

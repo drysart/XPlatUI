@@ -1,28 +1,28 @@
 using AppKit;
-using Foundation;
 using SkiaSharp;
-using XPlatUI;
 
-namespace MacHarness;
+namespace XPlatUI.Backend.AppKit;
 
 /// <summary>
 /// The system light/dark preference, read from AppKit's effective appearance. AppKit has no
 /// notification for an appearance change that is guaranteed to fire for every case (it arrives as
-/// KVO on <c>effectiveAppearance</c>), so the harness polls instead: the UI already ticks four
+/// KVO on <c>effectiveAppearance</c>), so the backend polls instead: the UI already ticks four
 /// times a second for the caret, which makes the change look immediate.
 /// </summary>
-internal sealed class MacSystemTheme : IXPlatSystemTheme
+public sealed class AppKitSystemTheme : IXPlatSystemTheme
 {
     private const string Aqua = "NSAppearanceNameAqua";
     private const string DarkAqua = "NSAppearanceNameDarkAqua";
 
     private bool _isDarkMode;
 
-    public MacSystemTheme() => _isDarkMode = Query();
+    /// <summary>Reads the current system appearance.</summary>
+    public AppKitSystemTheme() => _isDarkMode = Query();
 
     /// <summary>Raised when <see cref="Poll"/> notices the system appearance has changed.</summary>
     public event EventHandler? Changed;
 
+    /// <inheritdoc />
     public bool IsDarkMode => _isDarkMode;
 
     /// <summary>
@@ -40,21 +40,6 @@ internal sealed class MacSystemTheme : IXPlatSystemTheme
         _isDarkMode = dark;
         Changed?.Invoke(this, EventArgs.Empty);
         return true;
-    }
-
-    /// <summary>
-    /// Makes the window's title bar and other AppKit chrome match the palette the library is
-    /// drawing with. Only called when the two disagree - that is, when the harness was started
-    /// with an appearance override - so normally the window just inherits the system appearance.
-    /// </summary>
-    public void ApplyToWindow(NSWindow window, bool dark)
-    {
-        if (dark == _isDarkMode)
-        {
-            return;
-        }
-
-        window.Appearance = new NSAppearance(dark ? DarkAqua : Aqua, NSBundle.MainBundle);
     }
 
     /// <summary>

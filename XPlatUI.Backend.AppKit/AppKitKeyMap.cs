@@ -1,12 +1,11 @@
 using AppKit;
-using XPlatUI;
 
-namespace MacHarness;
+namespace XPlatUI.Backend.AppKit;
 
 /// <summary>
 /// Translates between AppKit and the platform independent input types the UI library understands.
 /// </summary>
-internal static class MacKeyMap
+internal static class AppKitKeyMap
 {
     /// <summary>
     /// Maps a macOS virtual key code to an <see cref="XPlatKey"/>. The numbers are hardware key

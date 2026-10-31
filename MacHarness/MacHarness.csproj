@@ -13,8 +13,6 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>MacHarness</RootNamespace>
-    <!-- The Skia raster buffer is handed to CoreGraphics through a raw pointer. -->
-    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <!-- `dotnet publish` trims the bundle (a plain build does not), and LinkMode keeps its default of
          SdkOnly, which trims the BCL and leaves the application's own assemblies whole. Nothing here
          reflects over its own types, so LinkMode=Full is safe too - it was measured and is a net loss
@@ -26,12 +24,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\XPlatUI\XPlatUI.csproj" />
+    <ProjectReference Include="..\XPlatUI.Backend.AppKit\XPlatUI.Backend.AppKit.csproj" />
     <ProjectReference Include="..\XPlatUIDemo\XPlatUIDemo.csproj" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <!-- SkiaSharp itself only ships Win32 natives; macOS needs the separate native package. -->
-    <PackageReference Include="SkiaSharp.NativeAssets.macOS" Version="4.154.0" />
   </ItemGroup>
 
 </Project>

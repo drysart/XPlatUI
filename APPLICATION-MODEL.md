@@ -1095,6 +1095,81 @@ platform's own previous run):
 | macOS | 163,795 | 164,747 |
 | Linux | 122,364 | 123,501 |
 
+### Step 4 notes
+
+`XPlatUI.Backend.AppKit` is a new `net10.0-macos` project holding the seven `MacHarness/*.cs` files
+under new names: `MacUiView` → `AppKitSkiaView`, `MacKeyMap` → `AppKitKeyMap`, `MacClipboard` →
+`AppKitClipboard`, `MacContextMenuPresenter` → `AppKitContextMenuPresenter`, `MacSystemTheme` →
+`AppKitSystemTheme`, `MacMenuBar` → `AppKitMenuBar`, and `MacAppDelegate` split between
+`AppKitApplicationBackend` (the `NSApplication`, the run loop, the process-wide menu bar, the services)
+and `AppKitWindowBackend` (the `NSWindow`, its delegate and the view). `AppKitDialogService` is new.
+`MacHarness` is now a thin app project - "pick a backend, describe a window, run" - with no
+`SkiaSharp.NativeAssets.macOS` of its own, because the backend brings SkiaSharp with it.
+
+The render stayed byte-identical: **163,795** bytes dark and **164,747** light, the same as the
+recorded baseline, which is the strongest evidence that moving the code changed nothing about what is
+painted. The drawing buffer logic came across untouched, so the buffer-growth behaviour (and with it
+the memory profile of a live resize) is unchanged too.
+
+Six AppKit behaviours cost real time, all of them undocumented in the bindings and none of them
+discoverable by reading the code:
+
+- **`NSWindowDelegate` overrides have no `Window` prefix.** The .NET names are `DidBecomeKey`,
+  `DidResignKey`, `DidResize`, `DidChangeBackingProperties`, `DidMiniaturize`, `DidDeminiaturize`,
+  `DidEndLiveResize` and `WillClose`, and the close veto is `WindowShouldClose(NSObject)` - not
+  `ShouldClose(NSWindow)`, which does not exist. Every one of them compiled fine before the override
+  was corrected; the compiler only complains once the base name is wrong, and a plausible-looking
+  wrong name is silently a *new* method.
+- **`-stop:` does not end the run loop.** It clears a flag that `-run` checks between events, and the
+  loop is parked inside the run-loop source waiting for an event, so the flag is never read again.
+  `XPlatApplication.Exit` therefore looked like it worked and the process stayed alive until it was
+  killed. The fix is to post an empty `NSEventType.ApplicationDefined` event immediately afterwards,
+  which is what `WakeUp()` does. Deferring the call with `BeginInvokeOnMainThread` does not help: the
+  deferral runs, and the loop is still parked.
+- **`Stop(null)` throws.** The binding rejects a null sender; pass the `NSApplication` itself.
+- **`NSTimer.CreateTimer` is one-shot and unscheduled.** The poll timer fired exactly once, which
+  looked like the loop had died. `CreateRepeatingTimer` plus
+  `NSRunLoop.Main.AddTimer(timer, NSRunLoopMode.Common)` is what keeps queued work and the caret
+  blinking during a modal dialog or a live resize.
+- **`new NSAppearance(name, bundle)` is not `+appearanceNamed:`.** It maps to
+  `initWithAppearanceNamed:bundle:`, which looks for an appearance resource *inside a bundle* and
+  returns nil for a system appearance name, so the binding threw the first time the palette was
+  flipped from the menu. `NSAppearance.GetAppearance(NSAppearance.NameDarkAqua)` is the factory that
+  takes a system name.
+- **`NSApplication.Activate()` is a no-op unless the application is already frontmost.** A window
+  shown by a background process never became active. `NSRunningApplication.CurrentApplication.Activate(
+  ActivateIgnoringOtherWindows)` is the API that still brings one forward, which is the AppKit
+  equivalent of the `SetForegroundWindow` the Win32 backend calls.
+
+Two smaller ones: `ApplicationShouldTerminate` returns `NSApplicationTerminateReply`, and the
+parameterless `NSOpenPanel`/`NSSavePanel` constructors are obsolete from 10.15 - the
+`NSOpenPanel.OpenPanel` / `NSSavePanel.SavePanel` factory properties are the replacements, with the
+configuration properties set afterwards.
+
+`osascript -e 'tell application "MacHarness" to quit'` reports *"User canceled. (-128)"* even though
+the quit works. That is correct: the backend answers `ApplicationShouldTerminate` with `Cancel` on
+purpose, because the model owns shutdown (D7), so AppKit's own termination is declined and the loop
+is ended by `XPlatApplication.Exit` instead.
+
+Verification is limited by the machine: `screencapture` fails over `ssh` (no Screen Recording
+permission) and `osascript` UI scripting is refused (no assistive access), so nothing on screen can be
+driven or captured from here. What could be checked was checked by a scripted run of the real window
+over the live `NSApplication` loop, driving the model from the main thread through `BeginInvoke`:
+
+- resize 1280x820 → 1000x760 raises `ClientSizeChanged`, repaints at the new size, and the control
+  tree is laid out against it on the next frame (the host resizes during the draw, which is by
+  design and matches the Win32 backend);
+- a palette change repaints and reapplies the window chrome without throwing;
+- `ShowDialog` nests the run loop, returns after the modal window closes itself, and leaves the main
+  window open and painted;
+- `Exit(7)` closes the window and `Run()` returns 7; quitting through the application menu, via
+  `osascript`, exits with code 0 and no stderr output.
+
+Not verified here, and left for a human at the keyboard: window drag-resize and the live-resize
+paint path, the View menu's Dark/Light items, context menus, text entry and caret blink, and the four
+dialogs (`NSAlert` and the three panels). The one thing that cannot be checked at all from an `ssh`
+session is activation, so `Activated`/`Deactivated` are unproven on macOS.
+
 ---
 
 ## 12. Decision status
