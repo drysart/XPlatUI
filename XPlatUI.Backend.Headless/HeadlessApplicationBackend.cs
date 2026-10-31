@@ -47,6 +47,19 @@ public sealed class HeadlessApplicationBackend : IXPlatApplicationBackend
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// Always succeeds: a render or a test run has no desktop to be a second instance of, and taking
+    /// a process-wide claim would make two concurrent renders of the same application collide.
+    /// </remarks>
+    public bool TryClaimSingleInstance() => true;
+
+    /// <inheritdoc />
+    public event EventHandler? Activated;
+
+    /// <inheritdoc />
+    public event EventHandler<XPlatSecondInstanceEventArgs>? SecondInstance;
+
+    /// <inheritdoc />
     public void Quit(int exitCode) => _exitCode = exitCode;
 
     /// <inheritdoc />
@@ -96,6 +109,23 @@ public sealed class HeadlessApplicationBackend : IXPlatApplicationBackend
         {
             action();
         }
+    }
+
+    /// <summary>
+    /// Raises <see cref="Activated"/> the way a desktop does, so a test can drive the re-activation
+    /// path without a display.
+    /// </summary>
+    public void RaiseActivated() => Activated?.Invoke(this, EventArgs.Empty);
+
+    /// <summary>
+    /// Raises <see cref="SecondInstance"/> the way a desktop does, so a test can drive the
+    /// second-launch path without a display.
+    /// </summary>
+    /// <param name="arguments">The arguments the forwarded launch would have carried.</param>
+    public void RaiseSecondInstance(IReadOnlyList<string> arguments)
+    {
+        ArgumentNullException.ThrowIfNull(arguments);
+        SecondInstance?.Invoke(this, new XPlatSecondInstanceEventArgs(arguments));
     }
 
     /// <summary>The application this backend drives, or null before <see cref="Initialize"/>.</summary>

@@ -94,6 +94,11 @@ internal static class Program
             // and the default icon name for every GTK window. Windows also shows it in the title bar
             // because XPlatWindow inherits this when it is created.
             Icon = DemoIcon.Create(),
+
+            // Launching the sample twice re-uses the window that is already open instead of opening
+            // a second one, which is what makes "open a file with this application" work on all
+            // three platforms.
+            SingleInstance = true,
 #if WINDOWS
             // A WinExe has no console of its own; borrow the parent's so diagnostics are visible.
             AttachConsole = true,
@@ -102,7 +107,8 @@ internal static class Program
 
         using var application = new XPlatApplication(CreateBackend(args), options);
 
-        var window = new XPlatWindow(WindowTitle, DemoUi.CreateRoot())
+        var demo = new DemoUi();
+        var window = new XPlatWindow(WindowTitle, demo.Root)
         {
             ClientSize = DesignClientSize,
             MinimumClientSize = DesignMinimumClientSize,
@@ -115,6 +121,13 @@ internal static class Program
 #endif
 
         application.MainWindow = window;
+
+        // The window comes forward on its own; the status line says why it did.
+        application.SecondInstance += (_, e) => demo.SetStatus(
+            e.Arguments.Count == 0
+                ? "A second launch was handed to this window."
+                : $"A second launch was handed to this window: {string.Join(' ', e.Arguments)}");
+
         window.Show();
 
         return application.Run();

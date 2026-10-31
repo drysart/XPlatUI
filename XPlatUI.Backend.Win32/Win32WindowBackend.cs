@@ -346,8 +346,31 @@ internal sealed class Win32WindowBackend : IXPlatWindowBackend
             return;
         }
 
-        NativeMethods.SetForegroundWindow(_hwnd);
-        NativeMethods.SetFocus(_hwnd);
+        // A minimized window ignores SetForegroundWindow, so restore it first the way the taskbar
+        // does; a second launch of the application must not leave the window it brought forward
+        // still minimised.
+        if (NativeMethods.IsIconic(_hwnd))
+        {
+            NativeMethods.ShowWindow(_hwnd, NativeMethods.SwRestore);
+        }
+
+        if (NativeMethods.SetForegroundWindow(_hwnd))
+        {
+            NativeMethods.SetFocus(_hwnd);
+            return;
+        }
+
+        // Windows refuses a foreground change from a process that does not own the foreground.
+        // Flashing the taskbar button is what is left, and it keeps the request visible.
+        var flash = new NativeMethods.FLASHWINFO
+        {
+            cbSize = (uint)Marshal.SizeOf<NativeMethods.FLASHWINFO>(),
+            hwnd = _hwnd,
+            dwFlags = NativeMethods.FlashwAll | NativeMethods.FlashwTimerNoForeground,
+            uCount = uint.MaxValue,
+        };
+
+        NativeMethods.FlashWindowEx(ref flash);
     }
 
     /// <inheritdoc />

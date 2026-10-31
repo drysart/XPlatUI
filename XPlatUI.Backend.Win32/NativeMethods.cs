@@ -179,6 +179,13 @@ internal static class NativeMethods
     /// <summary>Posted to the message-only window to end the loop on the thread that runs it.</summary>
     internal const uint WmAppQuit = WmApp + 2;
 
+    /// <summary><c>AllowSetForegroundWindow</c> argument meaning "any process may take the foreground".</summary>
+    internal const int AsfwAny = -1;
+
+    /// <summary>Flash every window of the process, continuously until it comes to the foreground.</summary>
+    internal const uint FlashwAll = 0x00000003;
+    internal const uint FlashwTimerNoForeground = 0x0000000C;
+
     [UnmanagedFunctionPointer(CallingConvention.Winapi)]
     internal delegate IntPtr WndProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
 
@@ -313,6 +320,16 @@ internal static class NativeMethods
     {
         public int cx;
         public int cy;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct FLASHWINFO
+    {
+        public uint cbSize;
+        public IntPtr hwnd;
+        public uint dwFlags;
+        public uint uCount;
+        public uint dwTimeout;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -463,6 +480,12 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     internal static extern bool SetForegroundWindow(IntPtr hwnd);
+
+    [DllImport("user32.dll")]
+    internal static extern bool AllowSetForegroundWindow(int processId);
+
+    [DllImport("user32.dll")]
+    internal static extern bool FlashWindowEx(ref FLASHWINFO info);
 
     [DllImport("user32.dll")]
     internal static extern IntPtr SetFocus(IntPtr hwnd);

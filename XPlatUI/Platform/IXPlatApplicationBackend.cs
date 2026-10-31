@@ -33,6 +33,39 @@ public interface IXPlatApplicationBackend
     /// </summary>
     int Run();
 
+    /// <summary>
+    /// Claims this process's single-instance slot when
+    /// <see cref="XPlatApplicationOptions.SingleInstance"/> is set, or hands this launch to the
+    /// process that already owns it.
+    /// </summary>
+    /// <returns>
+    /// True when this process is the primary instance and should run; false when the launch was
+    /// forwarded and this process should exit.
+    /// </returns>
+    /// <remarks>
+    /// Called once, from the <see cref="XPlatApplication"/> constructor, before any window exists and
+    /// before <see cref="Run"/>. The key to claim is <see cref="XPlatApplication.InstanceKey"/>; a
+    /// backend whose platform needs a different shape, such as GTK4's reverse-DNS application id,
+    /// converts it itself. A backend that forwards a launch raises <see cref="SecondInstance"/>.
+    /// </remarks>
+    bool TryClaimSingleInstance();
+
+    /// <summary>
+    /// Raised when the platform asks the application to come forward without a new launch, such as a
+    /// click on the macOS Dock tile. May be raised on any thread.
+    /// </summary>
+    /// <remarks>
+    /// A backend whose platform cannot deliver this never raises it: on Windows the shell restores
+    /// the window itself, and on GTK4 the request arrives as a forwarded command line instead.
+    /// </remarks>
+    event EventHandler? Activated;
+
+    /// <summary>
+    /// Raised when another launch of the application was forwarded to this process, with that
+    /// launch's command line. May be raised on any thread.
+    /// </summary>
+    event EventHandler<XPlatSecondInstanceEventArgs>? SecondInstance;
+
     /// <summary>Asks the loop to end with <paramref name="exitCode"/>. Safe to call from any thread.</summary>
     void Quit(int exitCode);
 

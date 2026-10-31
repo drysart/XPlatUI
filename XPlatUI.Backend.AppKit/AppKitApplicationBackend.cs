@@ -35,6 +35,7 @@ public sealed class AppKitApplicationBackend : IXPlatApplicationBackend
     private readonly object _windowsGate = new();
 
     private AppKitAppDelegate? _appDelegate;
+    private XPlatInstanceLock? _instanceLock;
     private NSTimer? _pollTimer;
     private AppKitWindowBackend? _activeWindow;
     private int _uiThreadId;
@@ -112,6 +113,33 @@ public sealed class AppKitApplicationBackend : IXPlatApplicationBackend
         NSApplication.SharedApplication.Run();
         return _exitCode;
     }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// AppKit already routes a Dock or Finder launch to the running application, so this only
+    /// covers a second launch of the executable itself, which starts a new process. A Finder launch
+    /// arrives through <see cref="AppKitAppDelegate.ApplicationShouldHandleReopen"/> instead.
+    /// </remarks>
+    public bool TryClaimSingleInstance()
+    {
+        _instanceLock = XPlatInstanceLock.Acquire(
+            Application?.InstanceKey ?? nameof(XPlatApplication),
+            Application?.Options.ResolveCommandLine() ?? []);
+
+        if (_instanceLock is null)
+        {
+            return false;
+        }
+
+        _instanceLock.SecondInstance += (_, e) => SecondInstance?.Invoke(this, e);
+        return true;
+    }
+
+    /// <inheritdoc />
+    public event EventHandler? Activated;
+
+    /// <inheritdoc />
+    public event EventHandler<XPlatSecondInstanceEventArgs>? SecondInstance;
 
     /// <inheritdoc />
     public void Quit(int exitCode)
@@ -289,6 +317,9 @@ public sealed class AppKitApplicationBackend : IXPlatApplicationBackend
 
         _shutDown = true;
 
+        _instanceLock?.Dispose();
+        _instanceLock = null;
+
         StopPollTimer();
 
         lock (_pendingGate)
@@ -456,6 +487,24 @@ public sealed class AppKitApplicationBackend : IXPlatApplicationBackend
         // Stop; AppKit's own termination is cancelled. A window that refuses leaves the
         // application running, which is the whole point of asking it first.
         RequestExit();
+    }
+
+    /// <summary>
+    /// Called when the user asks for the application again - a Dock icon click, a Finder launch or
+    /// <c>open -a</c> - rather than when one of its windows is activated.
+    /// </summary>
+    internal void OnReopen()
+    {
+        var native = NSApplication.SharedApplication;
+
+        // A Dock click on a hidden application unhides it first: ordering a window in while the
+        // application is hidden would leave it invisible.
+        if (native.Hidden)
+        {
+            native.Unhide(native);
+        }
+
+        Activated?.Invoke(this, EventArgs.Empty);
     }
 
     internal void EnterModal() => _modalDepth++;
@@ -626,6 +675,16 @@ public sealed class AppKitApplicationBackend : IXPlatApplicationBackend
         {
             _application.OnTerminationRequested();
             return NSApplicationTerminateReply.Cancel;
+        }
+
+        /// <summary>
+        /// A Dock click or a Finder launch on an application that is already running. Returning true
+        /// lets AppKit do its own default work; the model decides what "come forward" means.
+        /// </summary>
+        public override bool ApplicationShouldHandleReopen(NSApplication sender, bool hasVisibleWindows)
+        {
+            _application.OnReopen();
+            return true;
         }
     }
 }

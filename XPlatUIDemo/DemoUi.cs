@@ -885,7 +885,13 @@ public sealed class DemoUi
 
     private void UpdateCounter() => _counterLabel.Text = $"Button clicks: {_clicks}";
 
-    private void SetStatus(string message) => _statusLabel.Text = message;
+    /// <summary>Shows <paramref name="message"/> in the footer's status line.</summary>
+    /// <param name="message">The text to show.</param>
+    /// <remarks>
+    /// Public so a host can report something the sample UI did not cause itself, such as a second
+    /// launch being handed to the running window.
+    /// </remarks>
+    public void SetStatus(string message) => _statusLabel.Text = message;
 
     private static SKImage CreateGradientImage(int width, int height)
     {

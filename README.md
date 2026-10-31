@@ -413,6 +413,60 @@ the icon from the application's `.desktop` entry instead. A shipping macOS `.app
 caches the result, and the bitmaps it returns belong to the icon: don't dispose them, and keep the
 icon alive for as long as a window refers to it.
 
+### Single instance and re-activation
+
+Set `SingleInstance` and a second launch of the executable hands its command line to the running
+process instead of starting a second copy. The second process exits from `Run` with the exit code it
+was given, so a `Main` that simply returns `application.Run()` needs no extra handling:
+
+```csharp
+var options = new XPlatApplicationOptions
+{
+    ApplicationName = "My App",
+    SingleInstance = true,          // InstanceKey defaults to ApplicationName
+};
+
+using var application = new XPlatApplication(backend, options);
+
+if (application.IsPrimaryInstance)
+{
+    application.SecondInstance += (_, e) => window.Activate();
+}
+
+application.Run();
+```
+
+`SecondInstance` is always raised on the UI thread, with `e.Arguments` holding the second launch's
+command line (empty when it had none). Its default action is `Activate()`, which brings the main
+window forward - and raises `Activated`, so one handler covers both a re-launch and the user
+clicking the Dock icon or taskbar button:
+
+```csharp
+application.Activated += (_, e) => { /* window came forward */ };
+application.SecondInstance += (_, e) =>
+{
+    OpenDocument(e.Arguments[0]);
+    e.Handled = true;               // suppress the default Activate()
+};
+```
+
+Setting `Handled` on either event replaces that event's default action; setting it on
+`SecondInstance` also skips the `Activated` it would otherwise raise. `InstanceKey` scopes the
+claim, so two different applications - or two profiles of one application - can run side by side.
+
+The three platforms get there differently, and only the first two are complete:
+
+| Platform | Mechanism | Re-launch handling |
+| --- | --- | --- |
+| Windows | Named mutex plus a named-pipe listener in the first process; the second connects, writes its command line and exits | `Activate()` restores a minimized window and calls `SetForegroundWindow`, falling back to a taskbar flash when Windows refuses the foreground |
+| macOS | Same lock and pipe. Finder and `open -a` are already single-instance, so this covers a direct launch of the binary | `applicationShouldHandleReopen`; `Activate()` uses `activateIgnoringOtherApps` |
+| Linux (GTK4) | `Gio.Application` uniqueness over D-Bus, with a reverse-DNS id derived from `InstanceKey` | A forwarded launch arrives as GTK's `command-line` signal and is turned into `SecondInstance`; `Activate()` calls `gtk_window_present` |
+
+GTK is the reason the claim is a backend member rather than something the library does itself: on
+Wayland only the toolkit's own D-Bus registration can raise another process's window, so the
+backend has to own the mechanism. `TryClaimSingleInstance` runs after `Initialize` and returns false
+when this process is the second one; the headless backend always returns true.
+
 ## Writing a backend
 
 A backend is two interfaces plus one registration hook. `IXPlatApplicationBackend` owns the platform
@@ -421,7 +475,9 @@ loop and the platform-wide services; `IXPlatWindowBackend` owns one native windo
 `XPlatUI.Backend.Gtk4` and `XPlatUI.Backend.Headless` are the four worked examples.
 
 1. `Initialize` gets the `XPlatApplication`; `Run` enters the platform loop and returns its exit
-   code; `Quit` leaves it; `Invoke` marshals a callback onto the UI thread.
+   code; `Quit` leaves it; `Invoke` marshals a callback onto the UI thread;
+   `TryClaimSingleInstance` returns false when another process already owns the instance key, and
+   raises `SecondInstance` when a later launch is handed over.
 2. `CreateWindow` returns an `IXPlatWindowBackend`. It creates the native window and an `SKSurface`
    (or a bitmap-backed surface) of its client size, and it creates and owns the `XPlatUiHost`.
 3. On resize: `Host.SetClientSize(width / scale, height / scale)`. On paint: `canvas.Scale(scale)`

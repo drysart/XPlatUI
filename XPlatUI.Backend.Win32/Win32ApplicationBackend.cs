@@ -34,6 +34,7 @@ public sealed class Win32ApplicationBackend : IXPlatApplicationBackend
     private NativeMethods.WndProc? _messageProc;
     private IntPtr _moduleHandle;
     private IntPtr _hwndMessage;
+    private XPlatInstanceLock? _instanceLock;
     private bool _classRegistered;
     private bool _comInitialized;
     private int _uiThreadId;
@@ -100,6 +101,44 @@ public sealed class Win32ApplicationBackend : IXPlatApplicationBackend
 
         return Pump();
     }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Windows has no single-instance mechanism of its own, so this is
+    /// <see cref="XPlatInstanceLock"/>. The foreground permission is handed out first: the process
+    /// the user just started is the one allowed to say who may take the foreground, so it has to do
+    /// so before it finds out whether it is the second instance.
+    /// </remarks>
+    public bool TryClaimSingleInstance()
+    {
+        NativeMethods.AllowSetForegroundWindow(NativeMethods.AsfwAny);
+
+        _instanceLock = XPlatInstanceLock.Acquire(
+            Application?.InstanceKey ?? nameof(XPlatApplication),
+            Application?.Options.ResolveCommandLine() ?? []);
+
+        if (_instanceLock is null)
+        {
+            return false;
+        }
+
+        _instanceLock.SecondInstance += (_, e) => SecondInstance?.Invoke(this, e);
+        return true;
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Never raised: Windows activates a window from the shell itself, so the backend has no
+    /// re-activation to report.
+    /// </remarks>
+    public event EventHandler? Activated
+    {
+        add { }
+        remove { }
+    }
+
+    /// <inheritdoc />
+    public event EventHandler<XPlatSecondInstanceEventArgs>? SecondInstance;
 
     /// <inheritdoc />
     public void Quit(int exitCode)
@@ -220,6 +259,9 @@ public sealed class Win32ApplicationBackend : IXPlatApplicationBackend
     /// <inheritdoc />
     public void Shutdown()
     {
+        _instanceLock?.Dispose();
+        _instanceLock = null;
+
         lock (_gate)
         {
             _pending.Clear();

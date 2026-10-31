@@ -153,9 +153,12 @@ public sealed class XPlatApplication
 	public event EventHandler<XPlatExitEventArgs>? Exiting;                        // see step 2 notes
 	public event EventHandler<XPlatWindowEventArgs>? WindowOpened;
 	public event EventHandler<XPlatWindowEventArgs>? WindowClosed;
-	public event EventHandler? Activated;                                         // dock / taskbar click
+	public event EventHandler<XPlatActivatedEventArgs>? Activated;                // dock / taskbar click
+	public event EventHandler<XPlatSecondInstanceEventArgs>? SecondInstance;      // another launch was handed over
 	public event EventHandler? ThemeChanged;                                      // light/dark flipped
 	public event EventHandler<XPlatUnhandledExceptionEventArgs>? UnhandledException;  // fatal unless Handled
+
+	public bool IsPrimaryInstance { get; }    // false when another process owns the instance key
 
 	public int Run();
 	public void Exit();                       // == Exit(0)
@@ -212,6 +215,9 @@ public sealed class XPlatApplicationOptions
 	public bool AttachConsole { get; set; }                      // Windows: diagnostics to parent console
 	public XPlatMenuBar? MenuBar { get; set; }                 // application-wide default; see §10
 	public XPlatIcon? Icon { get; set; }                       // application-wide default; see §4.3
+	public bool SingleInstance { get; set; }                   // second launch hands over instead of starting
+	public string? InstanceKey { get; set; }                   // defaults to ApplicationName; scopes the claim
+	public IReadOnlyList<string>? CommandLine { get; set; }    // null = the real one, minus argv[0]
 	public Action<IServiceCollection>? ConfigureServices { get; set; }   // see §5.3
 }
 ```
@@ -385,6 +391,15 @@ Rules:
 - `XPlatApplication.Activated` is raised when the OS asks the app to come forward (Dock click,
   taskbar click, second-instance launch, `open -a`). The default action re-shows and activates
   `MainWindow`; handling the event suppresses the default.
+- `XPlatApplicationOptions.SingleInstance` makes a second launch of the executable hand its command
+  line to the running process instead of starting a second copy. `InstanceKey` scopes the claim, and
+  the second process leaves `Run()` immediately, so a plain `return application.Run();` is enough.
+  `XPlatApplication.SecondInstance` carries those arguments and is always raised on the UI thread;
+  its default action is `Activated`. Windows and macOS need a mutex and a named pipe for this,
+  because neither OS makes a directly launched binary single-instance; GTK4 gets it from
+  `Gio.Application`'s D-Bus registration, which is also the only way to raise another process's
+  window on Wayland. That is why the claim is an `IXPlatApplicationBackend` member
+  (`TryClaimSingleInstance`) rather than library code.
 
 #### Multi-window rules
 
@@ -823,6 +838,13 @@ public interface IXPlatApplicationBackend
 
 	IXPlatWindowBackend CreateWindow(XPlatWindow window);
 
+	// Single instance. Returns false when another process owns the instance key, in which case the
+	// backend has already forwarded Options.ResolveCommandLine() to it. Backends that get uniqueness
+	// from the toolkit (GTK4) forward through their own event instead of a pipe.
+	bool TryClaimSingleInstance();
+	event EventHandler<XPlatSecondInstanceEventArgs>? SecondInstance;
+	event EventHandler? Activated;      // a re-activation the backend observes itself; may never fire
+
 	// Platform services, registered once before the app configures its own. See §5.6.
 	void RegisterServices(IServiceCollection services);
 
@@ -1013,7 +1035,7 @@ Tier 1 **is** the v1 scope (D12, D13).
 | `XPlatTimer` (public) | Animations, polling, debounce — without it every app rolls its own `SetTimer`. |
 | Window icons | Title bar + taskbar; three different APIs. Done: one `XPlatIcon` carrying pixels and a theme name (§4.3). |
 | `Activated`/`Deactivated`, `TopMost`, `Owner` | Taskbar grouping and modality on Windows; window ordering on macOS. |
-| App-scoped single instance / re-activate | Common enough that every app writes it wrong. |
+| App-scoped single instance / re-activate | Common enough that every app writes it wrong. Done: `SingleInstance`/`InstanceKey` plus app-level `Activated` and `SecondInstance` (§4.6). |
 
 ### Tier 3 — native feel
 
