@@ -1085,8 +1085,15 @@ Two more lessons, this time for anyone automating a native dialog:
   as "the dialog was cancelled" if you then close it. `WM_COMMAND` with `IDOK` is what actually accepts.
 
 The sample grew a **Dialogs** strip in 3b, so the design client size moved from 1280x760 to **1280x820**
-(minimum 820x716) to keep the card table the same height. That makes the step 2 baselines obsolete:
-the Windows render is now **93,727 bytes dark / 92,945 light**.
+(minimum 820x716) to keep the card table the same height. That makes the step 2 baselines obsolete.
+Re-captured at 1280x820 (PNG bytes are still not comparable across platforms, only against the same
+platform's own previous run):
+
+| Platform | Dark | Light |
+|---|---|---|
+| Windows | 93,727 | 92,945 |
+| macOS | 163,795 | 164,747 |
+| Linux | 122,364 | 123,501 |
 
 ---
 
