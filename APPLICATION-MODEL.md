@@ -94,6 +94,8 @@ Two source files. No `#if` in application logic. `--render` passes `headless: tr
 control tree offscreen; `--dark`, `--light`, DPI, appearance tracking, clipboard, context menus and the
 caret timer all come from the model.
 
+The `#if` symbols above are measured, not assumed: `WINDOWS` is defined for `net10.0-windows`, `MACOS` for `net10.0-macos`, and neither for a portable `net10.0` build on either host (§6.1).
+
 ---
 
 ## 3. Design decisions
@@ -697,9 +699,24 @@ additions:
 </Project>
 ```
 
-`net10.0` on Linux has **no** preprocessor symbol of its own, so `Backend.cs` selects GTK with
-`#if !WINDOWS && !MACOS`. Verify that `MACOS` (not `__MACOS__`) is defined for `net10.0-macos` on
-the Mac before relying on it; the fallback is an explicit `<DefineConstants>` per TFM.
+Neither platform symbol is guesswork: both were measured by printing `$(DefineConstants)` from a build
+on each machine, and by compiling `#if` probes.
+
+| TFM (host) | Platform symbols defined |
+|---|---|
+| `net10.0-windows` (Windows) | `WINDOWS`, `WINDOWS7_0`, `WINDOWS7_0_OR_GREATER` |
+| `net10.0-macos` (macOS) | `MACOS`, `__MACOS__`, `__UNIFIED__`, `MACOS26_0`, ... |
+| `net10.0` portable (either host) | none |
+
+`MACOS` is therefore correct as written and no `<DefineConstants>` fallback is needed.
+`__MACOS__` is defined too — it is the older Xamarin name — but `MACOS` is preferred because it
+matches `WINDOWS`. Linux has no OS-specific TFM at all (there is no `net10.0-linux`), so the
+`#else` branch in `Backend.cs` is the only way to express it, not a shortcut.
+
+The same measurement is what makes the `IsOSPlatform` block load-bearing rather than tidy: a
+portable `net10.0` build **on a Mac** defines neither symbol, so `#if MACOS` there would silently
+fall through to the GTK4 branch and produce a Linux binary on a Mac. Selecting one TFM per OS is what
+keeps `Backend.cs` honest.
 
 ### 6.2 What each OS builds
 
