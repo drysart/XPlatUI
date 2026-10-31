@@ -11,7 +11,8 @@ harness, in three different styles. This document designs the layer that absorbs
 
 Status of this document: **design settled, migration complete.** Decisions are numbered **D1**–**D13**;
 every one is settled and recorded in §12. All six migration steps in §11 have landed on
-`feature/application-model`, each with its own notes section. §1 describes the state *before* the
+`feature/application-model`, each with its own notes section, followed by the Tier 1 item that had no
+implementation after them (`UnhandledException`, §4.1.1). §1 describes the state *before* the
 migration and is kept as the record of what the model had to absorb.
 
 ---
@@ -149,12 +150,12 @@ public sealed class XPlatApplication
 	public IXPlatDialogService Dialogs { get; }        // never null: the backend must register one (§9)
 
 	public event EventHandler? Startup;
-	public event EventHandler<XPlatExitEventArgs>? Exit;                        // cancelable
+	public event EventHandler<XPlatExitEventArgs>? Exiting;                        // see step 2 notes
 	public event EventHandler<XPlatWindowEventArgs>? WindowOpened;
 	public event EventHandler<XPlatWindowEventArgs>? WindowClosed;
 	public event EventHandler? Activated;                                         // dock / taskbar click
 	public event EventHandler? ThemeChanged;                                      // light/dark flipped
-	public event EventHandler<XPlatUnhandledExceptionEventArgs>? UnhandledException;  // cancelable
+	public event EventHandler<XPlatUnhandledExceptionEventArgs>? UnhandledException;  // fatal unless Handled
 
 	public int Run();
 	public void Exit();                       // == Exit(0)
@@ -164,11 +165,36 @@ public sealed class XPlatApplication
 	public bool CheckAccess();                // true when on the UI thread
 	public void Invoke(Action action);        // synchronous marshal to the UI thread
 	public void BeginInvoke(Action action);   // asynchronous marshal to the UI thread
+
+	public static void HandleNativeBoundary(Exception exception);  // backends report here (§4.1.1)
 }
 ```
 
 `Run()` returns the exit code so `Main` can `return app.Run();`. Calling it twice throws; calling
 `Exit()` before `Run()` makes the loop return immediately (the standard "cancel startup" escape).
+
+#### 4.1.1 Exceptions
+
+Every exception that escapes UI-thread code reaches `UnhandledException`; anything a handler does
+not claim is fatal. Concretely:
+
+- `XPlatUnhandledExceptionEventArgs.Handled` defaults to **false**, so surviving an exception is an
+explicit choice. This differs from WinForms, whose `Application.ThreadException` is implicitly
+swallowed: a UI that continues after a fault is usually broken in ways the user cannot see.
+- Dispatch points that are already covered: `Startup`, showing a window before the loop,
+`WindowOpened`, `WindowClosed`, `ThemeChanged`, the tick, `Exiting`, and any action queued with
+`BeginInvoke`. Synchronous `Invoke` is deliberately not covered, because its exception already
+reaches the caller that is waiting for it.
+- Anything the model does not dispatch itself - a window procedure, an AppKit delegate override, a
+GObject signal handler, a paint callback - is a *native boundary*: an exception unwinding into it
+is a fail-fast with no hook at all. Backends hand those to
+`XPlatApplication.HandleNativeBoundary`, which is static because it must work when no application
+exists (a standalone host, as `--render` uses) and in that case rethrows.
+- A fault shuts the application down normally - windows close, services dispose, `Exiting` runs -
+and then `Run()` rethrows the original exception with its stack intact. The exit code becomes 1
+whenever a fault was recorded, even if `Exiting` left it at 0.
+- `OutOfMemoryException`, `StackOverflowException` and `AccessViolationException` are never offered
+to a handler: the process state is already unusable, so reporting them would only hide a crash.
 
 ### 4.2 `XPlatApplicationOptions`
 
@@ -922,7 +948,7 @@ Tier 1 **is** the v1 scope (D12, D13).
 | `Screens` + working-area clamping | Default window size/placement is currently platform-specific. |
 | `Exit`/`ExitCode`, `ShutdownMode`, cancellable `Exit` | Needed to make `Run()` return sanely. |
 | `Invoke`/`BeginInvoke`/`CheckAccess` | The only safe cross-thread entry point. |
-| `UnhandledException` | An exception on the UI thread otherwise kills the loop with no hook. |
+| `UnhandledException` | An exception on the UI thread otherwise kills the loop with no hook. Landed after step 6; see §4.1.1. |
 | Headless backend + `--render` | CI depends on it today; it is the only display-free test path. |
 | Message box + file/folder dialogs | Every app needs "open", "save", "are you sure"; deferring it means apps reach for P/Invoke. v1 (D12). |
 | Menu bar (`XPlatMenuBar`) | macOS needs one to look native *and* to get Cmd+Q, Cmd+W and the Edit-menu clipboard shortcuts; Windows and Linux want it per window. One model, two presentations. v1 (D13). |
@@ -1299,6 +1325,45 @@ One packaging fix came out of the move: `Properties/PublishProfiles/FolderProfil
 by `.gitignore`'s `*.pubxml` rule, so the profile the README has always pointed at was never actually
 in the repository and a fresh clone published without AOT. It is now tracked (`git add -f`) because it
 is a project-level build recipe, not per-user publish settings.
+
+### `UnhandledException` notes
+
+The one Tier 1 row that had no implementation after step 6. The rule it implements is in §4.1.1; the
+choices worth recording are these:
+
+- **`Handled` defaults to false.** WinForms' `Application.ThreadException` swallows by default, which
+  is why so many WinForms apps "recover" from a fault into a corrupt UI. Opting in to survival makes
+  the unsafe case the one that needs code.
+- **`XPlatApplication.HandleNativeBoundary` is static, and the instance method behind it is private.**
+  A backend has to be able to report a fault when no application exists - `--render` drives a bare
+  `XPlatUiHost` - and in that case it rethrows to its caller. Making the entry point static means the
+  backends need no null check and no `InternalsVisibleTo`.
+- **`XPlatUiHost` and `XPlatWindow` are guarded in the core, not per backend.** `ProcessMouseMove`,
+  `ProcessMouseDown`, `ProcessMouseUp`, `ProcessMouseLeave`, `ProcessContextMenu`, `ProcessKeyDown`,
+  `ProcessKeyUp`, `ProcessTextInput`, `ProcessTick`, `Paint` and the `XPlatWindow.OnBackend*` handlers
+  are the funnels every platform's native callback goes through, so one guard per funnel covers
+  Windows, macOS and Linux at once. Only the Win32 `WindowProc` needed a backend-local guard, because
+  it sees messages that never reach the host.
+- **A throwing handler cannot displace the original fault.** Handlers are invoked one at a time from
+  `GetInvocationList()`, so one that throws neither stops the ones after it nor becomes the exception
+  `Run()` rethrows; it is only used if nothing else was recorded.
+- **A fault is never reported as success.** `Exiting` can still set the exit code, but if a fault was
+  recorded and `Exiting` left it at 0, it becomes 1.
+
+Verified with a throwaway headless harness (19 assertions, since deleted): a fault in `Startup` rethrows
+with exit code 1 and still runs `Exiting`; the same fault with `Handled = true` returns 0; a fault in
+`BeginInvoke` work and in `Exiting` both rethrow; a synchronous `Invoke` fault reaches its waiting
+caller and is *not* reported; a throwing handler leaves the original exception intact and does not stop
+the next handler; a standalone `XPlatUiHost.Paint` still throws to its caller; and a control that throws
+in `OnMouseDown` is reported through the application.
+
+The change is pixel-neutral on all three platforms. Windows stayed at 93,727 / 92,945 bytes; Linux at
+122,364 / 123,501 and macOS at 163,795 / 164,747 - all rendered at 1280x820, which is the size those
+baselines have always been measured at (see the step 3 table). Because the Linux figure is easy to
+confuse with the GTK app's own 1280x760 design size - which renders 103,515 / 104,451 - the Linux
+check was made twice: once on the modified tree and once on a `git archive` export of `HEAD`, and the
+two were md5-identical. The Linux build reported 1 warning and 0 errors, the macOS build 0 warnings and
+0 errors.
 
 ---
 

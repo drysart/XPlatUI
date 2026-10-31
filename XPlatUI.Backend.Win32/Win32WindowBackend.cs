@@ -590,6 +590,21 @@ internal sealed class Win32WindowBackend : IXPlatWindowBackend
 
     private IntPtr WindowProc(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam)
     {
+        try
+        {
+            return HandleMessage(hwnd, message, wParam, lParam);
+        }
+        catch (Exception ex)
+        {
+            // An exception must never unwind into DispatchMessage: the native frame below this
+            // delegate turns an escaping exception into a fail-fast with no hook at all.
+            XPlatApplication.HandleNativeBoundary(ex);
+            return IntPtr.Zero;
+        }
+    }
+
+    private IntPtr HandleMessage(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam)
+    {
         // Messages raised while CreateWindowExW is still running arrive before _hwnd is assigned.
         if (_hwnd == IntPtr.Zero)
         {

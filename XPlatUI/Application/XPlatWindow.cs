@@ -466,25 +466,44 @@ public sealed partial class XPlatWindow : IDisposable
         Shown?.Invoke(this, EventArgs.Empty);
     }
 
-    private void OnBackendShown(object? sender, EventArgs e) => RaiseShown();
+    private void OnBackendShown(object? sender, EventArgs e) => Guard(RaiseShown);
 
-    private void OnBackendCloseRequested(object? sender, EventArgs e) => RequestClose();
+    private void OnBackendCloseRequested(object? sender, EventArgs e) => Guard(() => RequestClose());
 
-    private void OnBackendClosed(object? sender, EventArgs e) => Dispose();
+    private void OnBackendClosed(object? sender, EventArgs e) => Guard(Dispose);
 
-    private void OnBackendActivated(object? sender, EventArgs e) => Activated?.Invoke(this, EventArgs.Empty);
+    private void OnBackendActivated(object? sender, EventArgs e) =>
+        Guard(() => Activated?.Invoke(this, EventArgs.Empty));
 
-    private void OnBackendDeactivated(object? sender, EventArgs e) => Deactivated?.Invoke(this, EventArgs.Empty);
+    private void OnBackendDeactivated(object? sender, EventArgs e) =>
+        Guard(() => Deactivated?.Invoke(this, EventArgs.Empty));
 
     private void OnBackendClientSizeChanged(object? sender, EventArgs e) =>
-        ClientSizeChanged?.Invoke(this, EventArgs.Empty);
+        Guard(() => ClientSizeChanged?.Invoke(this, EventArgs.Empty));
 
-    private void OnBackendScaleChanged(object? sender, EventArgs e)
+    private void OnBackendScaleChanged(object? sender, EventArgs e) => Guard(() =>
     {
         Host.PerformLayout();
         Host.Invalidate();
         ScaleChanged?.Invoke(this, EventArgs.Empty);
-    }
+    });
 
-    private void OnBackendStateChanged(object? sender, EventArgs e) => StateChanged?.Invoke(this, EventArgs.Empty);
+    private void OnBackendStateChanged(object? sender, EventArgs e) =>
+        Guard(() => StateChanged?.Invoke(this, EventArgs.Empty));
+
+    /// <summary>
+    /// Runs work a backend raises from a platform callback, so a failure reaches
+    /// <see cref="XPlatApplication.UnhandledException"/> rather than unwinding into native code.
+    /// </summary>
+    private static void Guard(Action action)
+    {
+        try
+        {
+            action();
+        }
+        catch (Exception ex)
+        {
+            XPlatApplication.HandleNativeBoundary(ex);
+        }
+    }
 }
