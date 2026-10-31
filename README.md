@@ -562,16 +562,24 @@ they work over ssh too:
 XPlatUIDemoApp.app/Contents/MacOS/XPlatUIDemoApp --render out.png 1280 820 --dark
 ```
 
-`AppKitSkiaView` is a plain `NSView`, flipped so y grows downwards like every other backend. Skia paints
-into an `SKBitmap` of premultiplied BGRA pixels, one `CGDataProvider` wraps those pixels where they
-are, and `DrawRect` builds a `CGImage` over that provider, so a frame costs no copy and allocates
-nothing but the image itself. The provider is built with the `Action<IntPtr>` overload on purpose:
-the `(IntPtr, int, bool)` overload reads its `bool` as *owns the buffer* and, when it is false,
-copies the whole block before wrapping it, which on a Retina window is a 16 MB `memcpy` per frame.
-The `CGImage` is rebuilt for every frame, because CoreGraphics treats an image as immutable and keeps
-whatever it decoded out of the provider's memory: one cached image would pin the window to the
-contents of the very first frame, which is drawn before the control tree exists. There is no
-SkiaSharp view for AppKit in SkiaSharp 4.x, which is why the view draws itself. The buffer is made a
+`AppKitSkiaView` is a plain `NSView`, flipped so y grows downwards like every other backend, and it is
+layer-backed: the view returns true from `WantsUpdateLayer` and does its work in `UpdateLayer`, so a
+frame never goes through a CoreGraphics context of its own. Skia paints into an `SKBitmap` of
+premultiplied BGRA pixels, one `CGDataProvider` wraps those pixels where they are, and each frame
+builds a `CGImage` over that provider and hands it to the view's `CALayer` as its `Contents`, with
+`ContentsGravity` set to `Resize` and `ContentsScale` set to the backing scale factor. A frame
+costs no copy and allocates nothing but the image itself. The provider is built with the
+`Action<IntPtr>` overload on purpose: the `(IntPtr, int, bool)` overload reads its `bool` as *owns
+the buffer* and, when it is false, copies the whole block before wrapping it, which on a Retina
+window is a 16 MB `memcpy` per frame. The `CGImage` is rebuilt for every frame, because
+CoreGraphics treats an image as immutable and keeps whatever it decoded out of the provider's
+memory: one cached image would pin the window to the contents of the very first frame, which is
+drawn before the control tree exists. Because the view is flipped, its layer reports
+`GeometryFlipped` and `ContentsAreFlipped`; Core Animation compensates when it composites the layer,
+so the image shows the right way up. Rendering that layer on its own with `RenderInContext`
+*does* mirror it, so to capture what the screen shows, render the window's root layer - it is the
+unflipped one - and the result matches the `--render` image. There is no SkiaSharp view for AppKit
+in SkiaSharp 4.x, which is why the view draws itself. The buffer is made a
 quarter again as large as the window needs, so a drag across the screen reallocates it once instead
 of once per frame - each of those was a multi-megabyte native allocation that the garbage collector
 never sees - and it is only given back once the window has held a size that needs under half its
@@ -598,11 +606,24 @@ surfaces, and it falls back within half a minute of the window going quiet, so a
 the compositor pipelining updates rather than a leak.
 
 A live resize is the worst case, because it is the only time frames arrive as fast as the machine
-can produce them. Driving the window through a continuous 900-to-1500 point drag at ~50 fps, the
-peak footprint is 469 MB and the settled figure 295 MB. Before the buffer was given its 1.25x
-headroom and its settle-gated shrink, the same drag peaked at 1.0 GB: the old code reallocated on
-nearly every frame of the drag, and the freed multi-megabyte blocks piled up faster than the
-allocator could return them.
+can produce them. Driving the window through 200 resizes between 720x520 and 1560x980 points on a
+2x screen, the peak footprint is 212 MB. Getting there took two fixes. The first was the buffer's
+1.25x headroom and its settle-gated shrink: before them the same drag peaked at 1.0 GB, because the
+old code reallocated on nearly every frame and the freed multi-megabyte blocks piled up faster than
+the allocator could return them.
+
+The second was the presentation. Blitting the frame's `CGImage` into the view's own CoreGraphics
+context - `CGContext.DrawImage` from `DrawRect`, which is the obvious thing to write - made
+CoreGraphics hold a full-window backing store per frame in flight, and at near-full-screen on a 2x
+screen that is tens of megabytes a frame: the same drag peaked at 1.8 GB. Four runs of the same
+drag isolated it. Returning before the `CGImage` existed peaked at 228 MB; building the image but
+not drawing it, 224 MB; drawing it, 1798 MB; and drawing it without the flipped CTM, 1858 MB. So
+the image is free, the flip is irrelevant, and the blit is the entire cost. Handing the same image
+to the layer instead peaked at 150 MB in that harness, against 123 MB for a window that paints
+nothing but a solid colour. Two rules follow from it: never `DrawImage` a window-sized image into a
+view's context during a live resize, and when the layer stops showing the frame it was given, check
+that `ReleaseBuffer` cleared `Contents` before freeing the pixels - a layer holding an image over
+freed memory draws whatever the allocator left there.
 
 macOS reports accelerators through `Command` rather than `Control`, so `AppKitMenuBar` gives Cut, Copy,
 Paste and Select All real menu items whose `Cmd` key equivalents feed the same editing commands into
@@ -615,7 +636,9 @@ Set `XPLATUI_DEBUG=1` to trace frames and buffer reallocation to stderr. It also
 line every five seconds - frame rate, frames drawn, buffers allocated, managed heap, total managed
 allocation and resident memory - which is how a runaway repaint (a high frame rate with idle input)
 or a per-frame retention (resident memory climbing while the frame rate stays low) shows itself.
-Resident memory is the figure to read: `Process.PrivateMemorySize64` is always zero on macOS. If a
+The line prints resident memory, which is fine for spotting a trend but reads about twice the real
+figure; take the absolute number from `vmmap -summary` (`Process.PrivateMemorySize64` is always zero
+on macOS). If a
 frame cannot be produced at all, the view paints the reason over the whole window instead of
 leaving it blank, so a broken setup reports itself on screen rather than only on a console.
 

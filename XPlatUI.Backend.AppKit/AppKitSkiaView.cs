@@ -7,13 +7,20 @@ using SkiaSharp;
 namespace XPlatUI.Backend.AppKit;
 
 /// <summary>
-/// The view an <see cref="AppKitWindowBackend"/> draws into: a plain AppKit <see cref="NSView"/>
-/// that rasterizes the control tree of the <see cref="XPlatUiHost"/> it is given with SkiaSharp
-/// into a BGRA bitmap and blits it into the view in <see cref="DrawRect"/>. Input arrives as AppKit
-/// events and is forwarded to the host in the same form the Win32 and GTK backends use.
+/// The view an <see cref="AppKitWindowBackend"/> draws into: an AppKit <see cref="NSView"/> that
+/// rasterizes the control tree of the <see cref="XPlatUiHost"/> it is given with SkiaSharp into a
+/// BGRA bitmap and shows it as the contents of its layer. Input arrives as AppKit events and is
+/// forwarded to the host in the same form the Win32 and GTK backends use.
 /// <para>
-/// The bitmap route is deliberate: there is no SkiaSharp view for AppKit in SkiaSharp 4.x, and a
-/// view that draws itself is both simpler and more predictable than a CALayer backed one.
+/// The bitmap route is deliberate: there is no SkiaSharp view for AppKit in SkiaSharp 4.x. What
+/// the bitmap is presented *through* is not a matter of taste, though. Drawing it into the
+/// window's own CoreGraphics context with <c>DrawImage</c> makes CoreGraphics keep a full-size
+/// backing store per frame while the window is being resized, and a drag to near full screen on a
+/// Retina display then peaked at 1.8 GB of physical footprint - the same drag through a layer's
+/// <c>contents</c> stays near 150 MB, and a plain view that fills itself with a solid colour stays
+/// at 123 MB. So the view is layer backed and overrides <see cref="WantsUpdateLayer"/> rather than
+/// <see cref="DrawRect"/>: AppKit then asks for a layer update and never allocates a backing store
+/// of its own.
 /// </para>
 /// </summary>
 internal sealed class AppKitSkiaView : NSView
@@ -43,6 +50,8 @@ internal sealed class AppKitSkiaView : NSView
     private SKSurface? _skia;
     private CGDataProvider? _provider;
     private CGColorSpace? _colorSpace;
+    private CGImage? _presented;
+    private string? _diagnostic;
     private string? _bufferError;
     private int _width;
     private int _height;
@@ -69,6 +78,10 @@ internal sealed class AppKitSkiaView : NSView
         _host.CursorChanged += OnHostCursorChanged;
         XPlatTheme.Changed += OnThemeChanged;
         _reportedAt = Environment.TickCount64;
+
+        // Layer backed from the start, so AppKit never creates a backing store for this view and
+        // the first frame already goes through the layer instead of the window's context.
+        WantsLayer = true;
     }
 
     /// <summary>The platform independent UI host this view paints.</summary>
@@ -77,8 +90,14 @@ internal sealed class AppKitSkiaView : NSView
     /// <summary>Top-left origin, y down: the coordinate space the UI library draws in.</summary>
     public override bool IsFlipped => true;
 
+    /// <summary>
+    /// The view paints its layer's contents itself, so AppKit must call <see cref="UpdateLayer"/>
+    /// instead of <see cref="DrawRect"/>; drawing in <c>DrawRect</c> would give the view a backing
+    /// store of its own, which is the allocation this exists to avoid.
+    /// </summary>
+    public override bool WantsUpdateLayer => true;
 
-    public override void DrawRect(CGRect dirtyRect)
+    public override void UpdateLayer()
     {
         _frames++;
 
@@ -128,17 +147,10 @@ internal sealed class AppKitSkiaView : NSView
 
     private void DrawFrame()
     {
-        var context = NSGraphicsContext.CurrentContext?.CGContext;
         var bounds = Bounds;
 
-        // Neither of these should happen, and both of them look exactly like "the window is empty"
-        // from the outside, so they say so when tracing is on.
-        if (context is null)
-        {
-            Trace("draw skipped: no CoreGraphics context");
-            return;
-        }
-
+        // This should not happen, and it looks exactly like "the window is empty" from the
+        // outside, so it says so when tracing is on.
         if (bounds.Width <= 0 || bounds.Height <= 0)
         {
             Trace($"draw skipped: empty bounds {bounds.Width}x{bounds.Height}");
@@ -158,7 +170,7 @@ internal sealed class AppKitSkiaView : NSView
 
         if (_skia is null || _bitmap is null || _provider is null || _colorSpace is null)
         {
-            DrawDiagnostic(context, bounds, _bufferError ?? "the SkiaSharp drawing buffer could not be created");
+            DrawDiagnostic(_bufferError ?? "the SkiaSharp drawing buffer could not be created");
             return;
         }
 
@@ -184,16 +196,32 @@ internal sealed class AppKitSkiaView : NSView
         }
         catch (Exception ex)
         {
-            DrawDiagnostic(context, bounds, $"painting the UI failed: {ex.GetType().Name}: {ex.Message}");
+            DrawDiagnostic($"painting the UI failed: {ex.GetType().Name}: {ex.Message}");
             return;
         }
 
-        // CoreGraphics treats a CGImage as immutable and is free to keep the decode it made of the
-        // provider's memory, so one cached image would pin the window to whatever the buffer held
-        // when it was first drawn - and the first frame is drawn before the control tree exists,
-        // which is an empty window. A fresh image over the pixels that were just painted is what
-        // makes each frame show the current UI; the bitmap, its Skia surface and the data provider
-        // over its pixels stay cached, so a frame allocates nothing but the image itself.
+        Present();
+
+        // A window that painted is a window whose last complaint is out of date.
+        _diagnostic = null;
+    }
+
+    /// <summary>
+    /// Hands the pixels that were just painted to the layer. CoreGraphics treats a
+    /// <see cref="CGImage"/> as immutable and is free to keep the decode it made of the provider's
+    /// memory, so one cached image would pin the window to whatever the buffer held when it was
+    /// first drawn - and the first frame is drawn before the control tree exists, which is an
+    /// empty window. A fresh image over the pixels that were just painted is what makes each frame
+    /// show the current UI; the bitmap, its Skia surface and the data provider over its pixels
+    /// stay cached, so a frame allocates nothing but the image itself.
+    /// </summary>
+    private void Present()
+    {
+        if (_bitmap is null || _provider is null || _colorSpace is null || Layer is not { } layer)
+        {
+            return;
+        }
+
         CGImage? image = null;
         try
         {
@@ -212,25 +240,29 @@ internal sealed class AppKitSkiaView : NSView
 
             if (((INativeObject)image).Handle == IntPtr.Zero)
             {
-                DrawDiagnostic(context, bounds, "CoreGraphics could not build an image from the SkiaSharp bitmap");
+                image.Dispose();
+                image = null;
+                Trace("present failed: CoreGraphics built no image from the SkiaSharp bitmap");
                 return;
             }
 
-            // The view is flipped, so the context is y-down; undo that for the image blit or the
-            // whole UI comes out upside down.
-            context.SaveState();
-            context.TranslateCTM(0, bounds.Height);
-            context.ScaleCTM(1, -1);
-            context.DrawImage(new CGRect(0, 0, bounds.Width, bounds.Height), image);
-            context.RestoreState();
+            // Resize rather than the default centring, because the image is exactly the size of the
+            // window and only the headroom around it has to be cropped off; the scale is what
+            // keeps a Retina window from being shown at half size.
+            layer.ContentsGravity = CoreAnimation.CALayer.GravityResize;
+            layer.ContentsScale = _scale;
+            layer.Contents = image;
+
+            // The layer retained the image, so the view's own reference goes; dropping it here
+            // rather than at the next frame keeps exactly one frame's image alive.
+            _presented?.Dispose();
+            _presented = image;
+            image = null;
         }
         catch (Exception ex)
         {
-            DrawDiagnostic(context, bounds, $"presenting the UI failed: {ex.GetType().Name}: {ex.Message}");
-        }
-        finally
-        {
             image?.Dispose();
+            Trace($"present failed: {ex.GetType().Name}: {ex.Message}");
         }
     }
 
@@ -563,6 +595,16 @@ internal sealed class AppKitSkiaView : NSView
 
     private void ReleaseBuffer()
     {
+        // The layer shows an image over these pixels, so it has to let go of that image before the
+        // pixels go: a layer holding an image whose provider has been freed draws garbage.
+        if (Layer is { } layer)
+        {
+            layer.Contents = null;
+        }
+
+        _presented?.Dispose();
+        _presented = null;
+
         // The surface writes into the bitmap's memory, so it has to go first.
         _skia?.Dispose();
         _skia = null;
@@ -584,59 +626,58 @@ internal sealed class AppKitSkiaView : NSView
     /// <summary>
     /// Paints the reason the UI cannot be drawn over the whole view. A window that draws nothing
     /// says nothing, so every failure ends up here rather than on a console nobody is watching.
+    /// <para>
+    /// The message is drawn with Skia into the same bitmap every other frame uses, because by the
+    /// time a failure is being reported there may be no usable buffer, and text drawn with AppKit
+    /// would need the drawing context this view no longer takes part in.
+    /// </para>
     /// </summary>
-    private static void DrawDiagnostic(CGContext context, CGRect bounds, string message)
+    private void DrawDiagnostic(string message)
     {
-        context.SaveState();
-        context.SetFillColor(0.55f, 0f, 0f, 1f);
-        context.FillRect(bounds);
-        context.RestoreState();
+        if (_diagnostic != message)
+        {
+            _diagnostic = message;
+            Console.Error.WriteLine($"[xplat] {message}");
+        }
 
-        // NSString draws through the current NSGraphicsContext, so it picks up the flipped view
-        // coordinates on its own and needs no y-flip of its own.
-        var font = NSFont.SystemFontOfSize(13);
-        var color = NSColor.White;
-        if (font is null || color is null)
+        if (Layer is not { } layer)
         {
             return;
         }
 
-        var attributes = NSDictionary.FromObjectsAndKeys(
-            new object[] { font, color },
-            new object[] { NSStringAttributeKey.Font, NSStringAttributeKey.ForegroundColor });
-
-        if (attributes is null)
+        if (_skia is null || _bitmap is null)
         {
+            // Nothing to paint into, so the window is at least made a colour that says something
+            // went wrong rather than left showing whatever was there before.
+            layer.Contents = null;
+            layer.BackgroundColor = new CGColor(0.6f, 0f, 0f);
             return;
         }
 
-        var y = 12;
-        foreach (var line in Wrap(message, 96))
+        try
         {
-            if (y + 18 > bounds.Height)
-            {
-                break;
-            }
+            var canvas = _skia.Canvas;
+            canvas.Save();
+            canvas.ResetMatrix();
+            canvas.Clear(new SKColor(0x99, 0x00, 0x00));
+            canvas.Restore();
 
-            using var text = new NSString(line);
-            text.DrawString(new CGRect(16, y, Math.Max(bounds.Width - 32, 0), 20), attributes);
-            y += 18;
+            using var font = new XPlatFont(13f);
+            XPlatTextRenderer.Draw(
+                canvas,
+                message,
+                font,
+                SKColors.White,
+                new SKRect(16, 16, _width - 16, _height - 16),
+                XPlatContentAlignment.TopLeft,
+                true);
+
+            canvas.Flush();
+            Present();
         }
-    }
-
-    /// <summary>Breaks a message into lines narrow enough to read on screen.</summary>
-    private static IEnumerable<string> Wrap(string message, int columns)
-    {
-        foreach (var paragraph in message.Split('\n'))
+        catch (Exception ex)
         {
-            var line = paragraph.Trim();
-            while (line.Length > columns)
-            {
-                yield return line[..columns];
-                line = line[columns..];
-            }
-
-            yield return line;
+            Console.Error.WriteLine($"[xplat] drawing the diagnostic failed: {ex.GetType().Name}: {ex.Message}");
         }
     }
 
