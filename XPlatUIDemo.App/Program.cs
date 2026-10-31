@@ -89,6 +89,11 @@ internal static class Program
             ApplicationName = "XPlat UI",
             FontFamily = PreferredFontFamily(),
             ForcedDarkMode = ForcedDarkMode(args),
+
+            // The application-wide icon: the Dock tile on macOS, the taskbar and Alt-Tab on Windows,
+            // and the default icon name for every GTK window. Windows also shows it in the title bar
+            // because XPlatWindow inherits this when it is created.
+            Icon = DemoIcon.Create(),
 #if WINDOWS
             // A WinExe has no console of its own; borrow the parent's so diagnostics are visible.
             AttachConsole = true,

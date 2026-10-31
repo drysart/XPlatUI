@@ -122,6 +122,16 @@ internal static class NativeMethods
     internal const int IdcSizeWe = 32644;
     internal const int IdcHand = 32649;
 
+    // Window icons. Windows keeps two per window: the small one for the title bar and the big one
+    // for Alt-Tab and the taskbar.
+    internal const uint WmSetIcon = 0x0080;
+    internal const int IconSmall = 0;
+    internal const int IconBig = 1;
+    internal const int SmCxIcon = 11;
+    internal const int SmCyIcon = 12;
+    internal const int SmCxSmIcon = 49;
+    internal const int SmCySmIcon = 50;
+
     // Clipboard.
     internal const uint CfUnicodeText = 13;
     internal const uint GmemMoveable = 0x0002;
@@ -270,6 +280,17 @@ internal static class NativeMethods
         public uint bmiColors;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct ICONINFO
+    {
+        /// <summary>Non-zero for an icon, zero for a cursor.</summary>
+        public int fIcon;
+        public int xHotspot;
+        public int yHotspot;
+        public IntPtr hbmMask;
+        public IntPtr hbmColor;
+    }
+
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     internal struct WNDCLASSEXW
     {
@@ -364,6 +385,17 @@ internal static class NativeMethods
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     internal static extern IntPtr LoadIconW(IntPtr hInstance, IntPtr lpIconName);
 
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    internal static extern IntPtr SendMessageW(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+    /// <summary>Builds an icon from a colour bitmap plus the monochrome mask that describes its transparency.</summary>
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern IntPtr CreateIconIndirect(ref ICONINFO piconinfo);
+
+    /// <summary>Releases an icon created by <see cref="CreateIconIndirect"/>. System icons must not be passed to it.</summary>
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern bool DestroyIcon(IntPtr hIcon);
+
     [DllImport("user32.dll")]
     internal static extern nuint SetTimer(IntPtr hwnd, nuint nIDEvent, uint uElapse, IntPtr lpTimerFunc);
 
@@ -378,6 +410,10 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     internal static extern int GetSystemMetrics(int nIndex);
+
+    /// <summary>System metrics for a specific DPI, so an icon matches the display it is drawn on.</summary>
+    [DllImport("user32.dll")]
+    internal static extern int GetSystemMetricsForDpi(int nIndex, uint dpi);
 
     [DllImport("user32.dll")]
     internal static extern bool TrackMouseEvent(ref TRACKMOUSEEVENT lpEventTrack);
@@ -507,6 +543,10 @@ internal static class NativeMethods
 
     [DllImport("gdi32.dll")]
     internal static extern bool DeleteObject(IntPtr hObject);
+
+    /// <summary>Creates a device-dependent bitmap, used here for an icon's monochrome AND mask.</summary>
+    [DllImport("gdi32.dll")]
+    internal static extern IntPtr CreateBitmap(int nWidth, int nHeight, uint nPlanes, uint nBitCount, byte[] lpvBits);
 
     [DllImport("gdi32.dll")]
     internal static extern IntPtr CreateDIBSection(

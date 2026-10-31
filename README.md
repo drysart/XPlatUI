@@ -9,7 +9,7 @@ on all three platforms.
 
 ```
 XPlatUI/                  net10.0 class library (no OS-specific code, IsAotCompatible)
-  Application/            XPlatApplication, XPlatWindow, options, DI wiring, dialogs
+  Application/            XPlatApplication, XPlatWindow, XPlatIcon, options, DI wiring, dialogs
   Core/                   primitives: control base class, geometry, painting, fonts, theme, clipboard
   Controls/               XPlatPanel, XPlatTableLayoutPanel, XPlatSplitContainer, XPlatLabel, XPlatRichLabel, XPlatButton, XPlatTextBox, XPlatImage
   Layout/                 row/column sizing styles
@@ -20,6 +20,7 @@ XPlatUI/                  net10.0 class library (no OS-specific code, IsAotCompa
   XPlatUiHost.cs          platform-neutral host: layout, painting, input routing, focus
 XPlatUIDemo/              the sample control tree, shared by every platform
   DemoUi.cs               the demo layout, plus RenderToPng for headless renders
+  DemoIcon.cs             the sample icon, drawn in code so no binary asset is needed
 XPlatUIDemo.App/          the one application: net10.0-windows, net10.0-macos or net10.0
   Program.cs              pick a backend, describe a window, run
   Native/                 SkiaNativeLoader.cs - unpacks the embedded Skia library after an AOT publish
@@ -374,6 +375,43 @@ to the undocumented `uxtheme` `ShouldSystemUseDarkMode`), reacts to `WM_SETTINGC
 `WM_THEMECHANGED`, and darkens the title bar with
 `DwmSetWindowAttribute(DWMWA_USE_IMMERSIVE_DARK_MODE)` - driven by `XPlatTheme.Changed`, so a manual
 palette change updates the chrome too.
+
+### Window icons
+
+`XPlatIcon` carries a bitmap **and** an optional icon-theme name, because the three platforms take
+their icons in three unrelated ways:
+
+```csharp
+var options = new XPlatApplicationOptions
+{
+    ApplicationName = "My App",
+    Icon = XPlatIcon.FromFile("app.png"),   // Windows title bar/taskbar, macOS Dock
+};
+
+using var application = new XPlatApplication(backend, options);
+var window = new XPlatWindow("My App", root);   // inherits the application icon
+window.Icon = XPlatIcon.FromFile("other.png");  // ...or override it per window
+```
+
+| Platform | What happens | Which half of the icon is used |
+| --- | --- | --- |
+| Windows | `WM_SETICON` with `ICON_SMALL` (title bar) and `ICON_BIG` (Alt-Tab, taskbar), rebuilt at the window's DPI on `WM_DPICHANGED` | pixels |
+| macOS | `NSApplication.ApplicationIconImage`, i.e. the Dock tile and app switcher for the whole process | pixels |
+| Linux (GTK4) | `gtk_window_set_icon_name`, and the application-wide `gtk_window_set_default_icon_name` | `Name` |
+
+So an icon with pixels only shows up on Windows and macOS, and `XPlatIcon.FromName("folder")` shows
+up on Linux only. Set both halves on one icon to cover all three:
+
+```csharp
+var icon = XPlatIcon.FromFile("app.png");
+icon.Name = "my-app";      // the installed icon-theme name, for GTK
+```
+
+On Linux the name has to exist in the desktop's icon theme, and on Wayland the window manager takes
+the icon from the application's `.desktop` entry instead. A shipping macOS `.app` should also set
+`CFBundleIconFile` in `Info.plist`. `XPlatIcon.GetBitmap(size)` scales once per requested size and
+caches the result, and the bitmaps it returns belong to the icon: don't dispose them, and keep the
+icon alive for as long as a window refers to it.
 
 ## Writing a backend
 

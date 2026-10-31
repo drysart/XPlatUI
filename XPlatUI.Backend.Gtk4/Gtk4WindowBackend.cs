@@ -43,6 +43,7 @@ public sealed class Gtk4WindowBackend : IXPlatWindowBackend
     private XPlatWindowState _reportedState = XPlatWindowState.Normal;
     private XPlatMenuBar? _menuBar;
     private bool? _darkChrome;
+    private XPlatIcon? _icon;
 
     private float _scale = 1f;
     private bool _disposed;
@@ -87,6 +88,23 @@ public sealed class Gtk4WindowBackend : IXPlatWindowBackend
             {
                 _window.Title = _title;
             }
+        }
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// GTK4 takes an icon by name from the desktop's theme and has no binding that accepts a bitmap
+    /// for a window, so only <see cref="XPlatIcon.Name"/> reaches the title bar; a pixel-only icon is
+    /// stored and ignored. X11 window managers honour the name, and a Wayland compositor takes the
+    /// icon from the application's desktop entry instead.
+    /// </remarks>
+    public XPlatIcon? Icon
+    {
+        get => _icon;
+        set
+        {
+            _icon = value;
+            ApplyIcon();
         }
     }
 
@@ -497,6 +515,7 @@ public sealed class Gtk4WindowBackend : IXPlatWindowBackend
         ApplySizeLimits();
         ApplyMenuBar();
         ApplyChrome();
+        ApplyIcon();
 
         return true;
     }
@@ -545,6 +564,15 @@ public sealed class Gtk4WindowBackend : IXPlatWindowBackend
         if (_application.SystemTheme is Gtk4SystemTheme theme)
         {
             theme.ApplyToGtk(dark);
+        }
+    }
+
+    /// <summary>Hands the icon's theme name to the window manager, which is all GTK4 accepts.</summary>
+    private void ApplyIcon()
+    {
+        if (_window is not null && _icon?.Name is { Length: > 0 } name)
+        {
+            _window.SetIconName(name);
         }
     }
 

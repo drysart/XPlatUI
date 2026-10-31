@@ -56,6 +56,17 @@ public sealed class XPlatApplicationOptions
     public XPlatMenuBar? MenuBar { get; set; }
 
     /// <summary>
+    /// The icon every window starts with, and the icon the desktop shows for the application: the
+    /// taskbar and Alt-Tab on Windows, the Dock on macOS. Null keeps the platform's generic icon.
+    /// </summary>
+    /// <remarks>
+    /// Set it before the application is created: the platform applies it during initialization,
+    /// which is the only moment macOS lets an application change its Dock icon without a bundle
+    /// resource. A window may still override it with <see cref="XPlatWindow.Icon"/>.
+    /// </remarks>
+    public XPlatIcon? Icon { get; set; }
+
+    /// <summary>
     /// Registers the application's own services. Runs after the backend has registered the platform
     /// services and before the container is built, so registering a service the backend already
     /// provides replaces it.
