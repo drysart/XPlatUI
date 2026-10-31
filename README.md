@@ -597,6 +597,13 @@ flowing - a drag, a blinking caret - the footprint rises by another ~90 MB of wi
 surfaces, and it falls back within half a minute of the window going quiet, so a spike there is
 the compositor pipelining updates rather than a leak.
 
+A live resize is the worst case, because it is the only time frames arrive as fast as the machine
+can produce them. Driving the window through a continuous 900-to-1500 point drag at ~50 fps, the
+peak footprint is 469 MB and the settled figure 295 MB. Before the buffer was given its 1.25x
+headroom and its settle-gated shrink, the same drag peaked at 1.0 GB: the old code reallocated on
+nearly every frame of the drag, and the freed multi-megabyte blocks piled up faster than the
+allocator could return them.
+
 macOS reports accelerators through `Command` rather than `Control`, so `AppKitMenuBar` gives Cut, Copy,
 Paste and Select All real menu items whose `Cmd` key equivalents feed the same editing commands into
 the host. `AppKitKeyMap` deliberately does *not* map `Command` onto `XPlatModifiers.Control`: a `Cmd`
