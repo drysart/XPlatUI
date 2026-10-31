@@ -35,6 +35,17 @@ public interface IXPlatWindowBackend : IDisposable
     /// <summary>Title bar text.</summary>
     string Title { get; set; }
 
+    /// <summary>
+    /// The window's icon, or null to keep the platform's generic application icon.
+    /// </summary>
+    /// <remarks>
+    /// What an icon <em>is</em> differs per platform, so each backend applies it its own way: Windows
+    /// sets the small icon for the title bar and the big one for the taskbar and Alt-Tab, both sized
+    /// from the window's DPI; macOS has no per-window icon and sets the application icon instead;
+    /// GTK4 uses <see cref="XPlatIcon.Name"/> because the theme, not the application, owns the pixels.
+    /// </remarks>
+    XPlatIcon? Icon { get; set; }
+
     /// <summary>Client area size, in logical pixels.</summary>
     SKSize ClientSize { get; set; }
 

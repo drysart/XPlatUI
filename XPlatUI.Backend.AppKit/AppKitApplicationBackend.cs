@@ -82,6 +82,13 @@ public sealed class AppKitApplicationBackend : IXPlatApplicationBackend
         // are ordered in normally instead of waiting for a launch that has not happened yet.
         native.FinishLaunching();
 
+        // A Mac has one icon for the whole process: the Dock tile and the app switcher read this.
+        // It is also the only way to set it without shipping an .icns in the bundle.
+        if (AppKitIcons.Create(application.Options.Icon) is { } applicationIcon)
+        {
+            native.ApplicationIconImage = applicationIcon;
+        }
+
         if (SystemTheme is AppKitSystemTheme theme)
         {
             theme.Changed += OnSystemThemeChanged;

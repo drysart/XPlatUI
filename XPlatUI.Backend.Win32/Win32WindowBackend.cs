@@ -50,6 +50,10 @@ internal sealed class Win32WindowBackend : IXPlatWindowBackend
     private XPlatWindowState _state = XPlatWindowState.Normal;
     private XPlatMenuBar? _menuBar;
 
+    private XPlatIcon? _icon;
+    private IntPtr _bigIcon;
+    private IntPtr _smallIcon;
+
     private float _scale = 1f;
     private IntPtr _memoryDc;
     private IntPtr _dib;
@@ -107,6 +111,17 @@ internal sealed class Win32WindowBackend : IXPlatWindowBackend
             {
                 NativeMethods.SetWindowTextW(_hwnd, _title);
             }
+        }
+    }
+
+    /// <inheritdoc />
+    public XPlatIcon? Icon
+    {
+        get => _icon;
+        set
+        {
+            _icon = value;
+            ApplyIcon();
         }
     }
 
@@ -389,6 +404,8 @@ internal sealed class Win32WindowBackend : IXPlatWindowBackend
             _hwnd = IntPtr.Zero;
         }
 
+        ReleaseIcons();
+
         ReleaseBuffer();
 
         if (_classRegistered)
@@ -491,6 +508,7 @@ internal sealed class Win32WindowBackend : IXPlatWindowBackend
         _scale = ScaleOf(NativeMethods.GetDpiForWindow(_hwnd));
         PlaceInitially();
         ApplyResizable();
+        ApplyIcon();
 
         if (_topMost)
         {
@@ -577,6 +595,155 @@ internal sealed class Win32WindowBackend : IXPlatWindowBackend
     private uint StyleFor() => _resizable
         ? NativeMethods.WsOverlappedWindow
         : NativeMethods.WsOverlappedWindow & ~(NativeMethods.WsThickFrame | NativeMethods.WsMaximizeBox | NativeMethods.WsMinimizeBox);
+
+    /// <summary>
+    /// Rebuilds the window's two icon handles, each sized from the window's DPI, and hands them to
+    /// the shell: the small one is the title bar, the big one the taskbar and Alt-Tab. A window with
+    /// no icon of its own keeps the window class's generic application icon.
+    /// </summary>
+    private void ApplyIcon()
+    {
+        if (_hwnd == IntPtr.Zero || _disposed)
+        {
+            return;
+        }
+
+        var dpi = NativeMethods.GetDpiForWindow(_hwnd);
+        var big = CreateIconHandle(NativeMethods.GetSystemMetricsForDpi(NativeMethods.SmCxIcon, dpi));
+        var small = CreateIconHandle(NativeMethods.GetSystemMetricsForDpi(NativeMethods.SmCxSmIcon, dpi));
+
+        if (big == IntPtr.Zero || small == IntPtr.Zero)
+        {
+            // A half-replaced pair is worse than none, so both handles are dropped and the class
+            // icon stays in place.
+            DestroyIconHandle(big);
+            DestroyIconHandle(small);
+            return;
+        }
+
+        var previousBig = _bigIcon;
+        var previousSmall = _smallIcon;
+        _bigIcon = big;
+        _smallIcon = small;
+
+        NativeMethods.SendMessageW(_hwnd, NativeMethods.WmSetIcon, new IntPtr(NativeMethods.IconBig), big);
+        NativeMethods.SendMessageW(_hwnd, NativeMethods.WmSetIcon, new IntPtr(NativeMethods.IconSmall), small);
+
+        // The shell has already switched to the new handles, so the old ones are free to go.
+        DestroyIconHandle(previousBig);
+        DestroyIconHandle(previousSmall);
+    }
+
+    private void ReleaseIcons()
+    {
+        DestroyIconHandle(_bigIcon);
+        DestroyIconHandle(_smallIcon);
+        _bigIcon = IntPtr.Zero;
+        _smallIcon = IntPtr.Zero;
+    }
+
+    private static void DestroyIconHandle(IntPtr handle)
+    {
+        if (handle != IntPtr.Zero)
+        {
+            NativeMethods.DestroyIcon(handle);
+        }
+    }
+
+    /// <summary>Builds an <c>HICON</c> at <paramref name="size"/> pixels square, or <see cref="IntPtr.Zero"/>.</summary>
+    private IntPtr CreateIconHandle(int size)
+    {
+        if (size <= 0 || _icon?.GetBitmap(size) is not { } bitmap)
+        {
+            return IntPtr.Zero;
+        }
+
+        var info = new NativeMethods.BITMAPINFO
+        {
+            bmiHeader = new NativeMethods.BITMAPINFOHEADER
+            {
+                biSize = (uint)Marshal.SizeOf<NativeMethods.BITMAPINFOHEADER>(),
+                biWidth = size,
+                // Negative height makes the DIB top-down, which is the row order Skia uses.
+                biHeight = -size,
+                biPlanes = 1,
+                biBitCount = 32,
+                biCompression = NativeMethods.BiRgb,
+            },
+        };
+
+        var color = NativeMethods.CreateDIBSection(
+            IntPtr.Zero,
+            ref info,
+            NativeMethods.DibRgbColors,
+            out var bits,
+            IntPtr.Zero,
+            0);
+
+        if (color == IntPtr.Zero)
+        {
+            return IntPtr.Zero;
+        }
+
+        // XPlatIcon hands out tightly packed premultiplied BGRA. GDI blends an icon's colour bitmap
+        // as straight alpha, so the premultiplied bytes have to be expanded back or every partly
+        // transparent pixel - which is every antialiased edge - comes out too dark.
+        var pixels = bitmap.GetPixelSpan();
+        var colorBytes = new byte[size * size * 4];
+
+        // The monochrome mask repeats the alpha channel: a set bit means "show the desktop here".
+        // Windows blends the colour bitmap's alpha itself, but the mask is what an icon falls back
+        // to wherever alpha is ignored.
+        var maskStride = ((size + 15) / 16) * 2;
+        var maskBytes = new byte[maskStride * size];
+
+        for (var y = 0; y < size; y++)
+        {
+            for (var x = 0; x < size; x++)
+            {
+                var offset = ((y * size) + x) * 4;
+                var alpha = pixels[offset + 3];
+
+                if (alpha == 0)
+                {
+                    maskBytes[(y * maskStride) + (x / 8)] |= (byte)(0x80 >> (x % 8));
+                    continue;
+                }
+
+                colorBytes[offset] = Unpremultiply(pixels[offset], alpha);
+                colorBytes[offset + 1] = Unpremultiply(pixels[offset + 1], alpha);
+                colorBytes[offset + 2] = Unpremultiply(pixels[offset + 2], alpha);
+                colorBytes[offset + 3] = alpha;
+            }
+        }
+
+        Marshal.Copy(colorBytes, 0, bits, colorBytes.Length);
+
+        var mask = NativeMethods.CreateBitmap(size, size, 1, 1, maskBytes);
+        if (mask == IntPtr.Zero)
+        {
+            NativeMethods.DeleteObject(color);
+            return IntPtr.Zero;
+        }
+
+        var iconInfo = new NativeMethods.ICONINFO
+        {
+            fIcon = 1,
+            hbmMask = mask,
+            hbmColor = color,
+        };
+
+        var handle = NativeMethods.CreateIconIndirect(ref iconInfo);
+
+        NativeMethods.DeleteObject(mask);
+        NativeMethods.DeleteObject(color);
+
+        return handle;
+    }
+
+    /// <summary>Expands one premultiplied colour channel back to straight alpha.</summary>
+    private static byte Unpremultiply(byte value, byte alpha) =>
+        (byte)Math.Min(255, ((value * 255) + (alpha / 2)) / alpha);
 
     private XPlatWindowState CurrentState()
     {
@@ -839,6 +1006,7 @@ internal sealed class Win32WindowBackend : IXPlatWindowBackend
 
         // WM_SIZE above ran against the old scale; re-measure so the host sees logical pixels.
         UpdateHostSize();
+        ApplyIcon();
         ScaleChanged?.Invoke(this, EventArgs.Empty);
     }
 

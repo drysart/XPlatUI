@@ -211,6 +211,7 @@ public sealed class XPlatApplicationOptions
 	public XPlatDpiAwareness DpiAwareness { get; set; } = XPlatDpiAwareness.PerMonitor;
 	public bool AttachConsole { get; set; }                      // Windows: diagnostics to parent console
 	public XPlatMenuBar? MenuBar { get; set; }                 // application-wide default; see §10
+	public XPlatIcon? Icon { get; set; }                       // application-wide default; see §4.3
 	public Action<IServiceCollection>? ConfigureServices { get; set; }   // see §5.3
 }
 ```
@@ -239,6 +240,7 @@ public sealed class XPlatWindow : IDisposable
 	public float ScaleFactor { get; }
 
 	public string Title { get; set; }
+	public XPlatIcon? Icon { get; set; }               // inherits XPlatApplicationOptions.Icon
 	public SKSize ClientSize { get; set; }             // logical px
 	public SKSize MinimumClientSize { get; set; }
 	public SKSize MaximumClientSize { get; set; }
@@ -279,6 +281,25 @@ harness today. That logic moves into the model so all three platforms agree.
 stays logical, the framebuffer changes size. The backend reports it, the model re-runs layout and
 invalidates. This is the same contract `XPlatUiHost.SetClientSize` already implements; it just needs
 a cross-platform trigger.
+
+**Icons.** `XPlatIcon` is one type carrying both a bitmap and an optional icon-theme name, because
+the three platforms share no icon API at all. Windows wants a pair of `HICON` handles - `ICON_SMALL`
+for the title bar, `ICON_BIG` for Alt-Tab and the taskbar - built at the sizes
+`GetSystemMetricsForDpi` reports and rebuilt on `WM_DPICHANGED`, so the bitmap is rasterised twice
+per DPI. macOS has no per-window icon: what a window shows is the application icon, i.e.
+`NSApplication.ApplicationIconImage`, so setting it on a window changes the Dock tile for the whole
+process. GTK4 accepts only `gtk_window_set_icon_name`, a name looked up in the current icon theme,
+so a pixel-only icon is stored and ignored there, and Wayland takes the icon from the desktop entry
+rather than from the window at all.
+
+That asymmetry is why `XPlatIcon` is one type with two halves rather than two properties:
+`XPlatIcon.FromBitmap(...)` (or `FromFile` / `FromStream`) reaches Windows and macOS, `FromName(...)`
+reaches GTK, and setting `Name` on a pixel icon covers all three from one object. The icon owns every
+bitmap it hands out - `GetBitmap(size)` scales once per size and caches - so it must outlive the
+windows using it and must not be disposed while they do.
+
+A shipping macOS `.app` should still put its icon in `Info.plist` as `CFBundleIconFile`; the Dock
+assignment is for builds without a bundle, which is what the sample harness is.
 
 ### 4.4 Screens
 
@@ -990,7 +1011,7 @@ Tier 1 **is** the v1 scope (D12, D13).
 | Feature | Why |
 |---|---|
 | `XPlatTimer` (public) | Animations, polling, debounce — without it every app rolls its own `SetTimer`. |
-| Window icons | Title bar + taskbar; three different APIs. |
+| Window icons | Title bar + taskbar; three different APIs. Done: one `XPlatIcon` carrying pixels and a theme name (§4.3). |
 | `Activated`/`Deactivated`, `TopMost`, `Owner` | Taskbar grouping and modality on Windows; window ordering on macOS. |
 | App-scoped single instance / re-activate | Common enough that every app writes it wrong. |
 

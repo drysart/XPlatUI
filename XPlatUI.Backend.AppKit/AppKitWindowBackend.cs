@@ -42,6 +42,7 @@ public sealed class AppKitWindowBackend : IXPlatWindowBackend
     private XPlatWindowState _reportedState = XPlatWindowState.Normal;
     private XPlatMenuBar? _menuBar;
     private bool? _darkChrome;
+    private XPlatIcon? _icon;
 
     private float _scale = 1f;
     private bool _disposed;
@@ -81,6 +82,26 @@ public sealed class AppKitWindowBackend : IXPlatWindowBackend
             if (_window is not null)
             {
                 _window.Title = _title;
+            }
+        }
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// macOS has no per-window icon: a window's icon is the application's, shown in the Dock and the
+    /// app switcher. Setting this assigns <c>NSApplication.ApplicationIconImage</c>, so it changes
+    /// the whole process rather than this window alone.
+    /// </remarks>
+    public XPlatIcon? Icon
+    {
+        get => _icon;
+        set
+        {
+            _icon = value;
+
+            if (AppKitIcons.Create(_icon) is { } image)
+            {
+                NSApplication.SharedApplication.ApplicationIconImage = image;
             }
         }
     }

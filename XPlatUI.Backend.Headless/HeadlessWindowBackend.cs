@@ -49,6 +49,10 @@ public sealed class HeadlessWindowBackend : IXPlatWindowBackend
     public string Title { get; set; } = string.Empty;
 
     /// <inheritdoc />
+    /// <remarks>Stored only: a synthetic window has no chrome to draw an icon in.</remarks>
+    public XPlatIcon? Icon { get; set; }
+
+    /// <inheritdoc />
     /// <remarks>Forwards to <see cref="XPlatUiHost.SetClientSize"/>, which is what drives layout.</remarks>
     public SKSize ClientSize
     {

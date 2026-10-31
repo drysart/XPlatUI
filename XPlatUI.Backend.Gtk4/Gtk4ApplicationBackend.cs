@@ -86,6 +86,13 @@ public sealed class Gtk4ApplicationBackend : IXPlatApplicationBackend
         native.OnActivate += (_, _) => OnActivate();
         _native = native;
 
+        // The default icon name is the application-wide half of XPlatApplicationOptions.Icon; each
+        // window still sets its own, which is what an X11 window manager reads.
+        if (application.Options.Icon?.Name is { Length: > 0 } iconName)
+        {
+            Gtk.Window.SetDefaultIconName(iconName);
+        }
+
         if (SystemTheme is Gtk4SystemTheme theme)
         {
             theme.Changed += OnSystemThemeChanged;

@@ -70,6 +70,10 @@ public sealed partial class XPlatWindow : IDisposable
             Backend.Title = title;
         }
 
+        // The application-wide icon is the default every window starts with; a window that wants a
+        // different one assigns Icon afterwards.
+        Backend.Icon = _application.Options.Icon;
+
         if (content is not null)
         {
             Content = content;
@@ -127,6 +131,21 @@ public sealed partial class XPlatWindow : IDisposable
     {
         get => Backend.Title;
         set => Backend.Title = value ?? string.Empty;
+    }
+
+    /// <summary>
+    /// The window's icon, or null to keep the platform's generic application icon. Defaults to
+    /// <see cref="XPlatApplicationOptions.Icon"/>, which every window gets when it is created.
+    /// </summary>
+    /// <remarks>
+    /// The icon reaches the title bar and the taskbar on Windows and the application icon on macOS,
+    /// which is where a Mac shows it. GTK4 draws whatever the desktop's icon theme provides for
+    /// <see cref="XPlatIcon.Name"/>, so a pixel-only icon has no effect there.
+    /// </remarks>
+    public XPlatIcon? Icon
+    {
+        get => Backend.Icon;
+        set => Backend.Icon = value;
     }
 
     /// <summary>
