@@ -571,10 +571,14 @@ copies the whole block before wrapping it, which on a Retina window is a 16 MB `
 The `CGImage` is rebuilt for every frame, because CoreGraphics treats an image as immutable and keeps
 whatever it decoded out of the provider's memory: one cached image would pin the window to the
 contents of the very first frame, which is drawn before the control tree exists. There is no
-SkiaSharp view for AppKit in SkiaSharp 4.x, which is why the view draws itself. The buffer is made
-half again as large as the window needs, and only given back once the window is twice as small, so
-dragging a window edge across the screen reallocates it once instead of once per frame - each of
-those was a multi-megabyte native allocation that the garbage collector never sees. Because the
+SkiaSharp view for AppKit in SkiaSharp 4.x, which is why the view draws itself. The buffer is made a
+quarter again as large as the window needs, so a drag across the screen reallocates it once instead
+of once per frame - each of those was a multi-megabyte native allocation that the garbage collector
+never sees - and it is only given back once the window has held a size that needs under half its
+area for three quarters of a second. Waiting for the window to hold still is what makes the smaller
+headroom affordable: an in-and-out drag would otherwise be one reallocation per step, and every one
+of those leaves a freed multi-megabyte block in the allocator's large zone, which is where the
+process's memory high-water mark came from. Because the
 buffer outgrows the window, each frame clips the canvas to the window before painting; the clip is
 applied *after* the scale, in the same logical units the controls paint in, or it would only cover
 the top left `1/scale` of the view. Mouse and
@@ -583,6 +587,15 @@ keyboard events are forwarded to `XPlatUiHost.Process*` from the `NSResponder` o
 (caret blinking) and doubles as the poll for a system appearance change
 (`NSAppearance.FindBestMatch`), and a tracking area keeps `MouseMoved`/`MouseEntered`/`MouseExited`
 coming so hover states and cursors work.
+
+Measuring that memory needs `vmmap -summary <pid>` and its "Physical footprint" line, not `ps`:
+resident size counts over a gigabyte of shared library pages that the process never dirtied, and it
+reads about twice the real number. An idle window of 1280x820 on a Retina screen sits near 128 MB,
+of which roughly a third is the .NET runtime, a quarter is the two IOSurfaces the window server
+keeps for the window, and the rest is the drawing buffer and Skia. While frames are actually
+flowing - a drag, a blinking caret - the footprint rises by another ~90 MB of window server
+surfaces, and it falls back within half a minute of the window going quiet, so a spike there is
+the compositor pipelining updates rather than a leak.
 
 macOS reports accelerators through `Command` rather than `Control`, so `AppKitMenuBar` gives Cut, Copy,
 Paste and Select All real menu items whose `Cmd` key equivalents feed the same editing commands into

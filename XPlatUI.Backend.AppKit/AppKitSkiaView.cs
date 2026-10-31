@@ -25,8 +25,11 @@ internal sealed class AppKitSkiaView : NSView
     /// <summary>How many frames in a row may be queued by an invalidation raised while painting.</summary>
     private const int MaxDeferredRepaints = 8;
 
-    /// <summary>A drawing buffer is only given back once the window is this many times smaller.</summary>
-    private const int OversizedFactor = 2;
+    /// <summary>A drawing buffer is only given back once the window needs under half its area.</summary>
+    private const int OversizedAreaFactor = 2;
+
+    /// <summary>How long the window has to hold its size before an oversized buffer is given back.</summary>
+    private const long ShrinkDelayMs = 750;
 
     /// <summary>How often the tracing memory report is printed.</summary>
     private const long MemoryReportIntervalMs = 5000;
@@ -44,6 +47,7 @@ internal sealed class AppKitSkiaView : NSView
     private int _width;
     private int _height;
     private int _scale;
+    private long _lastSizeChange;
     private bool _disposed;
 
     private bool _inDraw;
@@ -368,6 +372,9 @@ internal sealed class AppKitSkiaView : NSView
             }
 
             ReleaseBuffer();
+
+            _colorSpace?.Dispose();
+            _colorSpace = null;
         }
 
         base.Dispose(disposing);
@@ -467,9 +474,10 @@ internal sealed class AppKitSkiaView : NSView
 
     private void EnsureBuffer(int width, int height, int scale)
     {
-        if (_bitmap is not null && _width == width && _height == height && _scale == scale)
+        var now = Environment.TickCount64;
+        if (width != _width || height != _height || scale != _scale)
         {
-            return;
+            _lastSizeChange = now;
         }
 
         var pixelWidth = width * scale;
@@ -478,16 +486,18 @@ internal sealed class AppKitSkiaView : NSView
         // Dragging a window edge asks for a frame at every intermediate size, and a fresh
         // multi-megabyte bitmap per frame is native memory the garbage collector never sees the
         // pressure from: one drag across a Retina screen reallocated twenty times, and the
-        // allocator was in no hurry to give any of it back. So the buffer grows with headroom
-        // (half again the size it needs) and only shrinks once the window is far smaller than it,
-        // which turns a whole drag into one allocation and keeps an in-and-out drag from thrashing.
-        if (_bitmap is not null && _scale == scale)
+        // allocator was in no hurry to give any of it back. So the buffer is made with headroom
+        // and a whole drag fits in the allocation it already has. Giving an oversized buffer back
+        // waits until the window has held its size for a moment, because an in-and-out drag is
+        // otherwise one reallocation per step, and every one of them leaves a freed multi-megabyte
+        // block in the allocator's hands.
+        if (_bitmap is not null && _scale == scale &&
+            _bitmap.Width >= pixelWidth && _bitmap.Height >= pixelHeight)
         {
-            var fits = _bitmap.Width >= pixelWidth && _bitmap.Height >= pixelHeight;
-            var oversized = _bitmap.Width > pixelWidth * OversizedFactor ||
-                            _bitmap.Height > pixelHeight * OversizedFactor;
+            var oversized = (long)_bitmap.Width * _bitmap.Height >
+                            (long)pixelWidth * pixelHeight * OversizedAreaFactor;
 
-            if (fits && !oversized)
+            if (!oversized || now - _lastSizeChange < ShrinkDelayMs)
             {
                 _width = width;
                 _height = height;
@@ -495,12 +505,12 @@ internal sealed class AppKitSkiaView : NSView
             }
         }
 
-        // Half again the size that is actually needed, so the next few sizes of the same drag fit
-        // the buffer that was just made. It is measured from the needed size rather than from the
-        // buffer being replaced, which is what keeps a shrinking window from growing its buffer and
-        // bounds the buffer to 1.5x the window instead of letting it compound.
-        var allocWidth = pixelWidth + pixelWidth / 2;
-        var allocHeight = pixelHeight + pixelHeight / 2;
+        // A quarter again the size that is actually needed, so the next few sizes of the same drag
+        // fit the buffer that was just made. It is measured from the needed size rather than from
+        // the buffer being replaced, which is what keeps a shrinking window from growing its buffer
+        // and bounds the buffer to 1.25x the window instead of letting it compound.
+        var allocWidth = pixelWidth + pixelWidth / 4;
+        var allocHeight = pixelHeight + pixelHeight / 4;
 
         ReleaseBuffer();
 
@@ -564,9 +574,8 @@ internal sealed class AppKitSkiaView : NSView
         _bitmap?.Dispose();
         _bitmap = null;
 
-        _colorSpace?.Dispose();
-        _colorSpace = null;
-
+        // The colour space is not tied to the pixels, so it outlives the buffer and is disposed
+        // with the view instead of being rebuilt on every reallocation.
         _width = 0;
         _height = 0;
         _scale = 0;
