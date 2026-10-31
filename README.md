@@ -579,7 +579,18 @@ drawn before the control tree exists. Because the view is flipped, its layer rep
 so the image shows the right way up. Rendering that layer on its own with `RenderInContext`
 *does* mirror it, so to capture what the screen shows, render the window's root layer - it is the
 unflipped one - and the result matches the `--render` image. There is no SkiaSharp view for AppKit
-in SkiaSharp 4.x, which is why the view draws itself. The buffer is made a
+in SkiaSharp 4.x, which is why the view draws itself.
+
+Being layer backed costs one thing that a `DrawRect` view gets for free. AppKit does not mark a
+layer backed view dirty when its bounds change: the default is to leave the layer showing what it
+already has and let the compositor stretch it to the new size. The symptom is unmistakable - a drag
+shows the frame from before the drag started, scaled, for the whole length of the drag, and the
+window only paints at its new size once the mouse is released. `NeedsDisplayOnBoundsChange` would be
+the documented switch for this, but the .NET binding does not surface it, so the view overrides
+`SetFrameSize` and asks for a frame whenever the size actually changed. That is the difference
+between one frame for a two hundred step drag and one frame per step.
+
+The buffer is made a
 quarter again as large as the window needs, so a drag across the screen reallocates it once instead
 of once per frame - each of those was a multi-megabyte native allocation that the garbage collector
 never sees - and it is only given back once the window has held a size that needs under half its

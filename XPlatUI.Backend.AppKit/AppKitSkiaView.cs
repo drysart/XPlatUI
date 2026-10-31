@@ -84,6 +84,24 @@ internal sealed class AppKitSkiaView : NSView
         WantsLayer = true;
     }
 
+    /// <summary>
+    /// A layer backed view is not marked dirty when it is resized: AppKit's default is to leave the
+    /// layer showing what it already has and let the compositor stretch it to the new bounds. That
+    /// is why the layer path has to ask for a frame itself, or a whole drag shows the frame from
+    /// before the drag started, scaled, and the window only paints at its new size once the mouse
+    /// is released.
+    /// </summary>
+    public override void SetFrameSize(CGSize newSize)
+    {
+        var previous = Frame.Size;
+        base.SetFrameSize(newSize);
+
+        if (previous.Width != newSize.Width || previous.Height != newSize.Height)
+        {
+            NeedsDisplay = true;
+        }
+    }
+
     /// <summary>The platform independent UI host this view paints.</summary>
     public XPlatUiHost Host => _host;
 
