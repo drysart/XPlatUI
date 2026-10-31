@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Unlike the AppKit backend, the GTK4 binding (GirCore) is plain NuGet with no workload, so
+         this project builds anywhere - Windows, macOS and CI included - which is why it is part of
+         WinFormsApp3.slnx. See README.md, "On Linux (GTK4)". -->
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>XPlatUI.Backend.Gtk4</RootNamespace>
+    <IsAotCompatible>true</IsAotCompatible>
+    <!-- The Skia surface is created directly over Cairo's pixel buffer. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\XPlatUI\XPlatUI.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The GTK4 binding (GtkSharp itself is GTK3 only). -->
+    <PackageReference Include="GirCore.Gtk-4.0" Version="0.8.1" />
+    <!-- SkiaSharp itself only ships Win32/macOS natives; the Linux one is a separate package. The
+         library references it so a host application never has to remember to. -->
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux" Version="4.154.0" />
+  </ItemGroup>
+
+</Project>

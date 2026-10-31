@@ -16,11 +16,10 @@
   <ItemGroup>
     <ProjectReference Include="..\XPlatUI\XPlatUI.csproj" />
     <ProjectReference Include="..\XPlatUIDemo\XPlatUIDemo.csproj" />
+    <ProjectReference Include="..\XPlatUI.Backend.Gtk4\XPlatUI.Backend.Gtk4.csproj" />
   </ItemGroup>
 
   <ItemGroup>
-    <!-- The GTK4 binding (GirCore; GtkSharp itself is GTK3 only). -->
-    <PackageReference Include="GirCore.Gtk-4.0" Version="0.8.1" />
     <!-- SkiaSharp itself only ships Win32/macOS natives; the Linux one is a separate package. -->
     <PackageReference Include="SkiaSharp.NativeAssets.Linux" Version="4.154.0" />
   </ItemGroup>

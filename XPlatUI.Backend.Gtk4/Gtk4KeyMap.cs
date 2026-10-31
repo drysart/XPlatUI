@@ -1,12 +1,10 @@
-using XPlatUI;
-
-namespace GtkHarness;
+namespace XPlatUI.Backend.Gtk4;
 
 /// <summary>
 /// Translates GDK key values into the library's <see cref="XPlatKey"/> values. GDK key values are
 /// stable across platforms (they descend from X11), so the mapping is a plain switch.
 /// </summary>
-internal static class GtkKeyMap
+internal static class Gtk4KeyMap
 {
     private const uint KeyBackspace = 0xFF08;
     private const uint KeyTab = 0xFF09;
@@ -59,5 +57,48 @@ internal static class GtkKeyMap
             KeyPageDown => XPlatKey.PageDown,
             _ => XPlatKey.None,
         };
+    }
+
+    public static XPlatModifiers MapModifiers(Gdk.ModifierType state)
+    {
+        var modifiers = XPlatModifiers.None;
+
+        if ((state & Gdk.ModifierType.ShiftMask) != 0)
+        {
+            modifiers |= XPlatModifiers.Shift;
+        }
+
+        if ((state & Gdk.ModifierType.ControlMask) != 0)
+        {
+            modifiers |= XPlatModifiers.Control;
+        }
+
+        if ((state & Gdk.ModifierType.AltMask) != 0)
+        {
+            modifiers |= XPlatModifiers.Alt;
+        }
+
+        return modifiers;
+    }
+
+    /// <summary>
+    /// Returns the text a key press produces, or null when it produces none. Layouts, dead keys and
+    /// compose sequences are left to GDK so that non-US keyboards behave the way users expect.
+    /// </summary>
+    public static string? MapText(uint keyval, Gdk.ModifierType state)
+    {
+        // Ctrl/Alt/Super combinations are accelerators, not text.
+        if ((state & (Gdk.ModifierType.ControlMask | Gdk.ModifierType.AltMask | Gdk.ModifierType.SuperMask)) != 0)
+        {
+            return null;
+        }
+
+        var unicode = Gdk.Functions.KeyvalToUnicode(keyval);
+        if (unicode is 0 or 0xFFFF || unicode < 0x20 || unicode == 0x7F)
+        {
+            return null;
+        }
+
+        return char.ConvertFromUtf32((int)unicode);
     }
 }

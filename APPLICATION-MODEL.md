@@ -1172,6 +1172,65 @@ only be exercised that way - an `ssh` session can create and paint windows but n
 active application - and the interactive run shows it does: the window takes focus and its menus
 respond.
 
+### Step 5 notes
+
+`XPlatUI.Backend.Gtk4` is a new `net10.0` project holding the five `GtkHarness/*.cs` files under new
+names: `GtkUiSurface` → `Gtk4SkiaView`, `GtkKeyMap` → `Gtk4KeyMap`, `GtkClipboard` →
+`Gtk4Clipboard`, `GtkContextMenuPresenter` → `Gtk4ContextMenuPresenter`, `GtkSystemTheme` →
+`Gtk4SystemTheme`. `Gtk4MenuBar` and `Gtk4MenuItemWidget` are the per-window menu strip that used to
+be built inside the harness, and `Gtk4ApplicationBackend`, `Gtk4WindowBackend` and
+`Gtk4DialogService` are new. `GtkHarness` is now a thin app project - "pick a backend, describe a
+window, run" - with no `GirCore.Gtk-4.0` of its own, because the backend brings it in transitively.
+
+The render stayed byte-identical: **122,364** bytes dark and **123,501** light, the same as the
+recorded baseline. Windows (93,727 / 92,945) and macOS (163,795 / 164,747) were re-rendered too and
+are unchanged, which is expected - nothing outside `GtkHarness/` and the new project was touched.
+
+GTK4 is the platform where the model's shape fought the toolkit hardest. Everything below compiled
+fine and then misbehaved at run time:
+
+- **A window cannot be created before `GApplication::startup`.** The model calls `XPlatWindow.Show()`
+  before `XPlatApplication.Run()`, so `Gtk4WindowBackend.Show` only *records* the intent
+  (`_presentPending`, the owner) and returns; the `Gtk.ApplicationWindow` is created and presented
+  from the `activate` signal. Doing it the other way round still produced a window, but on stderr:
+  *"New application windows must be added after the GApplication::startup signal has been emitted"*.
+- **`Gtk.Application` must be held for the whole run.** GTK quits when the last window is destroyed,
+  which silently overrides `XPlatShutdownMode.OnExplicitExit`. `Run()` calls `Hold()` and
+  `Shutdown()` calls `Release()`, so the application outlives its windows and the shutdown mode
+  decides when the process ends.
+- **GTK has no run-loop modes and no stop flag.** Modal windows use a nested `GLib.MainLoop`
+  registered through `EnterModal`/`ExitModal` - the same shape as an AppKit modal session - and
+  `Quit()` has to end the nested loops *before* the application, or `Run()` never returns. Queued
+  `Invoke` work drains from `GLib.Functions.IdleAdd`, and a 250 ms `GLib.Functions.TimeoutAdd` keeps
+  the tick and the caret blinking alive inside a modal loop or a dialog pump.
+- **`Gtk.Window.OnCloseRequest` returning `true` vetoes destruction.** That is how the model's
+  cancellable `Closing` gets to run; the backend raises `CloseRequested` and lets the model decide.
+- **GTK4 removed `gtk_window_set_position`.** `XPlatWindow.Location` is recorded and ignored, and
+  window placement is left to the compositor. `TopMost` and `MaximumClientSize` are likewise stored
+  only, because the toolkit offers nothing to apply them with. This is the one place the GTK4
+  backend is less capable than the other two, and the XML docs say so where a caller would look.
+- **A monitor has no work area in GTK.** `GetScreens()` reports the full monitor geometry as the work
+  area, so a maximized window may sit under a panel.
+- **`Gtk.Module.Initialize()` calls `exit(1)` when there is no display.** That is fine for the live
+  harness but it means `--render` must never reach a GTK type - it is handled before anything else in
+  `Program.cs`, and it paints through the headless backend, so it works over `ssh` with
+  `env -u DISPLAY`.
+- **Painting goes through Cairo's pixel buffer.** The `Gtk.DrawingArea`'s Cairo surface is
+  `Cairo.Format.Argb32`, which is byte-for-byte `SKColorType.Bgra8888` with `SKAlphaType.Premul`, so
+  the `SKSurface` is created over the same memory rather than copying a bitmap in and out. The Cairo
+  context is flushed before Skia draws and the widget marked dirty after.
+- **Two binding details with no compile-time warning.** `Gio.ListStore.New()` needs an explicit type
+  argument (`New<Gtk.FileFilter>()`) or the filter list is rejected at run time, and the GTK4 file
+  dialog's tasks are `Task<Gio.File?>`, not `Task<Gio.File>`, because cancelling completes them with
+  null.
+
+Verified live on an Ubuntu 24 X server (`DISPLAY=:10`): the window appears at 2560x1520 for a
+1280x760 logical client size (HiDPI 2x), is painted rather than blank - a screen capture shows 9,158
+distinct colours, the light backgrounds, the accent blue and the demo's orange - and stderr carries
+nothing but two harmless `libEGL` DRI3 warnings. Drag-resize, DPI, cursor shapes, context menus, the
+menu bar, keyboard input, caret blinking and the four dialogs were exercised by hand on the same
+session.
+
 ---
 
 ## 12. Decision status

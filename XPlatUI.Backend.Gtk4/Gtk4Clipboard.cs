@@ -1,6 +1,4 @@
-using XPlatUI;
-
-namespace GtkHarness;
+namespace XPlatUI.Backend.Gtk4;
 
 /// <summary>
 /// The GTK clipboard. Writing is synchronous, but reading is not: GDK can only answer a paste by
@@ -8,7 +6,7 @@ namespace GtkHarness;
 /// library's clipboard contract is synchronous, so the read is driven by pumping the default main
 /// context until the task completes, with a short deadline so a stuck owner cannot hang the UI.
 /// </summary>
-internal sealed class GtkClipboard : IXPlatClipboard
+internal sealed class Gtk4Clipboard : IXPlatClipboard
 {
     private const int ReadTimeoutMs = 500;
 
@@ -57,8 +55,8 @@ internal sealed class GtkClipboard : IXPlatClipboard
 
     /// <summary>
     /// Runs the default main context until <paramref name="task"/> finishes. Iteration is blocking,
-    /// so this does not spin; the harness' tick timer guarantees it wakes up regularly even when the
-    /// clipboard never answers.
+    /// so this does not spin, and the application backend's poll timer guarantees it wakes up
+    /// regularly even when the clipboard never answers.
     /// </summary>
     private static bool PumpUntilComplete(Task task)
     {

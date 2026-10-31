@@ -1,6 +1,4 @@
-using XPlatUI;
-
-namespace GtkHarness;
+namespace XPlatUI.Backend.Gtk4;
 
 /// <summary>
 /// Reads the desktop's light/dark preference. GTK itself has no single answer: the freedesktop
@@ -8,7 +6,7 @@ namespace GtkHarness;
 /// through <c>GTK_THEME</c> or the theme name, and applications can force it with GTK's own
 /// "prefer dark" flag. All three are consulted, most authoritative first.
 /// </summary>
-internal sealed class GtkSystemTheme : IXPlatSystemTheme
+public sealed class Gtk4SystemTheme : IXPlatSystemTheme
 {
     private const string GnomeInterfaceSchema = "org.gnome.desktop.interface";
     private const string ColorSchemeKey = "color-scheme";
@@ -17,7 +15,7 @@ internal sealed class GtkSystemTheme : IXPlatSystemTheme
     private readonly Gio.Settings? _desktop;
     private Gtk.Settings? _gtkSettings;
 
-    public GtkSystemTheme()
+    public Gtk4SystemTheme()
     {
         _desktop = TryOpenDesktopSettings();
     }
@@ -82,7 +80,8 @@ internal sealed class GtkSystemTheme : IXPlatSystemTheme
     /// Mirrors the resolved palette onto GTK's own chrome (title bar, popover background) so the
     /// window furniture matches what SkiaSharp draws inside it.
     /// </summary>
-    public void ApplyToGtk(bool dark)    {
+    public void ApplyToGtk(bool dark)
+    {
         var settings = GtkSettings();
         if (settings is null || settings.GtkApplicationPreferDarkTheme == dark)
         {
