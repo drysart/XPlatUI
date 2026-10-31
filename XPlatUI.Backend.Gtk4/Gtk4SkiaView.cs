@@ -3,15 +3,29 @@ using SkiaSharp;
 namespace XPlatUI.Backend.Gtk4;
 
 /// <summary>
-/// The GTK4 host widget for the XPlat UI library. It owns an <see cref="XPlatUiHost"/>,
-/// rasterizes the control tree with SkiaSharp into a Cairo image surface (premultiplied BGRA, which
-/// is exactly <see cref="SKColorType.Bgra8888"/> with <see cref="SKAlphaType.Premul"/>, so no
-/// swizzle is needed) and forwards mouse and keyboard input from GTK's event controllers. This is
-/// the counterpart of the Win32 host and of the AppKit view: same duties, different native API.
+/// The GTK4 host widget for the XPlat UI library. It owns an <see cref="XPlatUiHost"/>, rasterizes
+/// the control tree with SkiaSharp into a premultiplied BGRA bitmap and shows it through a
+/// <see cref="Gtk.Picture"/>, and forwards mouse and keyboard input from GTK's event controllers.
+/// This is the counterpart of the Win32 host and of the AppKit view: same duties, different native
+/// API.
 /// </summary>
 /// <remarks>
+/// <para>
+/// The frame is handed to GTK as a <see cref="Gdk.MemoryTexture"/> rather than painted into the
+/// Cairo context of a <see cref="Gtk.DrawingArea"/>. GTK4 gives a drawing area a Cairo recording
+/// surface, so compositing a bitmap into it means using the bitmap as a Cairo source, and Cairo
+/// answers a mutable source with a full size snapshot. GTK keeps the render nodes those snapshots
+/// end up in, so every repaint leaked one frame buffer. A texture has no such copy.
+/// </para>
+/// <para>
+/// A <see cref="Gtk.DrawingArea"/> is kept on top of the picture, transparent, because it is what
+/// reports the widget's size and scale factor and what receives input. GTK only draws an overlay
+/// child above the main child, so the picture has to be the main child.
+/// </para>
+/// <para>
 /// The view does not run a timer. Time based behaviour (caret blinking) is driven by
 /// <see cref="XPlatApplication"/>'s single tick, which calls into every shown window's host.
+/// </para>
 /// </remarks>
 public sealed class Gtk4SkiaView : IDisposable
 {
@@ -27,12 +41,18 @@ public sealed class Gtk4SkiaView : IDisposable
     private static readonly bool DebugTrace =
         Environment.GetEnvironmentVariable("XPLATUI_DEBUG") is "1" or "true";
 
+    private readonly Gtk.Overlay _root;
     private readonly Gtk.DrawingArea _area;
+    private readonly Gtk.Picture _picture;
     private readonly GLib.SourceFunc _redrawIdle;
     private readonly GLib.SourceFunc _notifyMetrics;
 
-    private Cairo.ImageSurface? _cairo;
-    private SKSurface? _skia;
+    private SKSurface? _frame;
+    private IntPtr _framePixels;
+    private int _frameWidth;
+    private int _frameHeight;
+    private int _frameStride;
+
     private int _width;
     private int _height;
     private int _scale;
@@ -66,6 +86,20 @@ public sealed class Gtk4SkiaView : IDisposable
         _area.SetCanFocus(true);
         _area.SetDrawFunc(OnDraw);
 
+        _picture = Gtk.Picture.New();
+        _picture.SetHexpand(true);
+        _picture.SetVexpand(true);
+        _picture.SetHalign(Gtk.Align.Fill);
+        _picture.SetValign(Gtk.Align.Fill);
+        _picture.SetContentFit(Gtk.ContentFit.Fill);
+        _picture.SetCanShrink(true);
+        _picture.SetFocusable(false);
+        _picture.SetCanFocus(false);
+
+        _root = Gtk.Overlay.New();
+        _root.SetChild(_picture);
+        _root.AddOverlay(_area);
+
         Host.Invalidated += OnHostInvalidated;
         Host.CursorChanged += OnHostCursorChanged;
         XPlatTheme.Changed += OnThemeChanged;
@@ -77,7 +111,7 @@ public sealed class Gtk4SkiaView : IDisposable
     public event EventHandler? MetricsChanged;
 
     /// <summary>The GTK widget that shows the UI tree.</summary>
-    public Gtk.Widget Widget => _area;
+    public Gtk.Widget Widget => _root;
 
     /// <summary>The platform independent UI host.</summary>
     public XPlatUiHost Host { get; }
@@ -154,7 +188,10 @@ public sealed class Gtk4SkiaView : IDisposable
         Host.Invalidated -= OnHostInvalidated;
         Host.CursorChanged -= OnHostCursorChanged;
 
-        ReleaseBuffer();
+        _picture.SetPaintable(null);
+        _frame?.Dispose();
+        _frame = null;
+        _framePixels = IntPtr.Zero;
     }
 
     private void OnDraw(Gtk.DrawingArea area, Cairo.Context cr, int width, int height)
@@ -171,36 +208,14 @@ public sealed class Gtk4SkiaView : IDisposable
             Host.SetClientSize(width, height);
 
             var scale = Math.Max(area.ScaleFactor, 1);
-            EnsureBuffer(width, height, scale);
 
-            if (_skia is null || _cairo is null)
-            {
-                return;
-            }
+            _width = width;
+            _height = height;
+            _scale = scale;
 
-            Trace($"draw {width}x{height} at {scale}x into {_width}x{_height}");
+            Trace($"draw {width}x{height} at {scale}x");
 
-            // Skia writes straight into Cairo's pixel buffer, so Cairo has to be told the buffer is
-            // about to be scribbled on and then that it changed; without the mark it keeps using
-            // stale cached data and the drawing area stays blank.
-            _cairo.Flush();
-
-            var canvas = _skia.Canvas;
-            canvas.Save();
-            canvas.Scale(scale);
-            Host.Paint(canvas);
-            canvas.Restore();
-            canvas.Flush();
-
-            _cairo.MarkDirty();
-
-            // The Cairo context arrives already scaled by the surface scale factor, so undo it: one
-            // pixel of the Skia surface has to land on one device pixel.
-            cr.Save();
-            cr.Scale(1.0 / scale, 1.0 / scale);
-            cr.SetSourceSurface(_cairo, 0, 0);
-            cr.Paint();
-            cr.Restore();
+            PaintFrame(width, height, scale);
 
             ReportMetrics(width, height, scale);
         }
@@ -209,6 +224,83 @@ public sealed class Gtk4SkiaView : IDisposable
             _inDraw = false;
             _deferredRepaints = 0;
         }
+    }
+
+    /// <summary>
+    /// Rasterizes the control tree at the widget's device resolution and hands the result to GTK.
+    /// </summary>
+    private unsafe void PaintFrame(int width, int height, int scale)
+    {
+        var pixelWidth = width * scale;
+        var pixelHeight = height * scale;
+
+        if (!EnsureFrame(pixelWidth, pixelHeight))
+        {
+            return;
+        }
+
+        var canvas = _frame!.Canvas;
+        canvas.Save();
+        canvas.Scale(scale);
+        canvas.ClipRect(SKRect.Create(0, 0, width, height));
+        Host.Paint(canvas);
+        canvas.Restore();
+        canvas.Flush();
+
+        // GLib.Bytes does not own the pixels and Gtk.Picture keeps the texture alive, so the buffer
+        // must outlive both. It does: it is only replaced by the next EnsureFrame, and the frame it
+        // backs has already been consumed by then.
+        var pixels = new Span<byte>((void*)_framePixels, _frameStride * pixelHeight);
+        var bytes = GLib.Bytes.NewStatic(pixels);
+        var texture = Gdk.MemoryTexture.New(
+            pixelWidth,
+            pixelHeight,
+            Gdk.MemoryFormat.B8g8r8a8Premultiplied,
+            bytes,
+            (nuint)_frameStride);
+
+        _picture.SetPaintable(texture);
+
+        texture.Dispose();
+        bytes.Dispose();
+    }
+
+    /// <summary>Allocates or reallocates the Skia surface that backs the picture, if needed.</summary>
+    private bool EnsureFrame(int pixelWidth, int pixelHeight)
+    {
+        if (pixelWidth <= 0 || pixelHeight <= 0)
+        {
+            return false;
+        }
+
+        if (_frame is not null && _frameWidth == pixelWidth && _frameHeight == pixelHeight)
+        {
+            return true;
+        }
+
+        _frame?.Dispose();
+
+        var info = new SKImageInfo(pixelWidth, pixelHeight, SKColorType.Bgra8888, SKAlphaType.Premul);
+        _frame = SKSurface.Create(info);
+
+        if (_frame is null)
+        {
+            Trace($"could not allocate a {pixelWidth}x{pixelHeight} frame");
+            _framePixels = IntPtr.Zero;
+            _frameWidth = 0;
+            _frameHeight = 0;
+            return false;
+        }
+
+        using var pixmap = _frame.PeekPixels();
+        _framePixels = pixmap.GetPixels();
+        _frameStride = pixmap.RowBytes;
+        _frameWidth = pixelWidth;
+        _frameHeight = pixelHeight;
+
+        _frame.Canvas.Clear(SKColors.Transparent);
+
+        return _framePixels != IntPtr.Zero;
     }
 
     private void ReportMetrics(int width, int height, int scale)
@@ -385,62 +477,6 @@ public sealed class Gtk4SkiaView : IDisposable
 
     /// <summary>Repaints whenever the palette is swapped, by the system or by the application.</summary>
     private void OnThemeChanged(object? sender, EventArgs e) => OnHostInvalidated(sender, e);
-
-    private unsafe void EnsureBuffer(int width, int height, int scale)
-    {
-        if (_cairo is not null && _width == width && _height == height && _scale == scale)
-        {
-            return;
-        }
-
-        ReleaseBuffer();
-
-        var pixelWidth = width * scale;
-        var pixelHeight = height * scale;
-
-        try
-        {
-            // Cairo's Argb32 is premultiplied BGRA on little endian, which is Skia's Bgra8888/Premul.
-            _cairo = new Cairo.ImageSurface(Cairo.Format.Argb32, pixelWidth, pixelHeight);
-
-            var info = new SKImageInfo(pixelWidth, pixelHeight, SKColorType.Bgra8888, SKAlphaType.Premul);
-
-            // The pixel buffer belongs to Cairo and never moves, so the pointer stays valid for as
-            // long as the surface is alive.
-            fixed (byte* pixels = _cairo.GetData())
-            {
-                _skia = SKSurface.Create(info, (IntPtr)pixels, _cairo.Stride);
-            }
-
-            if (_skia is null)
-            {
-                ReleaseBuffer();
-                return;
-            }
-
-            _width = width;
-            _height = height;
-            _scale = scale;
-        }
-        catch (Exception ex)
-        {
-            Trace($"buffer {pixelWidth}x{pixelHeight} failed: {ex.GetType().Name}: {ex.Message}");
-            ReleaseBuffer();
-        }
-    }
-
-    private void ReleaseBuffer()
-    {
-        _skia?.Dispose();
-        _skia = null;
-
-        _cairo?.Dispose();
-        _cairo = null;
-
-        _width = 0;
-        _height = 0;
-        _scale = 0;
-    }
 
     private static void Trace(string message)
     {

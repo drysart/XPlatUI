@@ -487,12 +487,14 @@ installed for it. Then:
 dotnet run --project XPlatUIDemo.App
 ```
 
-The window is a plain `Gtk.ApplicationWindow` whose child is a `Gtk.DrawingArea`. The drawing area
-owns a Cairo image surface (`Cairo.Format.Argb32`, which is premultiplied BGRA - exactly what
-`SKColorType.Bgra8888` with `SKAlphaType.Premul` expects, so no swizzle is needed) and Skia paints
-directly into that surface's pixels; each frame is then blitted with `cr.SetSourceSurface`. Because
-Skia writes into the buffer behind Cairo's back, the surface is flushed before the paint and marked
-dirty after it - without the mark Cairo keeps serving stale data and the window stays blank.
+The window is a plain `Gtk.ApplicationWindow` whose child is a `Gtk.Overlay`: a `Gtk.Picture` is the
+main child and a transparent `Gtk.DrawingArea` sits on top of it. Skia paints into a premultiplied
+BGRA bitmap (`SKColorType.Bgra8888` with `SKAlphaType.Premul`), which is wrapped in a
+`Gdk.MemoryTexture` and handed to the picture; the drawing area is what reports the widget's size and
+scale factor and what receives input. The frame is not blitted with Cairo because GTK4 gives a
+drawing area a Cairo *recording* surface - there are no pixels to write into - so a bitmap can only
+reach the screen as a Cairo source, and Cairo answers a mutable source with a full size snapshot.
+GTK keeps the render nodes those snapshots end up in, so every repaint leaked one frame buffer.
 
 Everything else mirrors the Win32 backend: `Gtk.GestureClick`, `Gtk.EventControllerMotion` and
 `Gtk.EventControllerKey` feed `XPlatUiHost.Process*`, a 250 ms `GLib` timeout drives
