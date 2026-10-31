@@ -60,11 +60,10 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
-#if WINDOWS
         // Must happen before anything touches SkiaSharp: an AOT publish carries the native Skia
-        // library inside the executable instead of next to it.
+        // library inside the executable instead of next to it. On macOS the library stays in the
+        // bundle, so the loader finds it where it expects it and does nothing.
         SkiaNativeLoader.EnsureLoaded();
-#endif
 
         // Headless render of the sample UI, handy for visual checks and CI. It paints through the
         // headless backend rather than the window one, so it needs no window, no message loop and no

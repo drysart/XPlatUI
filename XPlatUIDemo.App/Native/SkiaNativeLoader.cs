@@ -1,24 +1,32 @@
-#if WINDOWS
 using System.IO.Compression;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using SkiaSharp;
 
 namespace XPlatUI.Demo.App;
 
 /// <summary>
 /// A NativeAOT publish produces a single native executable, so SkiaSharp's native library cannot
 /// simply sit next to it. When the application is published with AOT the build embeds a compressed
-/// copy of <c>libSkiaSharp.dll</c> as a manifest resource; this extracts it into a per-user cache
-/// and loads it before SkiaSharp's first P/Invoke.
+/// copy of the platform's Skia library as a manifest resource; this extracts it into a per-user cache
+/// and redirects SkiaSharp's P/Invoke at it before the first call into Skia.
 /// </summary>
 /// <remarks>
-/// Windows only: macOS and Linux get <c>libSkiaSharp.dylib</c> and <c>libSkiaSharp.so</c> as loose
-/// files from their native asset packages, and neither is published with AOT yet.
+/// Windows and Linux only. macOS is not published with AOT because a <c>.app</c> bundle already
+/// carries its native libraries as loose files inside the bundle, so there is nothing to fold in.
 /// </remarks>
 internal static class SkiaNativeLoader
 {
-    private const string NativeLibraryFileName = "libSkiaSharp.dll";
-    private const string ResourceName = "XPlatUI.Native.libSkiaSharp.dll.gz";
+    /// <summary>The name SkiaSharp's <c>DllImport</c> attributes ask for, without the platform suffix.</summary>
+    private const string ImportName = "libSkiaSharp";
+
+    /// <summary>The file the native asset package ships on this platform.</summary>
+    private static readonly string NativeLibraryFileName =
+        OperatingSystem.IsWindows() ? "libSkiaSharp.dll"
+        : OperatingSystem.IsMacOS() ? "libSkiaSharp.dylib"
+        : "libSkiaSharp.so";
+
+    private static readonly string ResourceName = $"XPlatUI.Native.{NativeLibraryFileName}.gz";
 
     /// <summary>Makes sure the native Skia library can be resolved by the P/Invoke loader.</summary>
     public static void EnsureLoaded()
@@ -49,10 +57,16 @@ internal static class SkiaNativeLoader
             Extract(resource, directory, path);
         }
 
-        // Loading by full path means the module is already in memory when SkiaSharp's first P/Invoke
-        // asks for "libSkiaSharp.dll" by name; the DLL directory also covers the search path.
-        NativeLibrary.Load(path);
-        SetDllDirectory(directory);
+        // Loading by full path is not enough on its own: libSkiaSharp.so carries no SONAME, so a
+        // later dlopen("libSkiaSharp.so") would search the library paths instead of reusing the
+        // module already in memory. Redirecting the import sidesteps that, and it is the same
+        // mechanism on Windows, where the library is otherwise looked up by name next to the
+        // executable.
+        NativeLibrary.SetDllImportResolver(typeof(SKBitmap).Assembly, (name, _, _) =>
+            string.Equals(name, ImportName, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(name, NativeLibraryFileName, StringComparison.OrdinalIgnoreCase)
+                ? NativeLibrary.Load(path)
+                : IntPtr.Zero);
     }
 
     private static string CacheKey(Assembly assembly, long archiveLength)
@@ -85,9 +99,4 @@ internal static class SkiaNativeLoader
             }
         }
     }
-
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool SetDllDirectory(string path);
 }
-#endif

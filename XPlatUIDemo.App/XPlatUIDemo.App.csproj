@@ -58,8 +58,20 @@
        cannot simply sit next to it: embed a compressed copy in the executable and let
        SkiaNativeLoader (Native/SkiaNativeLoader.cs) extract it on first use. The targets below are
        gated on $(PublishAot) at execution time, because publish-profile properties are not yet
-       visible while this file is evaluated; set $(EmbedSkiaSharpNative) to false to keep
-       libSkiaSharp.dll as a loose file next to the executable instead. -->
+       visible while this file is evaluated; set $(EmbedSkiaSharpNative) to false to keep the native
+       library as a loose file next to the executable instead.
+
+       $(SkiaSharpNativeFileName) both enables the targets and names the file they look for. It is
+       set for the two target frameworks that get published with AOT, and left empty for macOS,
+       where the library stays inside the .app bundle. -->
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net10.0-windows'">
+    <SkiaSharpNativeFileName>libSkiaSharp.dll</SkiaSharpNativeFileName>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net10.0'">
+    <SkiaSharpNativeFileName>libSkiaSharp.so</SkiaSharpNativeFileName>
+  </PropertyGroup>
+
   <UsingTask TaskName="GZipFile" TaskFactory="RoslynCodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
     <ParameterGroup>
       <Source ParameterType="System.String" Required="true" />
@@ -79,28 +91,29 @@
     </Task>
   </UsingTask>
 
-  <!-- Finds the libSkiaSharp.dll the package graph resolved for this RID and registers the compressed
+  <!-- Finds the Skia library the package graph resolved for this RID and registers the compressed
        copy as an embedded resource. This has to run before CreateManifestResourceNames (which is
        what turns @(EmbeddedResource) into compiler inputs), hence the hook on that target rather
        than on PrepareResourceNames, whose dependencies have already run by then. -->
   <Target Name="_LocateSkiaSharpNative"
-          Condition="'$(PublishAot)' == 'true' and '$(EmbedSkiaSharpNative)' != 'false' and '$(TargetFramework)' == 'net10.0-windows'"
+          Condition="'$(PublishAot)' == 'true' and '$(EmbedSkiaSharpNative)' != 'false' and '$(SkiaSharpNativeFileName)' != ''"
           DependsOnTargets="ResolvePackageAssets"
           BeforeTargets="CreateManifestResourceNames">
     <PropertyGroup>
-      <!-- IntermediateOutputPath is only known at execution time, so the archive path is computed here. -->
-      <SkiaSharpNativeArchive>$(IntermediateOutputPath)native\libSkiaSharp.dll.gz</SkiaSharpNativeArchive>
+      <!-- IntermediateOutputPath is only known at execution time, so the archive path is computed here.
+           Forward slashes so the same path works on Windows and Unix. -->
+      <SkiaSharpNativeArchive>$(IntermediateOutputPath)native/$(SkiaSharpNativeFileName).gz</SkiaSharpNativeArchive>
     </PropertyGroup>
     <ItemGroup>
       <_SkiaSharpNativeLibrary Include="@(NativeCopyLocalItems)"
-                               Condition="'%(NativeCopyLocalItems.Filename)%(NativeCopyLocalItems.Extension)' == 'libSkiaSharp.dll'" />
+                               Condition="'%(NativeCopyLocalItems.Filename)%(NativeCopyLocalItems.Extension)' == '$(SkiaSharpNativeFileName)'" />
     </ItemGroup>
     <Error Condition="'@(_SkiaSharpNativeLibrary)' == ''"
-           Text="Could not find libSkiaSharp.dll among the resolved native assets, so it cannot be embedded in the executable." />
+           Text="Could not find $(SkiaSharpNativeFileName) among the resolved native assets, so it cannot be embedded in the executable." />
     <ItemGroup>
       <!-- Type/WithCulture are what CreateManifestResourceNames and _GenerateCompileInputs key off;
            without them the SDK drops non-resx resources on the floor. -->
-      <EmbeddedResource Include="$(SkiaSharpNativeArchive)" LogicalName="XPlatUI.Native.libSkiaSharp.dll.gz">
+      <EmbeddedResource Include="$(SkiaSharpNativeArchive)" LogicalName="XPlatUI.Native.$(SkiaSharpNativeFileName).gz">
         <Type>Non-Resx</Type>
         <WithCulture>false</WithCulture>
       </EmbeddedResource>
@@ -108,7 +121,7 @@
   </Target>
 
   <Target Name="_CompressSkiaSharpNative"
-          Condition="'$(PublishAot)' == 'true' and '$(EmbedSkiaSharpNative)' != 'false' and '$(TargetFramework)' == 'net10.0-windows'"
+          Condition="'$(PublishAot)' == 'true' and '$(EmbedSkiaSharpNative)' != 'false' and '$(SkiaSharpNativeFileName)' != ''"
           DependsOnTargets="_LocateSkiaSharpNative"
           BeforeTargets="CreateManifestResourceNames"
           Inputs="@(_SkiaSharpNativeLibrary->'%(FullPath)')"
@@ -118,13 +131,14 @@
   </Target>
 
   <!-- The library now lives inside the executable, so keep it (and the debug symbols) out of the
-       publish directory; what is left is a single self-contained file. -->
+       publish directory; what is left is a single self-contained file. The symbols are .pdb on
+       Windows and .dbg on Linux. -->
   <Target Name="_ExcludeSkiaSharpNativeFromPublish"
-          Condition="'$(PublishAot)' == 'true' and '$(EmbedSkiaSharpNative)' != 'false' and '$(TargetFramework)' == 'net10.0-windows'"
+          Condition="'$(PublishAot)' == 'true' and '$(EmbedSkiaSharpNative)' != 'false' and '$(SkiaSharpNativeFileName)' != ''"
           AfterTargets="ComputeFilesToPublish">
     <ItemGroup>
       <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)"
-                             Condition="'%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'libSkiaSharp.dll' or '%(ResolvedFileToPublish.Extension)' == '.pdb'" />
+                             Condition="'%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == '$(SkiaSharpNativeFileName)' or '%(ResolvedFileToPublish.Extension)' == '.pdb' or '%(ResolvedFileToPublish.Extension)' == '.dbg'" />
     </ItemGroup>
   </Target>
 
