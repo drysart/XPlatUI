@@ -2,36 +2,42 @@
 
 A tiny, AOT-friendly, cross-platform UI layer that borrows the WinForms/WPF programming
 model (controls, docking, table layout, events) but draws everything with
-[SkiaSharp](https://github.com/mono/SkiaSharp). The library itself has no OS dependency: three
-small harnesses host it - `WinFormsApp3` on raw Win32, `GtkHarness` on GTK4 and `MacHarness` on
-AppKit - and all of them show the same sample UI from the shared `XPlatUIDemo` project.
+[SkiaSharp](https://github.com/mono/SkiaSharp). The library itself has no OS dependency: a backend
+supplies the window, the input, the clipboard, the dialogs and the system appearance, and the
+controls draw themselves on top of it. The same sample UI from the shared `XPlatUIDemo` project runs
+on all three platforms.
 
 ```
 XPlatUI/                  net10.0 class library (no OS-specific code, IsAotCompatible)
+  Application/            XPlatApplication, XPlatWindow, options, DI wiring, dialogs
   Core/                   primitives: control base class, geometry, painting, fonts, theme, clipboard
   Controls/               XPlatPanel, XPlatTableLayoutPanel, XPlatSplitContainer, XPlatLabel, XPlatRichLabel, XPlatButton, XPlatTextBox, XPlatImage
   Layout/                 row/column sizing styles
+  Menus/                  menu bar, menu, menu item, and the context menu contract
+  Platform/               the backend contract: IXPlatApplicationBackend, IXPlatWindowBackend, ...
+  Selection/              text selection and its clipboard plumbing
+  Services/               window-scoped service helpers
   XPlatUiHost.cs          platform-neutral host: layout, painting, input routing, focus
-XPlatUIDemo/              the sample control tree, shared by both harnesses
+XPlatUIDemo/              the sample control tree, shared by every platform
   DemoUi.cs               the demo layout, plus RenderToPng for headless renders
-WinFormsApp3/             Windows harness: raw Win32 + SkiaSharp (no WinForms, no System.Drawing)
-  Native/                 NativeMethods.cs (P/Invoke), HarnessWindow.cs (host), Win32Clipboard.cs
-  app.manifest            per-monitor v2 DPI awareness
-GtkHarness/               Linux harness: a GTK4 window that draws the same UI
-  GtkUiSurface.cs         the host: drawing area, Cairo/Skia surface, input forwarding
-  GtkSystemTheme.cs       IXPlatSystemTheme over GSettings and GtkSettings
-  GtkClipboard.cs         IXPlatClipboard over Gdk.Clipboard
-  GtkContextMenuPresenter.cs  IXPlatContextMenuPresenter built on Gtk.Popover
-MacHarness/               macOS harness: a native AppKit NSView that draws the same UI
-  MacUiView.cs            the host: NSView, Skia bitmap blitted as a CGImage, input forwarding
-  MacSystemTheme.cs       IXPlatSystemTheme over NSAppearance
-  MacClipboard.cs         IXPlatClipboard over NSPasteboard
-  MacContextMenuPresenter.cs  IXPlatContextMenuPresenter built on NSMenu
+XPlatUIDemo.App/          the one application: net10.0-windows, net10.0-macos or net10.0
+  Program.cs              pick a backend, describe a window, run
+  Native/                 SkiaNativeLoader.cs - unpacks the embedded Skia library after an AOT publish
+  app.manifest            per-monitor v2 DPI awareness (Windows)
+  Info.plist              the bundle identity (macOS)
+XPlatUI.Backend.Win32/    net10.0-windows backend over raw Win32 (no WinForms, no System.Drawing)
+XPlatUI.Backend.AppKit/   net10.0-macos backend over AppKit
+XPlatUI.Backend.Gtk4/     net10.0 backend over GTK4
+XPlatUI.Backend.Headless/ net10.0 backend that paints offscreen; what --render and the tests use
 ```
 
-`MacHarness` targets `net10.0-macos` instead of `net10.0`, so it is deliberately kept out of
-`WinFormsApp3.slnx`: the macOS workload cannot be installed on Windows and the Windows solution
-must not depend on it. See [On macOS (AppKit)](#on-macos-appkit).
+`XPlatUIDemo.App` builds exactly **one** target framework per operating system, chosen by
+`$([MSBuild]::IsOSPlatform(...))`: `net10.0-windows` on Windows, `net10.0-macos` on macOS and
+`net10.0` on Linux. That is deliberate rather than tidy. `net10.0-macos` needs the macOS workload
+and Xcode, which only exist on a Mac, so it must never appear in a TFM list that Windows has to
+evaluate; and a portable `net10.0` build *on a Mac* defines neither `WINDOWS` nor `MACOS`, so it
+would silently compile the GTK4 branch and produce a Linux binary. One TFM per OS is what keeps
+`Program.cs`'s `#if` blocks honest. See [On macOS (AppKit)](#on-macos-appkit).
 
 ## Design
 
@@ -51,7 +57,7 @@ must not depend on it. See [On macOS (AppKit)](#on-macos-appkit).
 | `XPlatSystemTheme` | `Application.ColorMode` | The seam a backend implements to report the OS appearance |
 
 Everything is drawn in **logical (96 DPI) coordinates**; the host adapter is responsible
-for scaling the canvas and the incoming pointer coordinates (the Win32 harness uses
+for scaling the canvas and the incoming pointer coordinates (the Win32 backend uses
 `GetDpiForWindow() / 96f`).
 
 ## Using it
@@ -225,9 +231,9 @@ The library itself stays platform free, so two things remain the adapter's job:
 
 * **Clipboard** - implement `IXPlatClipboard` (`GetText`/`SetText`, plus the optional
   `GetHtml`/`SetHtml` pair) and assign an instance to `XPlatClipboard.Current` once at startup;
-  without one an in-process fallback is used. The Win32 harness installs `Win32Clipboard`
-  (`Native/Win32Clipboard.cs`), which publishes a real `HTML Format` payload.
-* **Caret blink** - call `host.ProcessTick(elapsed)` from a timer (the Win32 harness uses a
+  without one an in-process fallback is used. The Win32 backend installs `Win32Clipboard`
+  (`Win32Clipboard.cs`), which publishes a real `HTML Format` payload.
+* **Caret blink** - call `host.ProcessTick(elapsed)` from a timer (the Win32 backend uses a
   250 ms `WM_TIMER`) so the caret blinks. Tests can call `host.ProcessTick(...)` directly.
 
 ### Selection and the clipboard
@@ -281,7 +287,7 @@ what makes copying a multi-control selection work no matter which control was ri
 `host.ProcessContextMenu(point)` builds an `XPlatContextMenu` and hands it to the presenter
 installed on the host. The library only owns the model; the backend decides how to show it.
 
-On Windows 11 the harness draws the menu itself instead of calling `TrackPopupMenuEx`, because the
+On Windows 11 the backend draws the menu itself instead of calling `TrackPopupMenuEx`, because the
 Win32 menu is the old flat style while the shell and WinUI menus are rounded, softly shadowed and
 backed by acrylic. The menu goes through the same Skia pipeline as the controls and is shown in a
 `WS_EX_LAYERED` popup, so it looks the same on every machine and follows `XPlatTheme` in light and
@@ -292,7 +298,7 @@ dark:
 | `XPlatMenuRenderer.Measure(menu, metrics, font, shadow)` | Lays the rows out and returns an `XPlatMenuLayout`: surface size, shadow margin, row bounds, `HitTest` and `NextPickable` |
 | `XPlatMenuRenderer.Paint(canvas, layout, hovered, surfaceAlpha)` | Draws the surface, drop shadow, hover pill, check column and right-aligned shortcut hints. It does not clear the canvas, so whatever the caller painted underneath shows through a translucent surface |
 | `XPlatMenuMetrics` | Row height, padding, corner radii and shadow extent; `Default` is tuned to the Windows 11 menu |
-| `Native/Win32MenuWindow.cs` | The popup: captures and blurs the backdrop, renders into a 32bpp DIB and hands it to the compositor with `UpdateLayeredWindow` |
+| `Win32MenuWindow.cs` | The popup: captures and blurs the backdrop, renders into a 32bpp DIB and
 
 `XPlatMenuRenderer` contains no platform code, so a macOS or Linux backend can reuse it verbatim
 instead of writing its own menu drawing. Because the popup is layered, the rounded corners and the
@@ -313,7 +319,7 @@ rows), `Enter` or a click invokes, and `Esc`, a click outside or losing activati
 
 This style is used when `Environment.OSVersion.Version.Build >= 22000`. On older Windows, or if the
 popup cannot be created, `Win32ContextMenuPresenter` falls back to `TrackPopupMenuEx`; pass
-`--classic-menus` to the harness to force the old menu on Windows 11 as well.
+`--classic-menus` to the application to force the old menu on Windows 11 as well.
 
 ### Appearance
 
@@ -355,8 +361,8 @@ XPlatSystemTheme.Refresh();                         // read IsDarkMode, swap the
 ```
 
 `XPlatSystemTheme.Refresh()` returns whether the appearance actually changed, and
-`host.RefreshTheme()` additionally invalidates the tree. The Win32 harness
-(`Native/Win32SystemTheme.cs`) reads
+`host.RefreshTheme()` additionally invalidates the tree. The Win32 backend
+(`Win32SystemTheme.cs`) reads
 `HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize\AppsUseLightTheme` (falling back
 to the undocumented `uxtheme` `ShouldSystemUseDarkMode`), reacts to `WM_SETTINGCHANGE` and
 `WM_THEMECHANGED`, and darkens the title bar with
@@ -365,39 +371,53 @@ palette change updates the chrome too.
 
 ## Writing a backend
 
-Implement the small surface that `Native/HarnessWindow.cs` implements for Win32 and that
-`GtkHarness/GtkUiSurface.cs` implements for GTK4:
+A backend is two interfaces plus one registration hook. `IXPlatApplicationBackend` owns the platform
+loop and the platform-wide services; `IXPlatWindowBackend` owns one native window and the
+`XPlatUiHost` that paints into it. `XPlatUI.Backend.Win32`, `XPlatUI.Backend.AppKit`,
+`XPlatUI.Backend.Gtk4` and `XPlatUI.Backend.Headless` are the four worked examples.
 
-1. Create a native window and an `SKSurface` (or a bitmap-backed surface) of its client size.
-2. On resize: `host.SetClientSize(width / dpiScale, height / dpiScale)` and repaint.
-3. On paint: `canvas.Scale(dpiScale)` then `host.Paint(canvas)`.
-4. Forward pointer/key events to the `Process*` methods (divide coordinates by `dpiScale`).
-5. Repaint when `Invalidated` fires.
-6. Install a clipboard into `XPlatClipboard.Current` and call `host.ProcessTick(elapsed)` from
-   a timer (see below).
-7. Install an `IXPlatSystemTheme` into `XPlatSystemTheme.Current` at startup, then call
-   `host.RefreshTheme()` whenever the OS appearance changes.
-8. Install an `IXPlatContextMenuPresenter` into `host.ContextMenuPresenter`, or hand the menu to
-   `XPlatMenuRenderer` if the platform has no native menu of its own.
+1. `Initialize` gets the `XPlatApplication`; `Run` enters the platform loop and returns its exit
+   code; `Quit` leaves it; `Invoke` marshals a callback onto the UI thread.
+2. `CreateWindow` returns an `IXPlatWindowBackend`. It creates the native window and an `SKSurface`
+   (or a bitmap-backed surface) of its client size, and it creates and owns the `XPlatUiHost`.
+3. On resize: `Host.SetClientSize(width / scale, height / scale)`. On paint: `canvas.Scale(scale)`
+   then `Host.Paint(canvas)`.
+4. Forward pointer, key and text events into `Host.ProcessMouseMove/Down/Up/Leave`,
+   `ProcessKeyDown/Up`, `ProcessTextInput` and `ProcessContextMenu`, dividing coordinates by the
+   scale factor. A timer calls `Host.ProcessTick(elapsed)`.
+5. Raise `Shown`, `CloseRequested`, `Closed`, `Activated`, `Deactivated`, `ClientSizeChanged`,
+   `ScaleChanged` and `StateChanged`; the model turns them into `XPlatWindow` events.
+6. `RegisterServices` adds the platform services to MEDI's `IServiceCollection` - the clipboard, the
+   system theme, the dialog service and the context menu presenter. Doing it through one hook
+   instead of a `Create*` member per service keeps adding a service from breaking every backend, and
+   keeps them lazy, so the headless backend never constructs a clipboard it will not use.
+7. Implement `GetScreens`; `Shutdown` releases whatever `Initialize` took.
+
+Two contract details are easy to miss. `ShowMessage`, `OpenFile`, `SaveFile`, `SelectFolder` and
+`ShowDialog` are **synchronous** but re-enter the platform loop, so a backend has to tolerate a
+nested loop and keep dispatching `Invoke` callbacks inside it. And `MenuBar` is per window: AppKit
+mirrors the active window's bar into the single global macOS menu bar, which is the only place the
+presentations diverge.
 
 ## NativeAOT
 
 `XPlatUI` sets `IsAotCompatible` and uses no reflection, so it publishes with NativeAOT.
-Verified locally with the Win32 harness itself (no Windows Forms, no System.Drawing). The
-`FolderProfile` publish profile (`WinFormsApp3/Properties/PublishProfiles/FolderProfile.pubxml`)
-is preconfigured for AOT + trimming, so publishing is just:
+Verified locally with the Win32 build of the demo application itself (no Windows Forms, no
+System.Drawing). The `FolderProfile` publish profile
+(`XPlatUIDemo.App/Properties/PublishProfiles/FolderProfile.pubxml`) is preconfigured for AOT +
+trimming, so publishing is just:
 
 ```
-dotnet publish WinFormsApp3\WinFormsApp3.csproj -p:PublishProfile=FolderProfile
+dotnet publish XPlatUIDemo.App\XPlatUIDemo.App.csproj -p:PublishProfile=FolderProfile
 ```
 
 or right-click **Publish** in Visual Studio. The result is a **single** self-contained
-`WinFormsApp3.exe` (~7.9 MB, of which ~5.2 MB is the compressed Skia native binary) and an optional
-`WinFormsApp3.pdb` for debugging. Nothing else is needed to run it - the AOT build opens the real
+`XPlatUIDemoApp.exe` (~8.4 MB, of which ~5.2 MB is the compressed Skia native binary) and an optional
+`XPlatUIDemoApp.pdb` for debugging. Nothing else is needed to run it - the AOT build opens the real
 window and renders the demo.
 
 SkiaSharp only ships a dynamic `libSkiaSharp.dll`, so a native executable cannot simply link it. When
-`PublishAot` is on, `WinFormsApp3.csproj` gzips the RID-specific `libSkiaSharp.dll` and embeds it in
+`PublishAot` is on, `XPlatUIDemo.App.csproj` gzips the RID-specific `libSkiaSharp.dll` and embeds it in
 the assembly as the manifest resource `XPlatUI.Native.libSkiaSharp.dll.gz`; `Native/SkiaNativeLoader.cs`
 extracts it on first use to `%LOCALAPPDATA%\XPlatUI\native\<version>-<size>\libSkiaSharp.dll` (cached,
 so later runs just load it) and hands it to the runtime before SkiaSharp's first P/Invoke. A regular
@@ -413,40 +433,46 @@ calls `vcvars64.bat` first):
 
 ```
 call "C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
-dotnet publish WinFormsApp3\WinFormsApp3.csproj -p:PublishProfile=FolderProfile
+dotnet publish XPlatUIDemo.App\XPlatUIDemo.App.csproj -p:PublishProfile=FolderProfile
 ```
 
 From a plain shell the SDK locates the toolset itself with `vswhere.exe`; if that fails (for
 example a `vswhere.exe` error leaking into the link step), publish from a Developer prompt instead.
 
-## Running the harness
+The Skia embedding targets only run for the Windows target framework, so a `PublishAot` publish of
+any other target framework is unaffected by them. macOS and Linux are not published with AOT yet - see
+[Bundle size](#bundle-size).
+
+## Running the application
 
 ```
-dotnet run --project WinFormsApp3
+dotnet run --project XPlatUIDemo.App
 ```
 
-`HarnessWindow` (`Native/HarnessWindow.cs`) creates the window with raw `user32` P/Invoke, owns a
-32-bit DIB section that Skia draws into, blits it on `WM_PAINT`, and forwards mouse/keyboard
-messages to the `XPlatUiHost`. `Program.cs` wires up `DemoUi` and runs the message pump.
+`Program.cs` is the whole program: it picks the backend for the platform this build is for, describes
+one `XPlatWindow` around `DemoUi.CreateRoot()`, and runs the `XPlatApplication`. Everything else lives
+behind the backend - `Win32WindowBackend` creates the window with raw `user32` P/Invoke, owns a 32-bit
+DIB section that Skia draws into, blits it on `WM_PAINT`, and forwards mouse/keyboard messages to the
+`XPlatUiHost`.
 
 To render the same sample UI headlessly (useful for visual checks in CI):
 
 ```
-WinFormsApp3.exe --render out.png 1280 760
+XPlatUIDemoApp.exe --render out.png 1280 820
 ```
 
 Add `--light` or `--dark` to either mode to force an appearance instead of using the system one; the
 header's **Switch appearance** button flips it at runtime. `--classic-menus` forces the old
-`TrackPopupMenuEx` context menus. The sample UI is laid out for a 1280 x 760 client area at 96 DPI
-points and the harness scales the Skia canvas by `GetDpiForWindow(hwnd) / 96`, sizing its client
-area to `1280 x 760` multiplied by that scale (clamped to the monitor work area) so the demo is
+`TrackPopupMenuEx` context menus. The sample UI is laid out for a 1280 x 820 client area at 96 DPI
+points and the backend scales the Skia canvas by `GetDpiForWindow(hwnd) / 96`, sizing its client
+area to `1280 x 820` multiplied by that scale (clamped to the monitor work area) so the demo is
 never cropped on a high-DPI monitor. The **Selection and clipboard** card is the one to try:
 drag down from its label, over the whole-control button and into the text box, then right-click
 the selection.
 
 ### On Linux (GTK4)
 
-`GtkHarness` is the same harness for Linux. It uses the
+The Linux build of `XPlatUIDemo.App` uses the
 [GirCore](https://github.com/gircore/gircore) GTK4 bindings, so the build needs the GTK4 runtime and
 development headers, plus a font backend for SkiaSharp:
 
@@ -458,17 +484,23 @@ The Skia native library comes from the `SkiaSharp.NativeAssets.Linux` package, s
 installed for it. Then:
 
 ```
-dotnet run --project GtkHarness
+dotnet run --project XPlatUIDemo.App
 ```
 
-The window is a plain `Gtk.ApplicationWindow` whose child is a `Gtk.DrawingArea`. The drawing area
-owns a Cairo image surface (`Cairo.Format.Argb32`, which is premultiplied BGRA - exactly what
-`SKColorType.Bgra8888` with `SKAlphaType.Premul` expects, so no swizzle is needed) and Skia paints
-directly into that surface's pixels; each frame is then blitted with `cr.SetSourceSurface`. Because
-Skia writes into the buffer behind Cairo's back, the surface is flushed before the paint and marked
-dirty after it - without the mark Cairo keeps serving stale data and the window stays blank.
+The window is a plain `Gtk.ApplicationWindow` whose child is a `Gtk.Overlay`: a `Gtk.Picture` is the
+main child and a transparent `Gtk.DrawingArea` sits on top of it. Skia paints into a premultiplied
+BGRA bitmap (`SKColorType.Bgra8888` with `SKAlphaType.Premul`), which is wrapped in a
+`Gdk.MemoryTexture` and handed to the picture; the drawing area is what reports the widget's size and
+scale factor and what receives input. The frame is not blitted with Cairo because GTK4 gives a
+drawing area a Cairo *recording* surface - there are no pixels to write into - so a bitmap can only
+reach the screen as a Cairo source, and Cairo answers a mutable source with a full size snapshot.
+GTK keeps the render nodes those snapshots end up in, so every repaint leaked one frame buffer.
+`GLib.Bytes.New` copies the frame into memory GLib owns, so a texture stays valid however the Skia
+surface behind it is resized; aliasing the pixels with `NewStatic` instead faults inside the GL
+driver on the first resize, because the renderer still holds the previous frame's node. The copy is
+the price of that - about 1.3 ms of a 4.4 ms frame at 2560x1452 on llvmpipe.
 
-Everything else mirrors the Win32 harness: `Gtk.GestureClick`, `Gtk.EventControllerMotion` and
+Everything else mirrors the Win32 backend: `Gtk.GestureClick`, `Gtk.EventControllerMotion` and
 `Gtk.EventControllerKey` feed `XPlatUiHost.Process*`, a 250 ms `GLib` timeout drives
 `ProcessTick` (caret blinking), and the system appearance is read from
 `org.gnome.desktop.interface color-scheme` (falling back to `GTK_THEME` and
@@ -476,62 +508,98 @@ Everything else mirrors the Win32 harness: `Gtk.GestureClick`, `Gtk.EventControl
 UI font (`GtkSettings.GtkFontName`) is handed to the library through `XPlatTheme.FontFamily`, so the
 controls look native on GNOME.
 
-The same headless switches work:
+The same headless switches work, and they run before any GTK type is loaded, so they need no display
+at all - no Xvfb, and they work over ssh:
 
 ```
-dotnet GtkHarness.dll --render out.png 1280 760 --dark
+dotnet XPlatUIDemoApp.dll --render out.png 1280 820 --dark
 ```
+
+That ordering is load-bearing rather than tidy. `Gtk.Module.Initialize()` opens the display and
+terminates the process with exit code 1 when there is none, and it does so before
+`Gtk.Functions.InitCheck()` could report the failure, so anything GTK-dependent in the render path
+makes it unusable on a headless machine. The renderer therefore reads neither `GtkSettings` nor
+GSettings: it takes the palette from `--dark` / `--light` (light by default) and SkiaSharp's default
+typeface instead of the desktop UI font. That also makes CI screenshots deterministic, at the cost of
+the render not using the same font as the window does.
 
 Set `XPLATUI_DEBUG=1` to trace host work (frames, buffer reallocation) to stderr.
 
 ### On macOS (AppKit)
 
-`MacHarness` is the same harness as a native macOS application. It targets `net10.0-macos` and uses
-Apple's AppKit bindings, so the window, its title bar, the menu bar, the context menus and the
+The macOS build of `XPlatUIDemo.App` is a native macOS application. It targets `net10.0-macos` and
+uses Apple's AppKit bindings, so the window, its title bar, the menu bar, the context menus and the
 clipboard are all the real thing; only the contents of the window are drawn by the library.
 
-That target framework is why the project is **not** part of `WinFormsApp3.slnx`: it needs the macOS
-workload, which cannot be installed on Windows. Build it on a Mac, or let the `macOS harness` GitHub
-Actions workflow do it:
+That target framework is why the macOS build has to happen on a Mac: it needs the macOS workload,
+which cannot be installed on Windows. `Program.cs` selects it with
+`$([MSBuild]::IsOSPlatform('osx'))`, so the project is part of `WinFormsApp3.slnx` on every platform
+and simply resolves to a different target framework on each. Build it on a Mac, or let the
+`macOS build` GitHub Actions workflow do it - that workflow runs on pull requests against `master`
+and on demand (`workflow_dispatch`), not on every push, so a branch that is still being worked on
+is expected to be built locally:
 
 ```
 dotnet workload install macos
-dotnet build MacHarness/MacHarness.csproj
-open MacHarness/bin/Debug/net10.0-macos/osx-arm64/MacHarness.app
+dotnet build XPlatUIDemo.App/XPlatUIDemo.App.csproj
+open XPlatUIDemo.App/bin/Debug/net10.0-macos/osx-arm64/XPlatUIDemoApp.app
 ```
 
 The macOS workload only accepts an Xcode whose major.minor version matches the one its bindings were
 generated against, and the error it raises (`requires Xcode 27.1`) is easy to mistake for a real
-problem. Install the Xcode it names - the `macOS harness` workflow runs on the `xcode-27` image and
+problem. Install the Xcode it names - the `macOS build` workflow runs on the `xcode-27` image and
 switches to `/Applications/Xcode_27.1.app` for exactly this reason. Nothing here compiles native
 code, so as a last resort the check can be turned off instead:
 
 ```
-dotnet build MacHarness/MacHarness.csproj -p:ValidateXcodeVersion=false
+dotnet build XPlatUIDemo.App/XPlatUIDemo.App.csproj -p:ValidateXcodeVersion=false
 ```
 
-The bundle is produced by the build itself; its identity lives in `MacHarness/Info.plist`. It is
-signed ad-hoc, so a copy downloaded from CI needs `xattr -dr com.apple.quarantine MacHarness.app`
+The bundle is produced by the build itself; its identity lives in `XPlatUIDemo.App/Info.plist`. It is
+signed ad-hoc, so a copy downloaded from CI needs `xattr -dr com.apple.quarantine XPlatUIDemoApp.app`
 before it will open. The same headless switches work, and they run before AppKit is initialised, so
 they work over ssh too:
 
 ```
-MacHarness.app/Contents/MacOS/MacHarness --render out.png 1280 760 --dark
+XPlatUIDemoApp.app/Contents/MacOS/XPlatUIDemoApp --render out.png 1280 820 --dark
 ```
 
-`MacUiView` is a plain `NSView`, flipped so y grows downwards like every other backend. Skia paints
-into an `SKBitmap` of premultiplied BGRA pixels, one `CGDataProvider` wraps those pixels where they
-are, and `DrawRect` builds a `CGImage` over that provider, so a frame costs no copy and allocates
-nothing but the image itself. The provider is built with the `Action<IntPtr>` overload on purpose:
-the `(IntPtr, int, bool)` overload reads its `bool` as *owns the buffer* and, when it is false,
-copies the whole block before wrapping it, which on a Retina window is a 16 MB `memcpy` per frame.
-The `CGImage` is rebuilt for every frame, because CoreGraphics treats an image as immutable and keeps
-whatever it decoded out of the provider's memory: one cached image would pin the window to the
-contents of the very first frame, which is drawn before the control tree exists. There is no
-SkiaSharp view for AppKit in SkiaSharp 4.x, which is why the view draws itself. The buffer is made
-half again as large as the window needs, and only given back once the window is twice as small, so
-dragging a window edge across the screen reallocates it once instead of once per frame - each of
-those was a multi-megabyte native allocation that the garbage collector never sees. Because the
+`AppKitSkiaView` is a plain `NSView`, flipped so y grows downwards like every other backend, and it is
+layer-backed: the view returns true from `WantsUpdateLayer` and does its work in `UpdateLayer`, so a
+frame never goes through a CoreGraphics context of its own. Skia paints into an `SKBitmap` of
+premultiplied BGRA pixels, one `CGDataProvider` wraps those pixels where they are, and each frame
+builds a `CGImage` over that provider and hands it to the view's `CALayer` as its `Contents`, with
+`ContentsGravity` set to `Resize` and `ContentsScale` set to the backing scale factor. A frame
+costs no copy and allocates nothing but the image itself. The provider is built with the
+`Action<IntPtr>` overload on purpose: the `(IntPtr, int, bool)` overload reads its `bool` as *owns
+the buffer* and, when it is false, copies the whole block before wrapping it, which on a Retina
+window is a 16 MB `memcpy` per frame. The `CGImage` is rebuilt for every frame, because
+CoreGraphics treats an image as immutable and keeps whatever it decoded out of the provider's
+memory: one cached image would pin the window to the contents of the very first frame, which is
+drawn before the control tree exists. Because the view is flipped, its layer reports
+`GeometryFlipped` and `ContentsAreFlipped`; Core Animation compensates when it composites the layer,
+so the image shows the right way up. Rendering that layer on its own with `RenderInContext`
+*does* mirror it, so to capture what the screen shows, render the window's root layer - it is the
+unflipped one - and the result matches the `--render` image. There is no SkiaSharp view for AppKit
+in SkiaSharp 4.x, which is why the view draws itself.
+
+Being layer backed costs one thing that a `DrawRect` view gets for free. AppKit does not mark a
+layer backed view dirty when its bounds change: the default is to leave the layer showing what it
+already has and let the compositor stretch it to the new size. The symptom is unmistakable - a drag
+shows the frame from before the drag started, scaled, for the whole length of the drag, and the
+window only paints at its new size once the mouse is released. `NeedsDisplayOnBoundsChange` would be
+the documented switch for this, but the .NET binding does not surface it, so the view overrides
+`SetFrameSize` and asks for a frame whenever the size actually changed. That is the difference
+between one frame for a two hundred step drag and one frame per step.
+
+The buffer is made a
+quarter again as large as the window needs, so a drag across the screen reallocates it once instead
+of once per frame - each of those was a multi-megabyte native allocation that the garbage collector
+never sees - and it is only given back once the window has held a size that needs under half its
+area for three quarters of a second. Waiting for the window to hold still is what makes the smaller
+headroom affordable: an in-and-out drag would otherwise be one reallocation per step, and every one
+of those leaves a freed multi-megabyte block in the allocator's large zone, which is where the
+process's memory high-water mark came from. Because the
 buffer outgrows the window, each frame clips the canvas to the window before painting; the clip is
 applied *after* the scale, in the same logical units the controls paint in, or it would only cover
 the top left `1/scale` of the view. Mouse and
@@ -541,9 +609,38 @@ keyboard events are forwarded to `XPlatUiHost.Process*` from the `NSResponder` o
 (`NSAppearance.FindBestMatch`), and a tracking area keeps `MouseMoved`/`MouseEntered`/`MouseExited`
 coming so hover states and cursors work.
 
-macOS reports accelerators through `Command` rather than `Control`, so `MacMenuBar` gives Cut, Copy,
+Measuring that memory needs `vmmap -summary <pid>` and its "Physical footprint" line, not `ps`:
+resident size counts over a gigabyte of shared library pages that the process never dirtied, and it
+reads about twice the real number. An idle window of 1280x820 on a Retina screen sits near 128 MB,
+of which roughly a third is the .NET runtime, a quarter is the two IOSurfaces the window server
+keeps for the window, and the rest is the drawing buffer and Skia. While frames are actually
+flowing - a drag, a blinking caret - the footprint rises by another ~90 MB of window server
+surfaces, and it falls back within half a minute of the window going quiet, so a spike there is
+the compositor pipelining updates rather than a leak.
+
+A live resize is the worst case, because it is the only time frames arrive as fast as the machine
+can produce them. Driving the window through 200 resizes between 720x520 and 1560x980 points on a
+2x screen, the peak footprint is 212 MB. Getting there took two fixes. The first was the buffer's
+1.25x headroom and its settle-gated shrink: before them the same drag peaked at 1.0 GB, because the
+old code reallocated on nearly every frame and the freed multi-megabyte blocks piled up faster than
+the allocator could return them.
+
+The second was the presentation. Blitting the frame's `CGImage` into the view's own CoreGraphics
+context - `CGContext.DrawImage` from `DrawRect`, which is the obvious thing to write - made
+CoreGraphics hold a full-window backing store per frame in flight, and at near-full-screen on a 2x
+screen that is tens of megabytes a frame: the same drag peaked at 1.8 GB. Four runs of the same
+drag isolated it. Returning before the `CGImage` existed peaked at 228 MB; building the image but
+not drawing it, 224 MB; drawing it, 1798 MB; and drawing it without the flipped CTM, 1858 MB. So
+the image is free, the flip is irrelevant, and the blit is the entire cost. Handing the same image
+to the layer instead peaked at 150 MB in that harness, against 123 MB for a window that paints
+nothing but a solid colour. Two rules follow from it: never `DrawImage` a window-sized image into a
+view's context during a live resize, and when the layer stops showing the frame it was given, check
+that `ReleaseBuffer` cleared `Contents` before freeing the pixels - a layer holding an image over
+freed memory draws whatever the allocator left there.
+
+macOS reports accelerators through `Command` rather than `Control`, so `AppKitMenuBar` gives Cut, Copy,
 Paste and Select All real menu items whose `Cmd` key equivalents feed the same editing commands into
-the host. `MacKeyMap` deliberately does *not* map `Command` onto `XPlatModifiers.Control`: a `Cmd`
+the host. `AppKitKeyMap` deliberately does *not* map `Command` onto `XPlatModifiers.Control`: a `Cmd`
 combination that the menu bar did not claim is swallowed instead of typing its letter, while
 `Control` combinations reach the library as shortcuts. The system UI font (`SF Pro Text`) is handed
 to the library through `XPlatTheme.FontFamily`.
@@ -552,7 +649,9 @@ Set `XPLATUI_DEBUG=1` to trace frames and buffer reallocation to stderr. It also
 line every five seconds - frame rate, frames drawn, buffers allocated, managed heap, total managed
 allocation and resident memory - which is how a runaway repaint (a high frame rate with idle input)
 or a per-frame retention (resident memory climbing while the frame rate stays low) shows itself.
-Resident memory is the figure to read: `Process.PrivateMemorySize64` is always zero on macOS. If a
+The line prints resident memory, which is fine for spotting a trend but reads about twice the real
+figure; take the absolute number from `vmmap -summary` (`Process.PrivateMemorySize64` is always zero
+on macOS). If a
 frame cannot be produced at all, the view paints the reason over the whole window instead of
 leaving it blank, so a broken setup reports itself on screen rather than only on a console.
 
@@ -580,8 +679,8 @@ exactly the same pixels. The project leaves `LinkMode` alone.
 Publishing therefore needs no extra switches:
 
 ```
-dotnet publish MacHarness/MacHarness.csproj -c Release -r osx-arm64 -p:CreatePackage=false
-open MacHarness/bin/Release/net10.0-macos/osx-arm64/MacHarness.app
+dotnet publish XPlatUIDemo.App/XPlatUIDemo.App.csproj -c Release -r osx-arm64 -p:CreatePackage=false
+open XPlatUIDemo.App/bin/Release/net10.0-macos/osx-arm64/XPlatUIDemoApp.app
 ```
 
 Two details are easy to trip over:
@@ -596,8 +695,8 @@ Two details are easy to trip over:
 What is left is almost entirely native code that no trimmer can touch: `libSkiaSharp.dylib` is
 15.2 MB, `libcoreclr.dylib` 5.9 MB and `libclrjit.dylib` 3.0 MB out of the ~35 MB. The remaining
 ~11 MB of managed assemblies is what a NativeAOT publish would remove; that is not wired up for
-macOS yet (the Windows harness does publish AOT, see above).
+macOS yet (the Windows build does publish AOT, see above).
 
-The `macOS harness` workflow publishes all three link modes, renders each bundle with `--render`,
+The `macOS build` workflow publishes all three link modes, renders each bundle with `--render`,
 compares the *decoded* bitmaps (`sips` to BMP plus `cmp`, because a one pixel change rewrites most of
 a PNG) and reports the numbers in the job summary.

@@ -104,6 +104,23 @@ public class XPlatControl : IDisposable
     /// <summary>The host this control is attached to, if any (resolved through the parent chain).</summary>
     public XPlatUiHost? Host => _host ?? Parent?.Host;
 
+    /// <summary>
+    /// The window-scoped service provider, or null when this control is not in a window. Resolved
+    /// through <see cref="Host"/>, so it is only available once the control is attached.
+    /// </summary>
+    public IServiceProvider? Services => Host?.Services;
+
+    /// <summary>Resolves <typeparamref name="TService"/> from <see cref="Services"/>, or null when there is none.</summary>
+    /// <typeparam name="TService">The service to resolve.</typeparam>
+    public TService? GetService<TService>() where TService : class => Host?.GetService<TService>();
+
+    /// <summary>
+    /// The window this control is shown in, or null when it is not in one. Resolved through
+    /// <see cref="Host"/>, like <see cref="Services"/>.
+    /// </summary>
+    /// <remarks>Useful for parenting a dialog on the window the user is looking at.</remarks>
+    public XPlatWindow? Window => Host?.Window;
+
     /// <summary>Text shown by the control. Simple controls use it directly.</summary>
     public virtual string Text
     {

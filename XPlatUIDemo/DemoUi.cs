@@ -1,5 +1,6 @@
 using SkiaSharp;
 using XPlatUI;
+using XPlatUI.Backend.Headless;
 using XDock = XPlatUI.DockStyle;
 
 namespace XPlatUI.Demo;
@@ -14,6 +15,7 @@ public sealed class DemoUi
     private XPlatLabel _statusLabel = null!;
     private XPlatLabel _counterLabel = null!;
     private XPlatButton _primaryButton = null!;
+    private XPlatButton _dialogAnchor = null!;
     private int _clicks;
 
     public DemoUi()
@@ -24,24 +26,37 @@ public sealed class DemoUi
     /// <summary>The root of the sample control tree.</summary>
     public XPlatControl Root { get; }
 
+    /// <summary>Builds a fresh sample control tree, for hosts that only need the controls.</summary>
+    /// <returns>The root of a new sample tree.</returns>
+    public static XPlatControl CreateRoot() => new DemoUi().Root;
+
     /// <summary>
-    /// Renders the sample UI to a PNG without creating a window. Useful for
-    /// visual regression tests and for verifying the render pipeline on CI.
+    /// Renders the sample UI to a PNG without opening a window. Useful for visual regression tests
+    /// and for verifying the render pipeline on CI.
     /// </summary>
+    /// <remarks>
+    /// This goes through the real application model - <see cref="XPlatApplication"/>,
+    /// <see cref="XPlatWindow"/> and the headless backend - so a regression here is a regression in
+    /// the model, not just in the demo. The window's client size is set explicitly, so the model's
+    /// default sizing never runs and the output matches what the harnesses paint.
+    /// </remarks>
+    /// <param name="path">The file to write.</param>
+    /// <param name="width">Client width in logical pixels.</param>
+    /// <param name="height">Client height in logical pixels.</param>
     public static void RenderToPng(string path, int width, int height)
     {
-        var host = new XPlatUiHost();
-        host.Root = new DemoUi().Root;
-        host.SetClientSize(width, height);
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
 
-        var info = new SKImageInfo(width, height, SKColorType.Bgra8888, SKAlphaType.Premul);
-        using var surface = SKSurface.Create(info);
-        host.Paint(surface.Canvas);
+        var backend = new HeadlessApplicationBackend();
+        using var application = new XPlatApplication(backend);
+        var window = new XPlatWindow("XPlatUI sample", CreateRoot())
+        {
+            ClientSize = new SKSize(width, height),
+        };
 
-        using var image = surface.Snapshot();
-        using var data = image.Encode(SKEncodedImageFormat.Png, 100);
-        using var stream = File.Create(path);
-        data.SaveTo(stream);
+        window.Shown += (_, _) => backend.LastWindow!.SavePng(path);
+        window.Show();
+        application.Run();
     }
 
     private XPlatControl BuildUi()
@@ -201,6 +216,7 @@ public sealed class DemoUi
 
         content.Controls.Add(BuildSplitDemo());
         content.Controls.Add(BuildTextInputDemo());
+        content.Controls.Add(BuildDialogDemo());
         content.Controls.Add(BuildCardTable());
 
         return content;
@@ -300,6 +316,135 @@ public sealed class DemoUi
 
         return field;
     }
+
+    private XPlatPanel BuildDialogDemo()
+    {
+        // One row rather than the label-above-content shape the other strips use, because the card
+        // table below is the part of the sample worth the vertical space.
+        var section = new XPlatPanel
+        {
+            Dock = XDock.Bottom,
+            Height = 56f,
+            ShowFrame = false,
+            IsCard = false,
+            BackColor = null,
+            BorderWidth = 0f,
+            CornerRadius = 0f,
+            Padding = new XPlatThickness(20f, 0f, 20f, 12f),
+        };
+
+        var row = new XPlatPanel
+        {
+            Dock = XDock.Fill,
+            ShowFrame = false,
+            IsCard = false,
+            BackColor = null,
+            BorderWidth = 0f,
+            CornerRadius = 0f,
+            Padding = new XPlatThickness(0f),
+        };
+
+        row.Controls.Add(new XPlatLabel("Dialogs")
+        {
+            Dock = XDock.Left,
+            AutoSize = false,
+            Width = 92f,
+            Font = XPlatTheme.SectionFont,
+            TextAlign = XPlatContentAlignment.MiddleLeft,
+        });
+
+        row.Controls.Add(DialogButton("Message box", () => ShowMessageBox()));
+        row.Controls.Add(DialogButton("Open file", () => ShowFileDialog(DialogKind.Open)));
+        row.Controls.Add(DialogButton("Save file", () => ShowFileDialog(DialogKind.Save)));
+        row.Controls.Add(DialogButton("Pick folder", () => ShowFileDialog(DialogKind.Folder)));
+
+        _dialogAnchor = (XPlatButton)row.Controls[1];
+
+        section.Controls.Add(row);
+        return section;
+    }
+
+    private static XPlatButton DialogButton(string text, Action onClick)
+    {
+        var button = new XPlatButton(text)
+        {
+            Dock = XDock.Left,
+            AutoSize = true,
+            Style = XPlatButtonStyle.Secondary,
+            Margin = new XPlatThickness(0f, 0f, 8f, 0f),
+        };
+        button.Click += (_, _) => onClick();
+        return button;
+    }
+
+    private void ShowMessageBox()
+    {
+        if (OwnerWindow is not { } owner)
+        {
+            return;
+        }
+
+        var result = owner.Application.Dialogs.ShowMessage(
+            new XPlatMessageBoxOptions
+            {
+                Message = "This box is drawn by the platform, not by XPlatUI.\n\n" +
+                          "It is modal to the window and the sample keeps painting behind it.",
+                Title = "XPlatUI sample",
+                Buttons = XPlatMessageBoxButtons.YesNoCancel,
+                Icon = XPlatMessageBoxIcon.Information,
+                DefaultResult = XPlatDialogResult.Yes,
+            },
+            owner);
+
+        SetStatus($"Message box returned {result}.");
+    }
+
+    private void ShowFileDialog(DialogKind kind)
+    {
+        if (OwnerWindow is not { } owner)
+        {
+            return;
+        }
+
+        var dialogs = owner.Application.Dialogs;
+
+        var options = new XPlatFileDialogOptions
+        {
+            Title = kind switch
+            {
+                DialogKind.Open => "Open a file",
+                DialogKind.Save => "Save a file",
+                _ => "Pick a folder",
+            },
+            FileName = kind == DialogKind.Save ? "untitled.txt" : null,
+            OverwritePrompt = true,
+        };
+
+        if (kind != DialogKind.Folder)
+        {
+            options.Filters.Add(new XPlatFileFilter("Text files", "*.txt", "*.md"));
+            options.Filters.Add(new XPlatFileFilter("All files", "*.*"));
+        }
+
+        var path = kind switch
+        {
+            DialogKind.Open => dialogs.OpenFile(options, owner),
+            DialogKind.Save => dialogs.SaveFile(options, owner),
+            _ => dialogs.PickFolder(options, owner),
+        };
+
+        SetStatus(path is null ? "Dialog cancelled." : $"Chose {path}");
+    }
+
+    private enum DialogKind
+    {
+        Open,
+        Save,
+        Folder,
+    }
+
+    /// <summary>The window the demo is shown in, used to parent the dialogs.</summary>
+    private XPlatWindow? OwnerWindow => _dialogAnchor.Window;
 
     private XPlatPanel BuildSplitDemo()
     {

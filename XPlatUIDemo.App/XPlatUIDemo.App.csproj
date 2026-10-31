@@ -1,0 +1,131 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The one application, for all three platforms (see APPLICATION-MODEL.md, "6. One project, three
+       platforms"). Each OS builds exactly one TFM: net10.0-macos needs the macOS workload and Xcode,
+       which only exist on a Mac, so it must never appear in a TFM list that Windows has to evaluate. -->
+  <PropertyGroup>
+    <TargetFramework Condition="$([MSBuild]::IsOSPlatform('windows'))">net10.0-windows</TargetFramework>
+    <TargetFramework Condition="$([MSBuild]::IsOSPlatform('osx'))">net10.0-macos</TargetFramework>
+    <TargetFramework Condition="$([MSBuild]::IsOSPlatform('linux'))">net10.0</TargetFramework>
+    <TargetFramework Condition="'$(TargetFramework)' == ''">net10.0</TargetFramework>
+    <!-- The macOS SDK names the bundle after the assembly, and XPlatUIDemo is already the shared
+         sample library, so the two would collide. XPlatUIDemoApp keeps XPlatUIDemo.app and
+         XPlatUIDemo.dll apart. -->
+    <AssemblyName>XPlatUIDemoApp</AssemblyName>
+    <RootNamespace>XPlatUI.Demo.App</RootNamespace>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- No Windows Forms, no System.Drawing, no reflection: the whole application is SkiaSharp plus
+         the platform backend, so it publishes with NativeAOT. -->
+    <IsAotCompatible>true</IsAotCompatible>
+    <!-- The macOS 27 bindings refuse to build for anything older than macOS 14, and nothing here
+         needs a newer API than that. -->
+    <SupportedOSPlatformVersion Condition="'$(TargetFramework)' == 'net10.0-macos'">14.0</SupportedOSPlatformVersion>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net10.0-windows'">
+    <!-- No console for a GUI executable; diagnostics are borrowed from the parent console instead
+         (XPlatApplicationOptions.AttachConsole). Declaring DPI awareness in the manifest is what
+         makes the raw Win32 window crisp. -->
+    <OutputType>WinExe</OutputType>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(TargetFramework)' != 'net10.0-windows'">
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\XPlatUI\XPlatUI.csproj" />
+    <ProjectReference Include="..\XPlatUI.Backend.Headless\XPlatUI.Backend.Headless.csproj" />
+    <ProjectReference Include="..\XPlatUIDemo\XPlatUIDemo.csproj" />
+  </ItemGroup>
+
+  <!-- Exactly one backend per TFM, and only the one that TFM can actually use. -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0-windows'">
+    <ProjectReference Include="..\XPlatUI.Backend.Win32\XPlatUI.Backend.Win32.csproj" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0-macos'">
+    <ProjectReference Include="..\XPlatUI.Backend.AppKit\XPlatUI.Backend.AppKit.csproj" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0'">
+    <ProjectReference Include="..\XPlatUI.Backend.Gtk4\XPlatUI.Backend.Gtk4.csproj" />
+  </ItemGroup>
+
+  <!-- Single-file AOT publish. NativeAOT emits one native executable, so SkiaSharp's native library
+       cannot simply sit next to it: embed a compressed copy in the executable and let
+       SkiaNativeLoader (Native/SkiaNativeLoader.cs) extract it on first use. The targets below are
+       gated on $(PublishAot) at execution time, because publish-profile properties are not yet
+       visible while this file is evaluated; set $(EmbedSkiaSharpNative) to false to keep
+       libSkiaSharp.dll as a loose file next to the executable instead. -->
+  <UsingTask TaskName="GZipFile" TaskFactory="RoslynCodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <Source ParameterType="System.String" Required="true" />
+      <Destination ParameterType="System.String" Required="true" />
+    </ParameterGroup>
+    <Task>
+      <Using Namespace="System.IO" />
+      <Using Namespace="System.IO.Compression" />
+      <Code Type="Fragment" Language="cs"><![CDATA[
+        using (var input = File.OpenRead(Source))
+        using (var output = File.Create(Destination))
+        using (var gzip = new GZipStream(output, CompressionLevel.Optimal))
+        {
+            input.CopyTo(gzip);
+        }
+      ]]></Code>
+    </Task>
+  </UsingTask>
+
+  <!-- Finds the libSkiaSharp.dll the package graph resolved for this RID and registers the compressed
+       copy as an embedded resource. This has to run before CreateManifestResourceNames (which is
+       what turns @(EmbeddedResource) into compiler inputs), hence the hook on that target rather
+       than on PrepareResourceNames, whose dependencies have already run by then. -->
+  <Target Name="_LocateSkiaSharpNative"
+          Condition="'$(PublishAot)' == 'true' and '$(EmbedSkiaSharpNative)' != 'false' and '$(TargetFramework)' == 'net10.0-windows'"
+          DependsOnTargets="ResolvePackageAssets"
+          BeforeTargets="CreateManifestResourceNames">
+    <PropertyGroup>
+      <!-- IntermediateOutputPath is only known at execution time, so the archive path is computed here. -->
+      <SkiaSharpNativeArchive>$(IntermediateOutputPath)native\libSkiaSharp.dll.gz</SkiaSharpNativeArchive>
+    </PropertyGroup>
+    <ItemGroup>
+      <_SkiaSharpNativeLibrary Include="@(NativeCopyLocalItems)"
+                               Condition="'%(NativeCopyLocalItems.Filename)%(NativeCopyLocalItems.Extension)' == 'libSkiaSharp.dll'" />
+    </ItemGroup>
+    <Error Condition="'@(_SkiaSharpNativeLibrary)' == ''"
+           Text="Could not find libSkiaSharp.dll among the resolved native assets, so it cannot be embedded in the executable." />
+    <ItemGroup>
+      <!-- Type/WithCulture are what CreateManifestResourceNames and _GenerateCompileInputs key off;
+           without them the SDK drops non-resx resources on the floor. -->
+      <EmbeddedResource Include="$(SkiaSharpNativeArchive)" LogicalName="XPlatUI.Native.libSkiaSharp.dll.gz">
+        <Type>Non-Resx</Type>
+        <WithCulture>false</WithCulture>
+      </EmbeddedResource>
+    </ItemGroup>
+  </Target>
+
+  <Target Name="_CompressSkiaSharpNative"
+          Condition="'$(PublishAot)' == 'true' and '$(EmbedSkiaSharpNative)' != 'false' and '$(TargetFramework)' == 'net10.0-windows'"
+          DependsOnTargets="_LocateSkiaSharpNative"
+          BeforeTargets="CreateManifestResourceNames"
+          Inputs="@(_SkiaSharpNativeLibrary->'%(FullPath)')"
+          Outputs="$(SkiaSharpNativeArchive)">
+    <MakeDir Directories="$(IntermediateOutputPath)native" />
+    <GZipFile Source="@(_SkiaSharpNativeLibrary->'%(FullPath)')" Destination="$(SkiaSharpNativeArchive)" />
+  </Target>
+
+  <!-- The library now lives inside the executable, so keep it (and the debug symbols) out of the
+       publish directory; what is left is a single self-contained file. -->
+  <Target Name="_ExcludeSkiaSharpNativeFromPublish"
+          Condition="'$(PublishAot)' == 'true' and '$(EmbedSkiaSharpNative)' != 'false' and '$(TargetFramework)' == 'net10.0-windows'"
+          AfterTargets="ComputeFilesToPublish">
+    <ItemGroup>
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)"
+                             Condition="'%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'libSkiaSharp.dll' or '%(ResolvedFileToPublish.Extension)' == '.pdb'" />
+    </ItemGroup>
+  </Target>
+
+</Project>

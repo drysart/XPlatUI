@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- The AppKit backend binds the macOS SDK, so it targets net10.0-macos and can only be built
+         on macOS (or in CI). Like the Win32 backend it is deliberately not part of
+         WinFormsApp3.slnx, so the Windows solution never needs the macOS workload installed.
+         See README.md, "On macOS (AppKit)". -->
+    <TargetFramework>net10.0-macos</TargetFramework>
+    <!-- The macOS 27 bindings refuse to build for anything older than macOS 14, and nothing here
+         needs a newer API than that. -->
+    <SupportedOSPlatformVersion>14.0</SupportedOSPlatformVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>XPlatUI.Backend.AppKit</RootNamespace>
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\XPlatUI\XPlatUI.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- SkiaSharp itself only ships Win32 natives; macOS needs the separate native package. The
+         library references it so a host application never has to remember to. -->
+    <PackageReference Include="SkiaSharp.NativeAssets.macOS" Version="4.154.0" />
+  </ItemGroup>
+
+</Project>

@@ -68,6 +68,23 @@ public sealed class XPlatUiHost
         }
     }
 
+    /// <summary>
+    /// The window-scoped service provider, assigned by the <see cref="XPlatWindow"/> that owns this
+    /// host. Null when a host is used standalone, as the harnesses do.
+    /// </summary>
+    public IServiceProvider? Services { get; set; }
+
+    /// <summary>
+    /// The window this host draws, or null when the host is used standalone. Assigned by
+    /// <see cref="XPlatWindow"/> so that code inside a control can parent dialogs on its window.
+    /// </summary>
+    public XPlatWindow? Window { get; set; }
+
+    /// <summary>Resolves <typeparamref name="TService"/> from <see cref="Services"/>, or null when there is none.</summary>
+    /// <typeparam name="TService">The service to resolve.</typeparam>
+    public TService? GetService<TService>() where TService : class =>
+        Services?.GetService(typeof(TService)) as TService;
+
     /// <summary>Size of the drawable area in logical pixels (96 DPI).</summary>
     public SKSize ClientSize => _clientSize;
 
@@ -147,8 +164,11 @@ public sealed class XPlatUiHost
     {
         ArgumentNullException.ThrowIfNull(canvas);
 
-        canvas.Clear(ClearColor);
-        _root?.Render(canvas);
+        Guard(() =>
+        {
+            canvas.Clear(ClearColor);
+            _root?.Render(canvas);
+        });
     }
 
     public void Invalidate() => Invalidated?.Invoke(this, EventArgs.Empty);
@@ -171,7 +191,7 @@ public sealed class XPlatUiHost
         return true;
     }
 
-    public void ProcessMouseMove(SKPoint location)
+    public void ProcessMouseMove(SKPoint location) => Guard(() =>
     {
         var hit = HitTest(location);
 
@@ -200,13 +220,13 @@ public sealed class XPlatUiHost
                 ExtendSelection(location);
             }
         }
-    }
+    });
 
     public void ProcessMouseDown(
         SKPoint location,
         XPlatMouseButtons button = XPlatMouseButtons.Left,
         XPlatModifiers modifiers = XPlatModifiers.None,
-        int clickCount = 1)
+        int clickCount = 1) => Guard(() =>
     {
         var hit = HitTest(location);
         _captured = hit;
@@ -241,9 +261,9 @@ public sealed class XPlatUiHost
         }
 
         hit.RaiseMouseDown(new XPlatMouseEventArgs(ToLocal(hit, location), button, modifiers, clickCount));
-    }
+    });
 
-    public void ProcessMouseUp(SKPoint location, XPlatMouseButtons button = XPlatMouseButtons.Left, XPlatModifiers modifiers = XPlatModifiers.None)
+    public void ProcessMouseUp(SKPoint location, XPlatMouseButtons button = XPlatMouseButtons.Left, XPlatModifiers modifiers = XPlatModifiers.None) => Guard(() =>
     {
         if (button == XPlatMouseButtons.Left)
         {
@@ -254,15 +274,15 @@ public sealed class XPlatUiHost
         var target = _captured ?? HitTest(location);
         _captured = null;
         target?.RaiseMouseUp(new XPlatMouseEventArgs(ToLocal(target, location), button, modifiers));
-    }
+    });
 
     /// <summary>Clears the hover state when the pointer leaves the surface.</summary>
-    public void ProcessMouseLeave()
+    public void ProcessMouseLeave() => Guard(() =>
     {
         _hovered?.RaiseMouseLeave();
         _hovered = null;
         SetCursor(XPlatCursor.Default);
-    }
+    });
 
     /// <summary>
     /// Shows the context menu for <paramref name="location"/>. Adapters call this from the
@@ -277,7 +297,7 @@ public sealed class XPlatUiHost
     /// from the current selection, which offers Copy. Right-clicking never changes the
     /// selection, so a menu can act on what the user already selected.
     /// </remarks>
-    public bool ProcessContextMenu(SKPoint location)
+    public bool ProcessContextMenu(SKPoint location) => Guard(() =>
     {
         var hit = HitTest(location);
         var menu = hit?.BuildContextMenu();
@@ -295,13 +315,13 @@ public sealed class XPlatUiHost
         }
 
         return menu is not null && menu.Show(this, hit, location);
-    }
+    }, false);
 
     /// <summary>
     /// Routes a key press to the focused control. Returns true when the control consumed the
     /// key, which tells the adapter to swallow the platform key event (and its text input).
     /// </summary>
-    public bool ProcessKeyDown(XPlatKey key, XPlatModifiers modifiers = XPlatModifiers.None)
+    public bool ProcessKeyDown(XPlatKey key, XPlatModifiers modifiers = XPlatModifiers.None) => Guard(() =>
     {
         if (key == XPlatKey.Tab)
         {
@@ -310,19 +330,19 @@ public sealed class XPlatUiHost
         }
 
         return _focused?.RaiseKeyDown(new XPlatKeyEventArgs(key, modifiers)) ?? false;
-    }
+    }, false);
 
     public void ProcessKeyUp(XPlatKey key, XPlatModifiers modifiers = XPlatModifiers.None) =>
-        _focused?.RaiseKeyUp(new XPlatKeyEventArgs(key, modifiers));
+        Guard(() => _focused?.RaiseKeyUp(new XPlatKeyEventArgs(key, modifiers)));
 
     public void ProcessTextInput(string text) =>
-        _focused?.RaiseTextInput(new XPlatTextInputEventArgs(text));
+        Guard(() => _focused?.RaiseTextInput(new XPlatTextInputEventArgs(text)));
 
     /// <summary>
     /// Advances time-based behaviour (such as the text caret blink) of the focused control.
     /// Adapters call this from a timer, typically every 100-250 ms.
     /// </summary>
-    public void ProcessTick(TimeSpan elapsed) => _focused?.RaiseTick(elapsed);
+    public void ProcessTick(TimeSpan elapsed) => Guard(() => _focused?.RaiseTick(elapsed));
 
     /// <summary>Moves keyboard focus to the given control (null clears focus).</summary>
     public void SetFocus(XPlatControl? control)
@@ -435,6 +455,38 @@ public sealed class XPlatUiHost
     }
 
     private XPlatControl? HitTest(SKPoint location) => _root?.HitTest(location);
+
+    /// <summary>
+    /// Runs an entry point that a backend calls from a platform callback, so a failure reaches
+    /// <see cref="XPlatApplication.UnhandledException"/> instead of unwinding into the native frame
+    /// that called it. With no application the exception is rethrown to the caller, which is what a
+    /// standalone host has always done.
+    /// </summary>
+    private static void Guard(Action action)
+    {
+        try
+        {
+            action();
+        }
+        catch (Exception ex)
+        {
+            XPlatApplication.HandleNativeBoundary(ex);
+        }
+    }
+
+    /// <summary>Guarded variant of <see cref="Guard(Action)"/> for an entry point that returns a value.</summary>
+    private static T Guard<T>(Func<T> func, T fallback)
+    {
+        try
+        {
+            return func();
+        }
+        catch (Exception ex)
+        {
+            XPlatApplication.HandleNativeBoundary(ex);
+            return fallback;
+        }
+    }
 
     private void BeginSelection(XPlatControl control, SKPoint location)
     {
