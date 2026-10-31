@@ -18,6 +18,55 @@ public sealed class XPlatApplicationOptions
     public XPlatShutdownMode ShutdownMode { get; set; } = XPlatShutdownMode.OnLastWindowClose;
 
     /// <summary>
+    /// True to keep one process per user: a second launch hands its command line to the running
+    /// instance and exits instead of starting a competing one.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The running instance learns about the launch through <see cref="XPlatApplication.SecondInstance"/>
+    /// and comes to the foreground. A second launch's <see cref="XPlatApplication.Run"/> returns 0
+    /// before <see cref="XPlatApplication.Startup"/> runs, so nothing is ever shown by it.
+    /// </para>
+    /// <para>
+    /// Windows and a direct macOS launch get this from <see cref="XPlatInstanceLock"/>; GTK4 uses
+    /// <c>Gio.Application</c>'s own uniqueness, which is also the only way to raise a window from
+    /// another process under Wayland. A Finder or Dock launch on macOS is single-instance whether or
+    /// not this is set, because the platform routes it to the running application.
+    /// </para>
+    /// </remarks>
+    public bool SingleInstance { get; set; }
+
+    /// <summary>
+    /// What identifies the application for <see cref="SingleInstance"/>. Null uses
+    /// <see cref="ApplicationName"/>, and failing that the entry assembly's name.
+    /// </summary>
+    /// <remarks>
+    /// Set this when two different applications built on this library would otherwise share a name,
+    /// or when the name is not a legal platform identifier: each backend sanitises it, and GTK4
+    /// additionally turns it into the reverse-DNS application id D-Bus requires.
+    /// </remarks>
+    public string? InstanceKey { get; set; }
+
+    /// <summary>
+    /// The command line arguments this launch was started with, without the executable path. A
+    /// second launch's are delivered in <see cref="XPlatSecondInstanceEventArgs.Arguments"/>.
+    /// </summary>
+    /// <remarks>
+    /// Null reads <see cref="Environment.GetCommandLineArgs"/>. A launcher that adds switches of its
+    /// own, such as <c>--render</c> in the test harness, should pass only the arguments the
+    /// application understands.
+    /// </remarks>
+    public IReadOnlyList<string>? CommandLine { get; set; }
+
+    /// <summary>
+    /// The arguments a forwarded launch carries: <see cref="CommandLine"/>, or this process's own
+    /// command line without the executable path when that is null.
+    /// </summary>
+    /// <returns>The arguments, never null.</returns>
+    public IReadOnlyList<string> ResolveCommandLine() =>
+        CommandLine ?? Environment.GetCommandLineArgs()[1..];
+
+    /// <summary>
     /// True to follow the desktop's light/dark preference for the lifetime of the application.
     /// </summary>
     /// <remarks>

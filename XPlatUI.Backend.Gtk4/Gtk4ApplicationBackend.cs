@@ -1,4 +1,5 @@
 using System.Runtime.ExceptionServices;
+using System.Text;
 using Microsoft.Extensions.DependencyInjection;
 using SkiaSharp;
 
@@ -23,8 +24,6 @@ namespace XPlatUI.Backend.Gtk4;
 /// </remarks>
 public sealed class Gtk4ApplicationBackend : IXPlatApplicationBackend
 {
-    private const string DefaultApplicationId = "com.xplatui.application";
-
     private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(250);
 
     private readonly Queue<Action> _pending = new();
@@ -82,8 +81,14 @@ public sealed class Gtk4ApplicationBackend : IXPlatApplicationBackend
         // create an application.
         Gtk.Module.Initialize();
 
-        var native = Gtk.Application.New(DefaultApplicationId, Gio.ApplicationFlags.NonUnique);
+        var native = Gtk.Application.New(
+            BuildApplicationId(application.InstanceKey),
+            application.Options.SingleInstance
+                ? Gio.ApplicationFlags.HandlesCommandLine
+                : Gio.ApplicationFlags.NonUnique);
+
         native.OnActivate += (_, _) => OnActivate();
+        native.OnCommandLine += (_, args) => OnCommandLine(args);
         _native = native;
 
         // The default icon name is the application-wide half of XPlatApplicationOptions.Icon; each
@@ -118,9 +123,59 @@ public sealed class Gtk4ApplicationBackend : IXPlatApplicationBackend
         // ends rather than GTK's last-window rule.
         Hold();
 
-        _native.Run([Environment.ProcessPath ?? "XPlatUI"]);
+        IReadOnlyList<string> arguments = Application?.Options.ResolveCommandLine() ?? [];
+
+        _native.Run([Environment.ProcessPath ?? "XPlatUI", .. arguments]);
         return _exitCode;
     }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// GTK decides, through the session bus: registering the application id either wins it for this
+    /// process or reveals that another one owns it. A forwarded launch is delivered over D-Bus and
+    /// the <see cref="Gio.Application"/> loop returns as soon as it has been sent.
+    /// </remarks>
+    public bool TryClaimSingleInstance()
+    {
+        if (!_initialized || _native is null || Application is not { Options.SingleInstance: true })
+        {
+            return true;
+        }
+
+        try
+        {
+            if (!_native.Register(null!))
+            {
+                // No session bus, so uniqueness cannot be established. Starting beats refusing to.
+                return true;
+            }
+
+            if (!_native.IsRemote)
+            {
+                return true;
+            }
+
+            IReadOnlyList<string> arguments = Application.Options.ResolveCommandLine();
+
+            _native.Run([Environment.ProcessPath ?? "XPlatUI", .. arguments]);
+            return false;
+        }
+        catch (Exception)
+        {
+            // A D-Bus failure must not stop the application from starting.
+            return true;
+        }
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Never raised here: a GTK application is brought forward by a forwarded command line, which
+    /// arrives through <see cref="SecondInstance"/> instead.
+    /// </remarks>
+    public event EventHandler? Activated;
+
+    /// <inheritdoc />
+    public event EventHandler<XPlatSecondInstanceEventArgs>? SecondInstance;
 
     /// <inheritdoc />
     public void Quit(int exitCode)
@@ -449,6 +504,26 @@ public sealed class Gtk4ApplicationBackend : IXPlatApplicationBackend
 
     private void OnActivate()
     {
+        if (_loopRunning)
+        {
+            // Re-entry means another process asked this application to come forward over D-Bus,
+            // which is GTK's equivalent of a Dock click. The startup activate never lands here
+            // because the command-line handler marks the launch as handled.
+            var window = _activeWindow;
+
+            if (window is null)
+            {
+                lock (_windowsGate)
+                {
+                    window = _windows.Count > 0 ? _windows[0] : null;
+                }
+            }
+
+            window?.Activate();
+            Activated?.Invoke(this, EventArgs.Empty);
+            return;
+        }
+
         // The activate signal is GTK's "the application is up", which is the earliest moment a
         // window can be presented.
         _loopRunning = true;
@@ -463,6 +538,81 @@ public sealed class Gtk4ApplicationBackend : IXPlatApplicationBackend
         {
             window.PresentPending();
         }
+    }
+
+    /// <summary>
+    /// Handles the <c>command-line</c> signal, which GTK only emits when the application was created
+    /// with <see cref="Gio.ApplicationFlags.HandlesCommandLine"/>.
+    /// </summary>
+    /// <returns>
+    /// One, meaning handled. GLib would otherwise follow the signal with an <c>activate</c>, which
+    /// would present the windows a second time and report a re-activation that never happened.
+    /// </returns>
+    private int OnCommandLine(Gio.Application.CommandLineSignalArgs args)
+    {
+        var line = args.CommandLine;
+
+        if (line is null)
+        {
+            return 1;
+        }
+
+        var argv = line.GetArguments(out _);
+        IReadOnlyList<string> arguments = argv.Length > 1 ? argv[1..] : [];
+
+        if (line.GetIsRemote())
+        {
+            // Another launch was handed to this process: it is the primary's job to come forward,
+            // and the launch that forwarded it is already on its way out.
+            SecondInstance?.Invoke(this, new XPlatSecondInstanceEventArgs(arguments));
+        }
+        else if (!_loopRunning)
+        {
+            // Our own command line, which replaces the startup activate.
+            _loopRunning = true;
+
+            Gtk4WindowBackend[] windows;
+            lock (_windowsGate)
+            {
+                windows = [.. _windows];
+            }
+
+            foreach (var window in windows)
+            {
+                window.PresentPending();
+            }
+        }
+
+        // Every path has to answer, or the process that forwarded the command line waits forever.
+        line.SetExitStatus(0);
+        line.Done();
+
+        return 1;
+    }
+
+    /// <summary>
+    /// Builds the reverse-DNS application id GTK needs for uniqueness from
+    /// <see cref="XPlatApplication.InstanceKey"/>.
+    /// </summary>
+    private static string BuildApplicationId(string? instanceKey)
+    {
+        // A D-Bus name element cannot start with a digit, so the key becomes one element that
+        // always starts with a letter and holds only lowercase ASCII letters and digits.
+        var builder = new StringBuilder("com.xplatui.i");
+
+        foreach (var c in instanceKey ?? string.Empty)
+        {
+            if (c is >= 'A' and <= 'Z')
+            {
+                builder.Append((char)(c + ('a' - 'A')));
+            }
+            else if (c is >= 'a' and <= 'z' or >= '0' and <= '9')
+            {
+                builder.Append(c);
+            }
+        }
+
+        return builder.ToString();
     }
 
     private void Hold()

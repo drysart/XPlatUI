@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Runtime.ExceptionServices;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -44,6 +45,7 @@ public sealed partial class XPlatApplication : IDisposable
     private bool _exiting;
     private bool _running;
     private bool _runCalled;
+    private bool _primaryInstance = true;
     private bool _tornDown;
 
     /// <summary>Creates the application with default <see cref="XPlatApplicationOptions"/>.</summary>
@@ -72,9 +74,17 @@ public sealed partial class XPlatApplication : IDisposable
         Backend = backend;
         Options = options;
         _uiThreadId = Environment.CurrentManagedThreadId;
+        InstanceKey = ResolveInstanceKey(options);
         Current = this;
 
         backend.Initialize(this);
+
+        // Subscribed before the claim, so a launch forwarded while this process is still starting up
+        // is queued behind the loop rather than lost.
+        backend.Activated += OnBackendActivated;
+        backend.SecondInstance += OnBackendSecondInstance;
+
+        _primaryInstance = !options.SingleInstance || backend.TryClaimSingleInstance();
 
         var services = new ServiceCollection();
         services.AddSingleton(this);
@@ -109,11 +119,32 @@ public sealed partial class XPlatApplication : IDisposable
     /// <summary>The options this application was created with.</summary>
     public XPlatApplicationOptions Options { get; }
 
+    /// <summary>
+    /// What identifies the application to the platform's single-instance mechanism:
+    /// <see cref="XPlatApplicationOptions.InstanceKey"/>, or <see cref="XPlatApplicationOptions.ApplicationName"/>,
+    /// or the entry assembly's name.
+    /// </summary>
+    /// <remarks>
+    /// Set before the backend is initialized, because a backend that needs the key to create its
+    /// native application - GTK4's D-Bus application id - has to know it then.
+    /// </remarks>
+    public string InstanceKey { get; }
+
     /// <summary>The application-scoped service provider. One per process.</summary>
     public IServiceProvider Services { get; }
 
     /// <summary>True from the moment <see cref="Run"/> enters until it has returned.</summary>
     public bool IsRunning => _running;
+
+    /// <summary>
+    /// True unless <see cref="XPlatApplicationOptions.SingleInstance"/> is set and another process
+    /// already owns the application, in which case this launch has been handed to that process.
+    /// </summary>
+    /// <remarks>
+    /// A forwarded launch does nothing: <see cref="Run"/> returns 0 without raising
+    /// <see cref="Startup"/> and without showing a window, so a second launch never flashes one.
+    /// </remarks>
+    public bool IsPrimaryInstance => _primaryInstance;
 
     /// <summary>The exit code <see cref="Run"/> returns, or will return once it is called.</summary>
     public int ExitCode => _exitCode;
@@ -168,6 +199,35 @@ public sealed partial class XPlatApplication : IDisposable
     public event EventHandler? ThemeChanged;
 
     /// <summary>
+    /// Raised when the platform asks the application to come to the foreground without a new launch,
+    /// such as a click on the macOS Dock tile. <see cref="Activate"/> is the default action.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Always raised on the UI thread, at a point where windows may be shown or closed. Set
+    /// <see cref="XPlatActivatedEventArgs.Handled"/> to replace the default action, which is to
+    /// bring <see cref="MainWindow"/> forward.
+    /// </para>
+    /// <para>
+    /// Not every platform delivers this: on Windows the shell restores the window itself, and on
+    /// GTK4 a re-launch arrives as <see cref="SecondInstance"/> instead.
+    /// </para>
+    /// </remarks>
+    public event EventHandler<XPlatActivatedEventArgs>? Activated;
+
+    /// <summary>
+    /// Raised when another launch of the application was forwarded to this process because
+    /// <see cref="XPlatApplicationOptions.SingleInstance"/> is set.
+    /// </summary>
+    /// <remarks>
+    /// Always raised on the UI thread. <see cref="XPlatSecondInstanceEventArgs.Arguments"/> carries
+    /// the second launch's command line, so a launch can open a document or a window here. The
+    /// default action is to raise <see cref="Activated"/>; set
+    /// <see cref="XPlatSecondInstanceEventArgs.Handled"/> to replace it.
+    /// </remarks>
+    public event EventHandler<XPlatSecondInstanceEventArgs>? SecondInstance;
+
+    /// <summary>
     /// Raised when an exception escapes application, window or control code on the UI thread,
     /// instead of letting it unwind into the platform's message pump.
     /// </summary>
@@ -193,6 +253,15 @@ public sealed partial class XPlatApplication : IDisposable
         }
 
         _runCalled = true;
+
+        if (!_primaryInstance)
+        {
+            // The launch was handed to the process that owns the application, so there is nothing to
+            // show and no loop to enter. Tearing down still releases the backend's resources.
+            TearDown();
+            return _exitCode;
+        }
+
         _uiThreadId = Environment.CurrentManagedThreadId;
         _running = true;
 
@@ -277,10 +346,24 @@ public sealed partial class XPlatApplication : IDisposable
     }
 
     /// <summary>Brings <see cref="MainWindow"/> forward, or the first open window when there is none.</summary>
+    /// <remarks>
+    /// The default action of <see cref="Activated"/> and <see cref="SecondInstance"/>. Does nothing
+    /// once the application has been torn down or when every window is closed, so it stays safe to
+    /// call from a platform callback that arrives during shutdown.
+    /// </remarks>
     public void Activate()
     {
+        if (_tornDown)
+        {
+            return;
+        }
+
         var window = MainWindow ?? (_windows.Count > 0 ? _windows[0] : null);
-        window?.Activate();
+
+        if (window is { IsClosed: false })
+        {
+            window.Activate();
+        }
     }
 
     /// <summary>True when the calling thread is the UI thread.</summary>
@@ -380,6 +463,78 @@ public sealed partial class XPlatApplication : IDisposable
         }
 
         return args.Handled;
+    }
+
+    /// <summary>
+    /// What identifies the application to the platform's single-instance mechanism.
+    /// </summary>
+    private static string ResolveInstanceKey(XPlatApplicationOptions options)
+    {
+        if (!string.IsNullOrWhiteSpace(options.InstanceKey))
+        {
+            return options.InstanceKey;
+        }
+
+        if (!string.IsNullOrWhiteSpace(options.ApplicationName))
+        {
+            return options.ApplicationName;
+        }
+
+        return Assembly.GetEntryAssembly()?.GetName().Name ?? nameof(XPlatApplication);
+    }
+
+    private void OnBackendActivated(object? sender, EventArgs e)
+    {
+        if (!CheckAccess())
+        {
+            BeginInvoke(RaiseActivated);
+            return;
+        }
+
+        RaiseActivated();
+    }
+
+    private void OnBackendSecondInstance(object? sender, XPlatSecondInstanceEventArgs e)
+    {
+        if (!CheckAccess())
+        {
+            BeginInvoke(() => RaiseSecondInstance(e.Arguments));
+            return;
+        }
+
+        RaiseSecondInstance(e.Arguments);
+    }
+
+    private void RaiseActivated()
+    {
+        if (_tornDown)
+        {
+            return;
+        }
+
+        var args = new XPlatActivatedEventArgs();
+        Guard(() => Activated?.Invoke(this, args));
+
+        if (!args.Handled)
+        {
+            Activate();
+        }
+    }
+
+    private void RaiseSecondInstance(IReadOnlyList<string> arguments)
+    {
+        if (_tornDown)
+        {
+            return;
+        }
+
+        var args = new XPlatSecondInstanceEventArgs(arguments);
+        Guard(() => SecondInstance?.Invoke(this, args));
+
+        if (!args.Handled)
+        {
+            RaiseActivated();
+        }
     }
 
     private void CheckShutdownMode(XPlatWindow closed)
@@ -564,7 +719,8 @@ public sealed partial class XPlatApplication : IDisposable
         _running = false;
         XPlatTheme.Changed -= OnThemeChanged;
 
-        if (_runCalled)
+        // A forwarded launch never entered the loop, so there is no exit to report.
+        if (_runCalled && _primaryInstance)
         {
             var args = new XPlatExitEventArgs(_exitCode);
             Guard(() => Exiting?.Invoke(this, args));
