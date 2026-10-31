@@ -1165,10 +1165,12 @@ over the live `NSApplication` loop, driving the model from the main thread throu
 - `Exit(7)` closes the window and `Run()` returns 7; quitting through the application menu, via
   `osascript`, exits with code 0 and no stderr output.
 
-Not verified here, and left for a human at the keyboard: window drag-resize and the live-resize
+Not verified from an `ssh` session, and checked by hand instead: drag-resize and the live-resize
 paint path, the View menu's Dark/Light items, context menus, text entry and caret blink, and the four
-dialogs (`NSAlert` and the three panels). The one thing that cannot be checked at all from an `ssh`
-session is activation, so `Activated`/`Deactivated` are unproven on macOS.
+dialogs (`NSAlert` and the three panels). All of them work. Activation is the one thing that could
+only be exercised that way - an `ssh` session can create and paint windows but never becomes the
+active application - and the interactive run shows it does: the window takes focus and its menus
+respond.
 
 ---
 
