@@ -22,12 +22,12 @@ internal sealed class Gtk4DialogService : IXPlatDialogService
 
         var (titles, results) = MapButtons(options.Buttons);
 
-        var dialog = new Gtk.AlertDialog
-        {
-            Message = string.IsNullOrWhiteSpace(options.Title) ? FallbackTitle : options.Title,
-            Detail = options.Message,
-            Modal = true,
-        };
+        // GObject creates instances through factory methods, and GirCore drops the C# constructors
+        // on native classes in 1.0, so the dialog is built the way GObject itself builds one.
+        var dialog = Gtk.AlertDialog.NewWithProperties([]);
+        dialog.Message = string.IsNullOrWhiteSpace(options.Title) ? FallbackTitle : options.Title;
+        dialog.Detail = options.Message;
+        dialog.Modal = true;
 
         dialog.SetButtons(titles);
 
