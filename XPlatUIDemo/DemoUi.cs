@@ -1,5 +1,6 @@
 using SkiaSharp;
 using XPlatUI;
+using XPlatUI.Backend.Headless;
 using XDock = XPlatUI.DockStyle;
 
 namespace XPlatUI.Demo;
@@ -24,24 +25,37 @@ public sealed class DemoUi
     /// <summary>The root of the sample control tree.</summary>
     public XPlatControl Root { get; }
 
+    /// <summary>Builds a fresh sample control tree, for hosts that only need the controls.</summary>
+    /// <returns>The root of a new sample tree.</returns>
+    public static XPlatControl CreateRoot() => new DemoUi().Root;
+
     /// <summary>
-    /// Renders the sample UI to a PNG without creating a window. Useful for
-    /// visual regression tests and for verifying the render pipeline on CI.
+    /// Renders the sample UI to a PNG without opening a window. Useful for visual regression tests
+    /// and for verifying the render pipeline on CI.
     /// </summary>
+    /// <remarks>
+    /// This goes through the real application model - <see cref="XPlatApplication"/>,
+    /// <see cref="XPlatWindow"/> and the headless backend - so a regression here is a regression in
+    /// the model, not just in the demo. The window's client size is set explicitly, so the model's
+    /// default sizing never runs and the output matches what the harnesses paint.
+    /// </remarks>
+    /// <param name="path">The file to write.</param>
+    /// <param name="width">Client width in logical pixels.</param>
+    /// <param name="height">Client height in logical pixels.</param>
     public static void RenderToPng(string path, int width, int height)
     {
-        var host = new XPlatUiHost();
-        host.Root = new DemoUi().Root;
-        host.SetClientSize(width, height);
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
 
-        var info = new SKImageInfo(width, height, SKColorType.Bgra8888, SKAlphaType.Premul);
-        using var surface = SKSurface.Create(info);
-        host.Paint(surface.Canvas);
+        var backend = new HeadlessApplicationBackend();
+        using var application = new XPlatApplication(backend);
+        var window = new XPlatWindow("XPlatUI sample", CreateRoot())
+        {
+            ClientSize = new SKSize(width, height),
+        };
 
-        using var image = surface.Snapshot();
-        using var data = image.Encode(SKEncodedImageFormat.Png, 100);
-        using var stream = File.Create(path);
-        data.SaveTo(stream);
+        window.Shown += (_, _) => backend.LastWindow!.SavePng(path);
+        window.Show();
+        application.Run();
     }
 
     private XPlatControl BuildUi()

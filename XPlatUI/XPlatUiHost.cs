@@ -68,6 +68,17 @@ public sealed class XPlatUiHost
         }
     }
 
+    /// <summary>
+    /// The window-scoped service provider, assigned by the <see cref="XPlatWindow"/> that owns this
+    /// host. Null when a host is used standalone, as the harnesses do.
+    /// </summary>
+    public IServiceProvider? Services { get; set; }
+
+    /// <summary>Resolves <typeparamref name="TService"/> from <see cref="Services"/>, or null when there is none.</summary>
+    /// <typeparam name="TService">The service to resolve.</typeparam>
+    public TService? GetService<TService>() where TService : class =>
+        Services?.GetService(typeof(TService)) as TService;
+
     /// <summary>Size of the drawable area in logical pixels (96 DPI).</summary>
     public SKSize ClientSize => _clientSize;
 
