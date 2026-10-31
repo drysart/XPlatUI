@@ -848,8 +848,8 @@ Main()
 	   ├─ Exit event                         cancellable
 	   └─ teardown, in this order:
 			1. dismiss open context menus / popups
-			2. close and dispose every window, then dispose that window's service scope
-			3. dispose the tick timer
+			2. dispose the tick timer, so no tick can arrive against a half-torn-down tree
+			3. close and dispose every window, then dispose that window's service scope
 			4. dispose the root provider (disposes application-scoped services), then clear the static slots
 			5. backend.Shutdown()
   └─ return ExitCode
@@ -976,8 +976,28 @@ land, not before.
 Steps 1–6 are v1, and v1 includes dialogs and the menu bar (D12, D13): they land inside steps 3–5,
 alongside the window each backend is already building, rather than as a follow-up release.
 
-Step 2 is the risky one: it is the only step that touches the painting path, and it must produce
-the same pixels.
+Step 2 was the risky one: it is the only step that touches the painting path, and it had to produce
+the same pixels. It did - the sample render is byte-identical on all three platforms (Windows 89,937
+bytes, macOS 156,205, Linux 116,049, each matching its own pre-step-2 baseline; PNG bytes are not
+comparable across platforms).
+
+### Step 2 notes
+
+Four deviations from the sketches above, all deliberate:
+
+- **`Closing` uses `CancelEventArgs`.** `EventHandler<CancelEventArgs>`, not a custom type, so the
+  handler signature matches WinForms and needs no using-directive archaeology.
+- **`ShowDialog` returns `XPlatDialogResult` and the window has a `DialogResult` property** defaulting
+  to `Cancel`, so an early-return path cannot be mistaken for `OK`.
+- **`XPlatWindow.ScaleChanged` re-runs `PerformLayout()` and `Invalidate()` before raising the event**,
+  because a scale change invalidates every cached measurement in the tree.
+- **The tick timer is torn down before the windows**, which is what §8 now says: the original order
+  disposed it after them, leaving a window where a tick could land on a disposed control tree.
+
+The headless backend deliberately registers no `IXPlatSystemTheme`. With no display there is no
+system appearance to report, so `XPlatTheme` keeps its default and a headless render never depends on
+the machine it runs on. That is also why the Linux render is now byte-identical with and without
+`DISPLAY` set: after the `--render` fix in §6.2 the headless path never touches GTK.
 
 ---
 
