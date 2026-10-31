@@ -730,6 +730,14 @@ keeps `Backend.cs` honest.
 CI keeps one job per OS, each on its own runner, each doing build → headless render → publish. No
 change to the existing `.github/workflows/macos.yml` shape.
 
+One constraint on the render step, measured rather than assumed: on Linux it has to run before any
+GTK type is loaded. `Gtk.Module.Initialize()` opens the display and exits the process with code 1
+when there is none, before `InitCheck()` can report anything, so a render path that initialises the
+toolkit cannot run on a runner without a display server. `GtkHarness` is the reference for the
+ordering (see `README.md`, "On Linux (GTK4)"). The side effect is that a headless render uses
+`--dark` / `--light` and a default typeface instead of the desktop's, which is also what makes the
+PNGs comparable between runs.
+
 **Rejected alternative:** list all three TFMs unconditionally and pass `-f`. It makes a Windows
 `dotnet build` try to restore the macOS workload, which fails on every machine without Xcode. The
 `IsOSPlatform` condition costs one line and never fails.
