@@ -959,12 +959,19 @@ step 3.
 
 | # | Step | Scope | Done when |
 |---|---|---|---|
-| 1 | Extract the backend interfaces | `XPlatUI/Platform/*.cs` (interfaces only, no implementations; the dialog service and the per-window menu bar are part of it) | Solution builds; no harness references them yet; the nested-loop requirement is documented on `IXPlatDialogService` |
+| 1 | Extract the backend interfaces | `XPlatUI/Platform/*.cs` (interfaces only; the dialog service and the per-window menu bar are part of it) and `XPlatUI/Application/*.cs` (`XPlatScreen`, `XPlatWindowState`, and empty `partial` declarations of `XPlatApplication`/`XPlatWindow`) | Solution builds; no harness references them yet; the nested-loop requirement is documented on `IXPlatDialogService` |
 | 2 | `XPlatApplication` + `XPlatWindow` over a headless backend | `XPlatUI.Backend.Headless`; `XPlatUIDemo.RenderToPng` reimplemented on it | The existing PNG is byte-identical (or pixel-identical) and CI's render job passes |
 | 3 | Move the Win32 harness onto the model | `XPlatUI.Backend.Win32` from `WinFormsApp3/Native/*`; `Program.cs` shrinks to §2 | Windows harness behaves identically; window resize, DPI, context menus and text input unchanged; message/file dialogs and the menu bar work |
 | 4 | Move the AppKit harness onto the model | `XPlatUI.Backend.AppKit` from `MacHarness/*`; `MacHarness.csproj` → `net10.0-macos` app project | Mac build + headless render pass on `ssh mac`; no clipping, no memory regression; dialogs and the app menu bar work |
 | 5 | Move the GTK harness onto the model | `XPlatUI.Backend.Gtk4` from `GtkHarness/*` | GTK harness behaves identically; dialogs and the menu bar work |
 | 6 | Replace the three harnesses with one multi-TFM app | §6.1 project file; delete `WinFormsApp3`, `GtkHarness`, `MacHarness` | Three CI jobs build one project; `dotnet publish` AOT succeeds per OS |
+
+Step 1 is interfaces only, with one concession: the backend contract is written in terms of
+`XPlatApplication` and `XPlatWindow`, and C# has no forward declarations, so those two ship as empty
+`partial` classes. Step 2 fills them in additively rather than replacing them. `IXPlatClipboard`,
+`IXPlatSystemTheme` and `IXPlatContextMenuPresenter` already exist under `Core/` and `Menus/` and are
+deliberately left where they are; they move into `Platform/` when the backends that implement them
+land, not before.
 
 Steps 1–6 are v1, and v1 includes dialogs and the menu bar (D12, D13): they land inside steps 3–5,
 alongside the window each backend is already building, rather than as a follow-up release.
