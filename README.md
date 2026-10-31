@@ -535,7 +535,9 @@ That target framework is why the macOS build has to happen on a Mac: it needs th
 which cannot be installed on Windows. `Program.cs` selects it with
 `$([MSBuild]::IsOSPlatform('osx'))`, so the project is part of `WinFormsApp3.slnx` on every platform
 and simply resolves to a different target framework on each. Build it on a Mac, or let the
-`macOS build` GitHub Actions workflow do it:
+`macOS build` GitHub Actions workflow do it - that workflow runs on pull requests against `master`
+and on demand (`workflow_dispatch`), not on every push, so a branch that is still being worked on
+is expected to be built locally:
 
 ```
 dotnet workload install macos

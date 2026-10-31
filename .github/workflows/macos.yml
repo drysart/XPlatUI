@@ -3,18 +3,16 @@ name: macOS build
 # XPlatUIDemo.App targets net10.0-macos on macOS, so it needs the macOS workload and can only be
 # built on a Mac. This job is the compile check for it: it builds the bundle and then renders the
 # sample UI headlessly, which also proves the library itself runs on the machine.
+#
+# It runs on a pull request against master, and on demand. Pushes are deliberately not a trigger:
+# work in progress is built on the local Mac, where a build takes seconds and the app can be run
+# for real, so a runner spinning up on every push to a feature branch only adds latency. A merge to
+# master does not need a rebuild either - the pull request that produced it already built the same
+# tree. Use workflow_dispatch to verify a branch that has no pull request yet.
 
 on:
-  push:
-    # Feature branches are included so a branch that is not a pull request yet is still compiled.
-    branches: [master, 'feature/**']
-    paths:
-      - '.github/workflows/macos.yml'
-      - 'XPlatUIDemo.App/**'
-      - 'XPlatUI/**'
-      - 'XPlatUI.Backend.*/**'
-      - 'XPlatUIDemo/**'
   pull_request:
+    branches: [master]
     paths:
       - '.github/workflows/macos.yml'
       - 'XPlatUIDemo.App/**'
