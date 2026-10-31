@@ -15,7 +15,9 @@ namespace XPlatUI.Backend.Gtk4;
 /// Cairo context of a <see cref="Gtk.DrawingArea"/>. GTK4 gives a drawing area a Cairo recording
 /// surface, so compositing a bitmap into it means using the bitmap as a Cairo source, and Cairo
 /// answers a mutable source with a full size snapshot. GTK keeps the render nodes those snapshots
-/// end up in, so every repaint leaked one frame buffer. A texture has no such copy.
+/// end up in, so every repaint leaked one frame buffer. A texture copies its pixels once, on
+/// construction, and owns the copy - which is also what lets the Skia surface be resized without
+/// leaving the renderer pointing at freed memory.
 /// </para>
 /// <para>
 /// A <see cref="Gtk.DrawingArea"/> is kept on top of the picture, transparent, because it is what
@@ -247,11 +249,12 @@ public sealed class Gtk4SkiaView : IDisposable
         canvas.Restore();
         canvas.Flush();
 
-        // GLib.Bytes does not own the pixels and Gtk.Picture keeps the texture alive, so the buffer
-        // must outlive both. It does: it is only replaced by the next EnsureFrame, and the frame it
-        // backs has already been consumed by then.
+        // The bytes must own the pixels. NewStatic only aliases them, which makes the texture read
+        // memory that EnsureFrame frees on the next size change, and GTK's renderer still holds the
+        // previous frame's node while it renders the new one - a resize then faults inside the GL
+        // upload. New copies into GLib's own memory, so a texture outlives the surface it came from.
         var pixels = new Span<byte>((void*)_framePixels, _frameStride * pixelHeight);
-        var bytes = GLib.Bytes.NewStatic(pixels);
+        var bytes = GLib.Bytes.New(pixels);
         var texture = Gdk.MemoryTexture.New(
             pixelWidth,
             pixelHeight,

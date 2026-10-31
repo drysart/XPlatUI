@@ -495,6 +495,10 @@ scale factor and what receives input. The frame is not blitted with Cairo becaus
 drawing area a Cairo *recording* surface - there are no pixels to write into - so a bitmap can only
 reach the screen as a Cairo source, and Cairo answers a mutable source with a full size snapshot.
 GTK keeps the render nodes those snapshots end up in, so every repaint leaked one frame buffer.
+`GLib.Bytes.New` copies the frame into memory GLib owns, so a texture stays valid however the Skia
+surface behind it is resized; aliasing the pixels with `NewStatic` instead faults inside the GL
+driver on the first resize, because the renderer still holds the previous frame's node. The copy is
+the price of that - about 1.3 ms of a 4.4 ms frame at 2560x1452 on llvmpipe.
 
 Everything else mirrors the Win32 backend: `Gtk.GestureClick`, `Gtk.EventControllerMotion` and
 `Gtk.EventControllerKey` feed `XPlatUiHost.Process*`, a 250 ms `GLib` timeout drives
