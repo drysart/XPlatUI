@@ -1,5 +1,4 @@
 using AppKit;
-using Foundation;
 using SkiaSharp;
 
 namespace XPlatUI.Backend.AppKit;
@@ -32,8 +31,7 @@ internal static class AppKitIcons
         using var image = SKImage.FromBitmap(bitmap);
         using var encoded = image.Encode(SKEncodedImageFormat.Png, 100);
         using var stream = encoded.AsStream();
-        using var data = NSData.FromStream(stream);
 
-        return data is null ? null : NSImage.FromData(data);
+        return NSImage.FromStream(stream);
     }
 }
