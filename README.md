@@ -31,6 +31,7 @@ XPlatUI.Backend.Win32/    net10.0-windows backend over raw Win32 (no WinForms, n
 XPlatUI.Backend.AppKit/   net10.0-macos backend over AppKit
 XPlatUI.Backend.Gtk4/     net10.0 backend over GTK4
 XPlatUI.Backend.Headless/ net10.0 backend that paints offscreen; what --render and the tests use
+XPlatUI.Minimal/          the measurement fixture: one window, one label, no features
 ```
 
 `XPlatUIDemo.App` builds exactly **one** target framework per operating system, chosen by

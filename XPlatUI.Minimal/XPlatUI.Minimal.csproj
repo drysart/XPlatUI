@@ -1,0 +1,81 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The measurement fixture for FEATURE-COST-POLICY.md, Phase 0: one window, one label, no
+       features. It exists to be published and weighed, so it stays deliberately smaller than any
+       real application - no menu bar, no icon, no headless render path, no single-instance handling.
+       Adding anything here changes the floor that every later phase is measured against.
+
+       Each OS builds exactly one TFM: net10.0-macos needs the macOS workload and Xcode, which only
+       exist on a Mac, so it must never appear in a TFM list that Windows has to evaluate. -->
+  <PropertyGroup>
+    <TargetFramework Condition="$([MSBuild]::IsOSPlatform('windows'))">net10.0-windows</TargetFramework>
+    <TargetFramework Condition="$([MSBuild]::IsOSPlatform('osx'))">net10.0-macos</TargetFramework>
+    <TargetFramework Condition="$([MSBuild]::IsOSPlatform('linux'))">net10.0</TargetFramework>
+    <TargetFramework Condition="'$(TargetFramework)' == ''">net10.0</TargetFramework>
+    <RootNamespace>XPlatUI.Minimal</RootNamespace>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- The macOS 27 bindings refuse to build for anything older than macOS 14. -->
+    <SupportedOSPlatformVersion Condition="'$(TargetFramework)' == 'net10.0-macos'">14.0</SupportedOSPlatformVersion>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net10.0-windows'">
+    <!-- No console for a GUI executable; diagnostics are borrowed from the parent console instead
+         (XPlatApplicationOptions.AttachConsole). Declaring DPI awareness in the manifest is what
+         makes the raw Win32 window crisp. -->
+    <OutputType>WinExe</OutputType>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(TargetFramework)' != 'net10.0-windows'">
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net10.0-macos'">
+    <!-- The macOS workload refuses to build unless Xcode's major.minor is exactly the version its
+         bindings were generated against, so having a newer Xcode installed fails a build that works
+         perfectly. A fixture has to build on whatever machine is measuring it, so the check is
+         skipped. -->
+    <ValidateXcodeVersion>false</ValidateXcodeVersion>
+  </PropertyGroup>
+
+  <!-- The publish settings live here rather than in a publish profile so that the measurement cannot
+       drift: every platform is published with the same properties by the same command,
+       `dotnet publish -c Release -r <rid>`. Release is the only configuration that publishes.
+
+       IsAotCompatible is not set here: it arrives with the library, from
+       XPlatUI/buildTransitive/XPlatUI.props. Neither is the SkiaSharp embedding - that is
+       XPlatUI/buildTransitive/XPlatUI.targets. This project carries only what an application must
+       decide for itself. -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <PublishAot>true</PublishAot>
+    <PublishTrimmed>true</PublishTrimmed>
+    <TrimMode>full</TrimMode>
+    <PublishReadyToRun>false</PublishReadyToRun>
+    <!-- Set to false to stop embedding the Skia native library, which puts
+         libSkiaSharp.dll/libSkiaSharp.so back beside the executable. -->
+    <EmbedSkiaSharpNative>true</EmbedSkiaSharpNative>
+    <!-- NativeAOT links with the MSVC toolset. When the MSVC environment is already initialized
+         (a Developer Command Prompt, or a step that called vcvars64.bat), use it directly instead of
+         the ILCompiler's vswhere-based discovery. -->
+    <IlcUseEnvironmentalTools Condition="'$(VCToolsInstallDir)' != '' or '$(VCINSTALLDIR)' != ''">true</IlcUseEnvironmentalTools>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\XPlatUI\XPlatUI.csproj" />
+  </ItemGroup>
+
+  <!-- Exactly one backend per TFM, and only the one that TFM can actually use. -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0-windows'">
+    <ProjectReference Include="..\XPlatUI.Backend.Win32\XPlatUI.Backend.Win32.csproj" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0-macos'">
+    <ProjectReference Include="..\XPlatUI.Backend.AppKit\XPlatUI.Backend.AppKit.csproj" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0'">
+    <ProjectReference Include="..\XPlatUI.Backend.Gtk4\XPlatUI.Backend.Gtk4.csproj" />
+  </ItemGroup>
+
+</Project>

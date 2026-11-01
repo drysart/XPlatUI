@@ -5,4 +5,5 @@
   <Project Path="XPlatUIDemo/XPlatUIDemo.csproj" />
   <Project Path="XPlatUIDemo.App/XPlatUIDemo.App.csproj" />
   <Project Path="XPlatUI/XPlatUI.csproj" />
+  <Project Path="XPlatUI.Minimal/XPlatUI.Minimal.csproj" />
 </Solution>
