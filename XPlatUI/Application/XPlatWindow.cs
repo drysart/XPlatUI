@@ -192,6 +192,12 @@ public sealed partial class XPlatWindow : IDisposable
     }
 
     /// <summary>True to keep the window above all others.</summary>
+    /// <remarks>
+    /// Windows and macOS honour this. Linux does not: GTK4 removed the keep-above call it would need,
+    /// and Wayland leaves stacking to the compositor, so the value is recorded and otherwise ignored.
+    /// Treat it as best effort rather than as the only thing keeping a window in front - use
+    /// <see cref="Owner"/> for that, and note that ownership is itself only a hint on Wayland.
+    /// </remarks>
     public bool TopMost
     {
         get => Backend.TopMost;
