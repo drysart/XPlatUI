@@ -262,36 +262,48 @@ ConfigureServices = services => services.AddDragDrop(),
 ```
 
 A hook that is a single call does not need a class of its own. One overload in
-`XPlatServiceCollectionExtensions` wraps the action in a hook that already exists:
+`XPlatServiceCollectionExtensions` wraps the action in a hook that already exists, and takes an
+optional teardown action so a lambda hook can own a disposable:
 
 ```csharp
 public static IServiceCollection AddXPlatApplicationStartupHook(
 	this IServiceCollection services,
-	Action<XPlatApplication> startupHookFunc)
+	Action<XPlatApplication> startupHookFunc,
+	Action? onDispose = null)
 {
 	ArgumentNullException.ThrowIfNull(services);
 	ArgumentNullException.ThrowIfNull(startupHookFunc);
 
 	return services.AddSingleton<IXPlatApplicationStartupHook>(
-	    _ => new ActionBasedAppStartupHook(startupHookFunc));
+		_ => new ActionBasedAppStartupHook(startupHookFunc, onDispose));
 }
 
-internal sealed class ActionBasedAppStartupHook : IXPlatApplicationStartupHook
+internal sealed class ActionBasedAppStartupHook : IXPlatApplicationStartupHook, IDisposable
 {
 	private readonly Action<XPlatApplication> _startupHookFunc;
+	private readonly Action? _onDispose;
 
-	public ActionBasedAppStartupHook(Action<XPlatApplication> startupHookFunc)
+	public ActionBasedAppStartupHook(Action<XPlatApplication> startupHookFunc, Action? onDispose)
 	{
-	    _startupHookFunc = startupHookFunc;
+		_startupHookFunc = startupHookFunc;
+		_onDispose = onDispose;
 	}
 
 	public void OnStartup(XPlatApplication application) => _startupHookFunc(application);
+
+	public void Dispose() => _onDispose?.Invoke();
 }
 ```
 
-Window hooks get the same treatment: `AddXPlatWindowHook` takes one optional callback per point, so
-a feature that only cares about teardown still writes a single lambda. The wrappers are seam types,
-so the seam pays for them once whether or not anything calls them; see §7.
+Window hooks get the same treatment: `AddXPlatWindowHook` takes one optional callback per point plus
+the same `onDispose`, so a feature that only cares about teardown still writes a single lambda. The
+wrappers are seam types, so the seam pays for them once whether or not anything calls them; see §7.
+
+The container runs the teardown, and its order is the nesting order. A window hook is disposed when
+its window's scope is disposed (`XPlatWindow.cs:390`). Application hooks are disposed when the root
+provider is disposed (`XPlatApplication.cs:740`), and every window is disposed first (`:732-735`),
+so window teardown always precedes application teardown. A hook that needs it the other way round
+says so in its own shutdown point rather than relying on `Dispose` ordering.
 
 The trim property that makes this work: `GetServices<T>()` on a service nobody registered returns an
 empty sequence, and the only thing retained is the interface itself. The concrete hook type is
@@ -366,6 +378,10 @@ is permanent cost in the seam.
 - **Dependencies point one way.** A window hook may depend on application singletons normally. A
   singleton must never hold a window hook, because that would keep one window's instance alive for
   the life of the process.
+- **`Dispose` is the last teardown point, not the first.** The container disposes a hook that is
+  `IDisposable`: a window hook with its scope, an application hook with the root provider. By then
+  the native window or the process-wide state may already be gone, so anything that has to run while
+  it still exists belongs in the closing or shutdown point.
 
 ## 7. The seam's own budget
 
@@ -527,6 +543,9 @@ lower, and the measured cost for an application that does not use it.
   application exists and services can still be registered. The call site is a named
   `services.AddX()` extension, and the `AddXPlatApplicationStartupHook(Action<XPlatApplication>)`
   overload covers hooks that are one line. See §6.2.
+- **Hook disposal.** Both registration helpers take an optional `onDispose`, and the wrapper
+  forwards it, so a lambda hook can own a disposable without a class. Hooks that are `IDisposable`
+  are disposed by the container, windows before the application. See §6.2 and §6.4.
 
 ### Open
 
