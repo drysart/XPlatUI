@@ -904,7 +904,9 @@ demo's project file. Its only Skia-specific line names its own assembly for `Ski
 #### The numbers
 
 `dotnet publish -c Release -r <rid>` on .NET 10, NativeAOT, no publish profile, one machine per
-platform. Windows is `win-x64`, Linux `linux-x64`, macOS `osx-arm64` on an Apple Silicon Mac.
+platform. Windows is `win-x64`, Linux `linux-x64`, macOS `osx-arm64` on an Apple Silicon Mac. On
+Windows that command needs the MSVC toolset, so it runs from a Developer prompt; nothing else
+differs between the three.
 
 | Measurement | win-x64 | linux-x64 | osx-arm64 |
 |---|---|---|---|
