@@ -103,6 +103,10 @@ type. The events are field-like, so every control instance in every application 
 delegate fields (32 bytes on 64-bit) whether or not anything ever drags, and the accessors stay with
 the type.
 
+Converting an event to the `Add`/`Remove` pair in §5.4 does not change that cost for a core event,
+which still needs its backing field. What the pair buys is that the same shape works for a feature,
+which has no field on the control to hang a C# event on.
+
 ### 5.2 What the language allows
 
 Verified against the toolchain this repository builds with (`net10.0`, C# 14):
@@ -113,7 +117,7 @@ Verified against the toolchain this repository builds with (`net10.0`, C# 14):
 | Properties, including setters | Yes | Extension blocks (`extension(T value) { ... }`), not only methods. |
 | Properties in object initializers | Yes | `new XPlatLabel { AllowDrop = true }` still compiles, so the object-initializer style the demo uses survives. |
 | Indexers, operators, static members | Yes | Available if a feature needs them. |
-| Events | No | `CS9282`, "This member is not allowed in an extension block". See §5.4. |
+| Events | No | `CS9282`, "This member is not allowed in an extension block". Use the handler methods in §5.4 instead. |
 
 Extension blocks are a C# 14 feature, so the policy assumes the library and its consumers are on the
 same compiler. They are, because the library targets `net10.0`.
@@ -125,26 +129,58 @@ same compiler. They are, because the library targets `net10.0`.
   `XPlatUI` and can use internal seams instead of widening the public API. A feature that has to
   live in its own assembly (rung 3) needs public accessors or `InternalsVisibleTo`.
 - **State.** Extension members cannot add fields to the control, so per-control state belongs to the
-  feature: a lazily created helper object, or a `ConditionalWeakTable<XPlatControl, TState>` keyed
+  feature: a lazily created state object, or a `ConditionalWeakTable<XPlatControl, TState>` keyed
   on the control. Both are trimmed with the feature, but both cost a lookup per access, so a hot
-  path caches the helper rather than looking it up again.
+  path caches the state rather than looking it up again.
 - **No reflection discovery.** Extension members are invisible to `GetMethods()` on the type. That
   is good for trimming, and it means nothing may register a feature by scanning for its members.
 
-### 5.4 When the feature needs events
+### 5.4 Events: `Add` and `Remove` handler methods
 
-Extension events do not exist, so an event-shaped feature hands back a helper object from an
-extension method:
+Extension members cannot be events: `CS9282`, "This member is not allowed in an extension block", for
+`event`, `add` and `remove` alike. Rather than work around that with a helper object, which makes the
+feature read as bolted on, the library does not use the C# `event` keyword at all. Every event is a
+pair of methods:
 
 ```csharp
-var drop = control.DragDrop();   // extension method, one helper per control
-drop.Enabled = true;
-drop.Dropped += OnDropped;
+public IDisposable AddDroppedHandler(EventHandler<XPlatDragEventArgs> handler);
+public void RemoveDroppedHandler(EventHandler<XPlatDragEventArgs> handler);
 ```
 
-The helper is the feature's own type, so it is trimmed when nothing calls `DragDrop()`, and the
-control carries nothing. The other option, an interface the control implements, is reserved for the
-case in §5.5.
+Subscribing then reads like a member of the control, and because the pair is made of methods it can
+be written as extension methods for a feature:
+
+```csharp
+using var subscription = control.AddDroppedHandler((sender, e) => { ... });
+control.RemoveDroppedHandler(handler);
+```
+
+Verified in a throwaway project: the pair works as extension members, disposing the token
+unsubscribes, and `EventArgs<T>` sits beside `System.EventArgs` without ambiguity.
+
+This is a codebase-wide convention rather than a rule for opt-in features only. Core events on
+`XPlatControl`, `XPlatWindow`, `XPlatApplication` and the backend interfaces use the same shape, so
+there is one way to subscribe to anything.
+
+Rules:
+
+- The name is `Add` or `Remove`, then the event name, then `Handler`: `AddDroppedHandler`. The event
+  name is the part that appears in documentation, so it keeps a normal event name.
+- `AddXHandler` returns an `IDisposable` that removes the handler when disposed, so a scope can own a
+  subscription without holding the handler itself. Disposing twice is a no-op, and so is disposing a
+  subscription whose owner has already been torn down.
+- `RemoveXHandler` covers removal by identity, which is what a long-lived handler needs.
+- Handlers run on the UI thread in subscription order. A handler that throws stops the ones after it,
+  as a C# event would, and the exception reaches `XPlatApplication.UnhandledException`.
+- The backing storage stays private and unchanged: one field per event, exactly as a field-like event
+  has today, so a core event costs no more than it does now. The new cost is one small allocation per
+  subscription for the returned token. A feature keeps its own subscriptions in its per-control state
+  (§5.3), which is trimmed along with the feature.
+- No `event` keyword anywhere, including interfaces and backend types. A review that finds one has
+  found a bug in the convention.
+- The payload is an `EventArgs`-derived type: the existing `XPlatDragEventArgs`, `XPlatMouseEventArgs`
+  and friends stay as they are, and a feature with one payload value uses the generic `EventArgs<T>`
+  (open question 8).
 
 ### 5.5 When a member does belong on the control
 
@@ -165,8 +201,9 @@ Three exceptions, each of which has to be stated in the pull request:
   never sees the surface, which also reminds the reader that it is not paying for it.
 - Extension classes are named for the type they extend plus the feature:
   `XPlatControlDragDropExtensions`.
-- A helper returned by an extension method is named for the feature: `control.DragDrop()` returns
-  something like `XPlatDragDrop`.
+- Handler methods follow §5.4: `AddDragDropHandler`, `RemoveDragDropHandler`.
+- A feature that needs per-control state keeps it behind an extension property or an extension method
+  on the control, never behind an object the application has to hold on to.
 
 ## 6. The opt-in mechanism
 
@@ -314,9 +351,10 @@ calling the opt-in. The shared payload types can stay where they are: they are s
 they cost nothing until something calls them.
 
 `AllowDrop` and the four events are a different matter. Under §5 the surface for this feature should
-be `using XPlatUI.DragDrop;`, `AllowDrop` as an extension property, and the events on a helper
-returned by `control.DragDrop()`, which would take those members off `XPlatControl` altogether.
-Whether to make that move on an API that already shipped is open question 7.
+be `using XPlatUI.DragDrop;`, `AllowDrop` as an extension property, and `AddDragEnterHandler`,
+`AddDragOverHandler`, `AddDragLeaveHandler` and `AddDragDropHandler` as extension methods, which
+takes those members off `XPlatControl` altogether.
+is open question 7.
 
 Note the trap: making `AllowDrop` the opt-in would *not* achieve this. `AllowDrop` lives on
 `XPlatControl`, which is always retained, so the code behind it is reachable and kept regardless of
@@ -342,14 +380,27 @@ against those numbers. Nothing else is meaningful until this exists.
 Measure: the seam's own delta on the minimal app, which is the number the budget in §7 is checked
 against.
 
-### Phase 2: drag and drop as the first consumer
+### Phase 2: the event convention
+
+- Replace every `event` declaration with an `Add`/`Remove` handler pair (§5.4), across `XPlatUI`, the
+  four backends and the demo.
+- There are 95 declarations and roughly a hundred subscription sites today, so this is one change
+  rather than a rolling one: half converted leaves two shapes in the API.
+- No behaviour change: same order, same thread, same exception path.
+
+Measure: nothing. This phase is about shape, and the publish size should move only by the tokens it
+removes.
+
+### Phase 3: drag and drop as the first consumer
 
 - Add the opt-in (`services.AddDragDrop()` or equivalent), registering whatever services and hooks
   the feature needs.
 - Move `Win32DropTarget` construction and registration behind the window-created hook.
 - Move `RegisterForDraggedTypes` behind the window-created hook.
 - Move `Gtk.DropTarget` construction behind the window-created hook.
-- Leave `AllowDrop`, the four events, the payload types and the host routing where they are.
+- Leave the payload types and the host routing where they are.
+- Move `AllowDrop` and the four handler pairs to `XPlatUI.DragDrop` extensions, unless open
+  question 7 says otherwise.
 
 Measure: an application that does not call the opt-in must lose OLE, the COM target, the pasteboard
 types and the GTK controllers, and the size must return to the Phase 0 baseline.
@@ -357,13 +408,13 @@ types and the GTK controllers, and the size must return to the Phase 0 baseline.
 This phase is also the proof that the pattern works, so it should be done before any new feature is
 held to the policy.
 
-### Phase 3: documentation and review
+### Phase 4: documentation and review
 
 - Point `README.md` at this policy from the drag and drop section and from wherever features are
   listed.
 - Add the checklist in §11 to the review expectations for feature work.
 
-### Phase 4: hold new work to it
+### Phase 5: hold new work to it
 
 Every subsequent feature states, in its pull request, which rung it sits on, why it could not sit
 lower, and the measured cost for an application that does not use it.
@@ -385,7 +436,9 @@ lower, and the measured cost for an application that does not use it.
 - [ ] If it could not be made opt-in, is it in a separate project instead, with the reason recorded?
 - [ ] If the feature wants members on `XPlatControl` or a subclass, is it exposed as extension
 	  members in its own namespace instead, with the exception stated if not?
-- [ ] If it needs events, does it use a helper object rather than adding events to the control?
+- [ ] If it needs events, does it expose them as `AddXHandler`/`RemoveXHandler` extension methods?
+- [ ] Is there any C# `event` keyword in the change, including on interfaces and backend types? It
+	  has to be an `AddXHandler`/`RemoveXHandler` pair instead (§5.4).
 - [ ] If it needs per-control state, where does that state live, and what does each access cost?
 
 ## 12. Open questions
@@ -408,9 +461,12 @@ These need answers before Phase 1, and the answers belong in this document:
 7. **Moving the drag and drop surface.** `AllowDrop` and the four events shipped in the release
    before this policy existed. Do we move them to `XPlatUI.DragDrop` extensions, which is breaking
    but is what §5 asks for, or keep them and record the cost?
-8. **Helper naming.** What is the convention for the object an extension method returns when it
-   carries events: `control.DragDrop()` returning `XPlatDragDrop`, or a name that says what it is
-   for?
+8. **The generic event args type.** The convention is written as `EventHandler<EventArgs<Y>>`, which
+   means adding a generic args type. Is it `EventArgs<T>` (matches the sketch, sits next to
+   `System.EventArgs` and will be confused with it) or `XPlatEventArgs<T>` (unambiguous, longer)?
+9. **`RemoveXHandler` next to the token.** The `IDisposable` from `AddXHandler` already covers scope
+   based removal. Is the explicit `RemoveXHandler` worth keeping for symmetry with the pattern, or
+   does it just add surface?
 
 ## 13. Non-goals
 
