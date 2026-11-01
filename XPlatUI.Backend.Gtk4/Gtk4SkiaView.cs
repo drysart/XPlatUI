@@ -385,13 +385,16 @@ public sealed class Gtk4SkiaView : IDisposable
     /// <summary>Wires up the drop targets, which is how GTK4 delivers a drag from another app.</summary>
     /// <remarks>
     /// <para>
-    /// One target per data type. The binding offers no way to add a second type to a target, and GTK
-    /// only activates the target whose declared type matches the data on offer, so the file target
-    /// and the text target never both fire for the same drag.
+    /// One target per data type, because the binding offers no way to add a second type to a target.
+    /// GTK activates every target whose declared type matches the data on offer, and a file list
+    /// also matches the text target, so the text target turns file drags away rather than read a
+    /// file drop as the paths of the files it carries.
     /// </para>
     /// <para>
-    /// Preloading makes GTK fetch the data before <c>accept</c> runs, so the formats are known while
-    /// the drag is still moving, which is what the drop routing in the host expects.
+    /// Preloading makes GTK fetch the data as soon as the drag is accepted, so the payload is in
+    /// hand before the drag ends. The fetch is asynchronous: <c>accept</c> and <c>enter</c> run
+    /// before it finishes and see no value at all, and the first <c>motion</c> is the earliest
+    /// signal that can read the payload.
     /// </para>
     /// </remarks>
     private void AttachDrop()
@@ -414,36 +417,37 @@ public sealed class Gtk4SkiaView : IDisposable
         return target;
     }
 
-    /// <summary>Decides whether a drag may be dropped, and reads the data it carries.</summary>
-    private bool OnDragAccept(Gtk.DropTarget sender, Gtk.DropTarget.AcceptSignalArgs args)
-    {
-        try
-        {
-            _dragData = ReadDropValue(sender, sender.GetValue());
-            return _dragData is not null;
-        }
-        catch (Exception ex)
-        {
-            XPlatApplication.HandleNativeBoundary(ex);
-            _dragData = null;
-            return false;
-        }
-    }
+    /// <summary>Decides whether a drag may be dropped.</summary>
+    /// <remarks>
+    /// GTK only activates a target whose declared type matches the data on offer, so a drag that
+    /// reaches this point is one this view can take. The payload is not readable yet - the preload
+    /// fetch is still running - so acceptance cannot depend on it. A file list also offers itself
+    /// as text, and the file target takes those drags so that dropping files is never mistaken for
+    /// dropping the paths they came from.
+    /// </remarks>
+    private bool OnDragAccept(Gtk.DropTarget sender, Gtk.DropTarget.AcceptSignalArgs args) =>
+        ReferenceEquals(sender, _fileDropTarget) ||
+        args.Drop is null ||
+        !args.Drop.GetFormats().ContainGtype(Gdk.FileList.GetGType());
 
     /// <summary>Reports the drag crossing into the view, and what a drop there would do.</summary>
+    /// <remarks>
+    /// The payload usually arrives too late for this signal, so an unread drag answers with an
+    /// optimistic copy. Answering with <see cref="Gdk.DragAction.None"/> would cancel the drag
+    /// outright, and the first motion corrects the answer once the data is in hand.
+    /// </remarks>
     private Gdk.DragAction OnDragEnter(Gtk.DropTarget sender, Gtk.DropTarget.EnterSignalArgs args)
     {
         try
         {
-            var data = _dragData ?? ReadDropValue(sender, sender.GetValue());
-            if (data is null)
+            _dragData ??= ReadDropValue(sender, sender.GetValue());
+            if (_dragData is null)
             {
-                return Gdk.DragAction.None;
+                return Gdk.DragAction.Copy;
             }
 
-            _dragData = data;
             var point = new SKPoint((float)args.X, (float)args.Y);
-            return ToAction(Host.ProcessDragEnter(point, data, DragEffects, CurrentModifiers(sender)));
+            return ToAction(Host.ProcessDragEnter(point, _dragData, DragEffects, CurrentModifiers(sender)));
         }
         catch (Exception ex)
         {
@@ -455,13 +459,14 @@ public sealed class Gtk4SkiaView : IDisposable
     /// <summary>Reports the drag moving over the view, and what a drop there would do.</summary>
     private Gdk.DragAction OnDragMotion(Gtk.DropTarget sender, Gtk.DropTarget.MotionSignalArgs args)
     {
-        if (_dragData is null)
-        {
-            return Gdk.DragAction.None;
-        }
-
         try
         {
+            _dragData ??= ReadDropValue(sender, sender.GetValue());
+            if (_dragData is null)
+            {
+                return Gdk.DragAction.Copy;
+            }
+
             var point = new SKPoint((float)args.X, (float)args.Y);
             return ToAction(Host.ProcessDragOver(point, _dragData, DragEffects, CurrentModifiers(sender)));
         }
