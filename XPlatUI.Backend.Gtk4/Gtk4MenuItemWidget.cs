@@ -16,9 +16,9 @@ internal static class Gtk4MenuItemWidget
         label.SetHexpand(true);
         content.Append(label);
 
-        if (!string.IsNullOrEmpty(item.ShortcutText))
+        if (item.ShortcutDisplayText is { } hint)
         {
-            var shortcut = Gtk.Label.New(item.ShortcutText);
+            var shortcut = Gtk.Label.New(hint);
             shortcut.SetHalign(Gtk.Align.End);
             shortcut.AddCssClass("dim-label");
             content.Append(shortcut);

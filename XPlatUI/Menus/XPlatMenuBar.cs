@@ -36,6 +36,36 @@ public sealed class XPlatMenuBar
 
     /// <summary>The top-level menus, left to right.</summary>
     public IList<XPlatMenu> Menus { get; } = new List<XPlatMenu>();
+
+    /// <summary>
+    /// Runs the first item whose <see cref="XPlatMenuItem.Shortcut"/> is <paramref name="key"/>
+    /// pressed with <paramref name="modifiers"/>, and reports whether an item claimed the key.
+    /// </summary>
+    /// <remarks>
+    /// A matching but disabled item still claims the key, so a shortcut the user can see greyed out
+    /// does not fall through to the focused control and do something else instead. Menus are
+    /// searched in the order they appear in the bar.
+    /// </remarks>
+    public bool TryInvokeShortcut(XPlatKey key, XPlatModifiers modifiers)
+    {
+        foreach (var menu in Menus)
+        {
+            foreach (var item in menu.Items)
+            {
+                if (item.IsSeparator ||
+                    item.Shortcut is not { } shortcut ||
+                    !shortcut.Matches(key, modifiers))
+                {
+                    continue;
+                }
+
+                item.Invoke();
+                return true;
+            }
+        }
+
+        return false;
+    }
 }
 
 /// <summary>

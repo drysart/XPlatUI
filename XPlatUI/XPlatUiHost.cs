@@ -321,8 +321,19 @@ public sealed class XPlatUiHost
     /// Routes a key press to the focused control. Returns true when the control consumed the
     /// key, which tells the adapter to swallow the platform key event (and its text input).
     /// </summary>
+    /// <remarks>
+    /// The window's menu bar sees the key first, the way a native menu's accelerators do, so a
+    /// shortcut is not shadowed by whichever control happens to have the focus. macOS dispatches
+    /// Command combinations through its own menu bar before a view sees them at all, so the same
+    /// lookup there only ever covers the modifiers AppKit does not claim.
+    /// </remarks>
     public bool ProcessKeyDown(XPlatKey key, XPlatModifiers modifiers = XPlatModifiers.None) => Guard(() =>
     {
+        if (Window is { } window && window.TryInvokeShortcut(key, modifiers))
+        {
+            return true;
+        }
+
         if (key == XPlatKey.Tab)
         {
             MoveFocus((modifiers & XPlatModifiers.Shift) != 0 ? -1 : 1);

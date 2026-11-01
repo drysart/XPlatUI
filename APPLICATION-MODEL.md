@@ -307,6 +307,20 @@ windows using it and must not be disposed while they do.
 A shipping macOS `.app` should still put its icon in `Info.plist` as `CFBundleIconFile`; the Dock
 assignment is for builds without a bundle, which is what the sample harness is.
 
+**Shortcuts.** A menu item's `ShortcutText` is a hint that draws a key it does not dispatch. A
+working shortcut is an `XPlatShortcut`, and the window's menu bar - its own, else
+`XPlatApplicationOptions.MenuBar` - is consulted in `XPlatUiHost.ProcessKeyDown` *before* the
+focused control, which is the precedence native menus use. Because the lookup lives in the host
+rather than in a backend, it works on all three platforms, including the Win32 backend, which
+records the bar without drawing it yet.
+
+`XPlatShortcut`'s `Control` modifier means the platform's accelerator modifier, not a literal Ctrl:
+`DisplayText` renders "Ctrl+D" on Windows and Linux and "Cmd+D" on macOS, and AppKit converts the
+same declaration into a real key equivalent. This works because AppKit never reports Command as
+`XPlatModifiers.Control`, so `Matches` stays an exact comparison and no key is claimed twice. A
+matching item claims the key even when it is disabled, so a greyed-out command does not fall through
+to the control that has focus.
+
 ### 4.4 Screens
 
 ```csharp
@@ -1046,7 +1060,7 @@ Tier 1 **is** the v1 scope (D12, D13).
 
 | Feature | Why |
 |---|---|
-| Accelerator/shortcut dispatch | Currently each harness has its own (`SendAccelerator` on macOS). |
+| Accelerator/shortcut dispatch | Done: `XPlatShortcut` on `XPlatMenuItem`, dispatched by the window's menu bar before the focused control sees the key (§4.3). |
 | Drag & drop + file open | OS-level, per platform, frequently requested. |
 | Clipboard image/file formats | `XPlatClipboard` handles text today. |
 | Native file-drop on window | `WM_DROPFILES` / `NSDraggingDestination` / `Gtk.DropTarget`. |

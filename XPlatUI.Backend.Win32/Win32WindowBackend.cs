@@ -590,10 +590,14 @@ internal sealed class Win32WindowBackend : IXPlatWindowBackend
     /// Puts the window in the topmost band, or takes it out of it. Only has an effect once the
     /// window is visible.
     /// </summary>
+    /// <remarks>
+    /// Leaving the band needs <c>HWND_NOTOPMOST</c>; <c>HWND_TOP</c> would only move the window to
+    /// the top of the band it is already in, so turning <see cref="TopMost"/> off had no effect.
+    /// </remarks>
     private void ApplyTopMost() =>
         NativeMethods.SetWindowPos(
             _hwnd,
-            _topMost ? NativeMethods.HwndTopMost : NativeMethods.HwndTop,
+            _topMost ? NativeMethods.HwndTopMost : NativeMethods.HwndNoTopMost,
             0,
             0,
             0,

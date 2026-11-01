@@ -114,11 +114,10 @@ internal static class Program
             MinimumClientSize = DesignMinimumClientSize,
         };
 
-#if !WINDOWS
-        // The Win32 backend leaves the menu bar to the window's own system menu; GTK and macOS show
-        // this one.
-        window.MenuBar = CreateMenuBar(window, demo);
-#endif
+// Attached on every platform: GTK and macOS draw the bar, and the Win32 backend records it
+// without drawing it yet - but the shortcuts it carries work everywhere, because the window
+// checks the bar before the focused control sees a key.
+window.MenuBar = CreateMenuBar(window, demo);
 
         application.MainWindow = window;
 
@@ -148,12 +147,22 @@ internal static class Program
         return application.Run();
     }
 
-    /// <summary>The window's own menu bar, on the platforms that show one.</summary>
+    /// <summary>
+    /// The window's own menu bar, on the platforms that show one. Each item carries a shortcut so
+    /// the same commands are reachable from the keyboard on all three platforms, including the one
+    /// that does not draw the bar yet.
+    /// </summary>
     private static XPlatMenuBar CreateMenuBar(XPlatWindow window, DemoUi demo) => new(
         new XPlatMenu(
             "View",
-            new XPlatMenuItem("Dark Mode", () => XPlatTheme.Palette = XPlatPalette.Dark),
-            new XPlatMenuItem("Light Mode", () => XPlatTheme.Palette = XPlatPalette.Light)),
+            new XPlatMenuItem("Dark Mode", () => demo.SetAppearance(XPlatPalette.Dark))
+            {
+                Shortcut = new XPlatShortcut(XPlatKey.D),
+            },
+            new XPlatMenuItem("Light Mode", () => demo.SetAppearance(XPlatPalette.Light))
+            {
+                Shortcut = new XPlatShortcut(XPlatKey.L),
+            }),
         new XPlatMenu(
             "Window",
             new XPlatMenuItem("Topmost", () =>
@@ -162,8 +171,14 @@ internal static class Program
                 demo.SetStatus(window.TopMost
                     ? "The window is now above every other window."
                     : "The window is back in the normal stacking order.");
-            }),
-            new XPlatMenuItem("Owned Window", demo.ShowOwnedWindow)));
+            })
+            {
+                Shortcut = new XPlatShortcut(XPlatKey.T),
+            },
+            new XPlatMenuItem("Owned Window", demo.ShowOwnedWindow)
+            {
+                Shortcut = new XPlatShortcut(XPlatKey.N),
+            }));
 
     /// <summary>
     /// The title bar text. It names the backend on purpose: three builds of the same program are

@@ -255,6 +255,13 @@ public sealed partial class XPlatWindow : IDisposable
     }
 
     /// <summary>
+    /// Runs a menu shortcut, inherited bar included, and reports whether an item claimed the key.
+    /// The host calls this before handing a key to the focused control.
+    /// </summary>
+    internal bool TryInvokeShortcut(XPlatKey key, XPlatModifiers modifiers) =>
+        (_menuBar ?? _application.Options.MenuBar)?.TryInvokeShortcut(key, modifiers) ?? false;
+
+    /// <summary>
     /// What a modal <see cref="ShowDialog(XPlatWindow?)"/> returns once the window has closed.
     /// Defaults to <see cref="XPlatDialogResult.Cancel"/>, the value a dialog that was dismissed
     /// without choosing anything reports. Set it from the code that closes the window.

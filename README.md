@@ -328,6 +328,35 @@ This style is used when `Environment.OSVersion.Version.Build >= 22000`. On older
 popup cannot be created, `Win32ContextMenuPresenter` falls back to `TrackPopupMenuEx`; pass
 `--classic-menus` to the application to force the old menu on Windows 11 as well.
 
+### Keyboard shortcuts
+
+`ShortcutText` is only a hint: it says what the menu draws on the right, and nothing dispatches it.
+A shortcut that actually works is an `XPlatShortcut` on the item:
+
+```csharp
+var dark = new XPlatMenuItem("Dark Mode")
+{
+    Shortcut = new XPlatShortcut(XPlatKey.D),
+    Click = () => demo.SetAppearance(XPlatPalette.Dark),
+};
+```
+
+`XPlatShortcut(key, modifiers)` defaults `modifiers` to `XPlatModifiers.Control`, which means the
+platform's accelerator modifier rather than a literal Ctrl key: `DisplayText` says "Ctrl+D" on
+Windows and Linux and "Cmd+D" on macOS, and AppKit turns the same declaration into a real key
+equivalent on the menu item. A shortcut with no modifier is rejected, because a bare key belongs to
+the focused control.
+
+The window checks its menu bar - the one on the `XPlatWindow`, falling back to
+`XPlatApplicationOptions.MenuBar` - before the focused control sees the key, which is the order
+native menus use. A matching item claims the key even when it is disabled, so a greyed-out command
+does not silently fall through to the control that has focus. Because the lookup happens in
+`XPlatUiHost.ProcessKeyDown`, it works on every backend, including the Win32 one, which records the
+bar without drawing it yet.
+
+`ShortcutText` still exists for a menu that wants to describe a key it does not dispatch itself;
+when it is set it wins over the shortcut's own text in the menu drawing.
+
 ### Appearance
 
 Every default colour in the library is a palette role, so the whole UI can switch between light and

@@ -60,26 +60,23 @@ internal sealed class AppKitContextMenuPresenter : IXPlatContextMenuPresenter
     }
 
     /// <summary>
-    /// Turns the library's "Ctrl+C" style shortcut label into a native key equivalent, so the item
-    /// shows the Command key glyph the way every other macOS menu does. The library spells them
-    /// with Ctrl because that is the cross-platform convention; on macOS the same accelerators are
-    /// reached through Command.
+    /// Gives a menu item its native key equivalent, so the shortcut shows as the Command key glyph
+    /// every other macOS menu uses and AppKit dispatches it before the view sees the key.
     /// </summary>
+    /// <remarks>
+    /// A hint that was set as text alone stays a hint: the library cannot know which key "Ctrl+Shift+F"
+    /// means without a <see cref="XPlatShortcut"/>, and guessing from the last character produced a
+    /// key equivalent that ignored the other modifiers.
+    /// </remarks>
     internal static void ApplyShortcut(NSMenuItem menuItem, XPlatMenuItem item)
     {
-        var text = item.ShortcutText;
-        if (string.IsNullOrEmpty(text))
+        if (item.Shortcut is not { } shortcut ||
+            AppKitKeyMap.ToKeyEquivalent(shortcut.Key) is not { } keyEquivalent)
         {
             return;
         }
 
-        var key = text[^1];
-        if (!char.IsLetterOrDigit(key))
-        {
-            return;
-        }
-
-        menuItem.KeyEquivalent = char.ToLowerInvariant(key).ToString();
-        menuItem.KeyEquivalentModifierMask = NSEventModifierMask.CommandKeyMask;
+        menuItem.KeyEquivalent = keyEquivalent;
+        menuItem.KeyEquivalentModifierMask = AppKitKeyMap.ToKeyEquivalentMask(shortcut.Modifiers);
     }
 }
