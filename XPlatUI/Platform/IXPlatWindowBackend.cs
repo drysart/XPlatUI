@@ -137,4 +137,29 @@ public interface IXPlatWindowBackend : IDisposable
 
     /// <summary>Raised when <see cref="State"/> changes.</summary>
     event EventHandler? StateChanged;
+
+    /// <summary>
+    /// Runs the backend's own typed window hooks for <paramref name="phase"/>.
+    /// </summary>
+    /// <param name="phase">The phase the window has just entered.</param>
+    /// <param name="window">The window it belongs to.</param>
+    /// <remarks>
+    /// <para>
+    /// The model calls this once per phase, after the portable <see cref="IXPlatWindowHook"/>s in an
+    /// ascending phase and before them in a descending one, so a typed hook always tears down before
+    /// the portable hook that set it up. The backend resolves its own
+    /// <c>IXPlat&lt;Platform&gt;WindowHook</c> services from <paramref name="window"/> and runs them
+    /// in registration order, reversed for a descending phase.
+    /// </para>
+    /// <para>
+    /// An empty body is the correct implementation for a backend with no typed hooks; see
+    /// <see cref="IXPlatApplicationBackend.RunApplicationHooks"/> for why the member exists anyway.
+    /// </para>
+    /// <para>
+    /// <b>This member outlives <see cref="IDisposable.Dispose"/>.</b>
+    /// <see cref="XPlatWindowPhase.Disposed"/> is raised after the model has disposed the backend, so
+    /// an implementation must touch nothing native and must not assume the window still exists.
+    /// </para>
+    /// </remarks>
+    void RunWindowHooks(XPlatWindowPhase phase, XPlatWindow window);
 }

@@ -711,4 +711,10 @@ public sealed class Gtk4WindowBackend : IXPlatWindowBackend
     }
 
     private static int ToPixels(float value) => (int)MathF.Round(MathF.Max(value, 0f));
+
+    /// <inheritdoc />
+    public void RunWindowHooks(XPlatWindowPhase phase, XPlatWindow window)
+    {
+        // Empty on purpose: this backend declares no typed window hooks yet.
+    }
 }

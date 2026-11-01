@@ -35,6 +35,7 @@ public sealed partial class XPlatApplication : IDisposable
 
     private readonly ServiceProvider _provider;
     private readonly List<XPlatWindow> _windows = [];
+    private readonly IXPlatApplicationHook[] _applicationHooks;
     private ExceptionDispatchInfo? _fault;
     private ExceptionDispatchInfo? _handlerFault;
     private IReadOnlyList<XPlatScreen>? _screens;
@@ -99,6 +100,18 @@ public sealed partial class XPlatApplication : IDisposable
 
         InstallProcessServices();
         XPlatTheme.Changed += OnThemeChanged;
+
+        // Resolved once for the life of the application: the same instances, in registration order,
+        // at every phase, and nothing resolved while the application is tearing itself down.
+        _applicationHooks = _provider.GetServices<IXPlatApplicationHook>().ToArray();
+        RaisePhase(XPlatApplicationPhase.Creating);
+
+        // A hook that failed has already been reported. There is nothing left to run, so leave the
+        // application in the state a failed start produces and let Run rethrow the fault.
+        if (_fault is not null)
+        {
+            _exitRequested = true;
+        }
     }
 
     /// <summary>The application in this process, or null before one has been created.</summary>
@@ -280,6 +293,11 @@ public sealed partial class XPlatApplication : IDisposable
                     }
 
                     Guard(window.ShowNow);
+                }
+
+                if (!_exitRequested)
+                {
+                    RaisePhase(XPlatApplicationPhase.Created);
                 }
 
                 if (!_exitRequested)
@@ -708,6 +726,56 @@ public sealed partial class XPlatApplication : IDisposable
     private static bool IsCatchable(Exception exception) =>
         exception is not (OutOfMemoryException or StackOverflowException or AccessViolationException);
 
+    /// <summary>
+    /// Raises <paramref name="phase"/> on the portable hooks and then hands it to the backend's
+    /// typed ones, reversing both layers for a descending phase.
+    /// </summary>
+    /// <remarks>
+    /// Reversing is what makes a pair of hooks nest: if <c>A</c> registers before <c>B</c>, <c>A</c>
+    /// sets up before <c>B</c> and tears down after it. A hook that throws reaches
+    /// <see cref="UnhandledException"/> and does not stop the hooks after it.
+    /// </remarks>
+    private void RaisePhase(XPlatApplicationPhase phase)
+    {
+        var ascending = phase is XPlatApplicationPhase.Creating or XPlatApplicationPhase.Created;
+
+        if (!ascending)
+        {
+            RunBackendHooks(phase);
+        }
+
+        for (var i = 0; i < _applicationHooks.Length; i++)
+        {
+            var hook = _applicationHooks[ascending ? i : _applicationHooks.Length - 1 - i];
+
+            try
+            {
+                hook.OnPhase(phase, this);
+            }
+            catch (Exception ex)
+            {
+                HandleNativeBoundaryException(ex);
+            }
+        }
+
+        if (ascending)
+        {
+            RunBackendHooks(phase);
+        }
+    }
+
+    private void RunBackendHooks(XPlatApplicationPhase phase)
+    {
+        try
+        {
+            Backend.RunApplicationHooks(phase, this);
+        }
+        catch (Exception ex)
+        {
+            HandleNativeBoundaryException(ex);
+        }
+    }
+
     private void TearDown()
     {
         if (_tornDown)
@@ -722,6 +790,8 @@ public sealed partial class XPlatApplication : IDisposable
         // A forwarded launch never entered the loop, so there is no exit to report.
         if (_runCalled && _primaryInstance)
         {
+            RaisePhase(XPlatApplicationPhase.Stopping);
+
             var args = new XPlatExitEventArgs(_exitCode);
             Guard(() => Exiting?.Invoke(this, args));
 
@@ -737,6 +807,17 @@ public sealed partial class XPlatApplication : IDisposable
         _windows.Clear();
         _dialogs = null;
         _screens = null;
+
+        if (_runCalled && _primaryInstance)
+        {
+            RaisePhase(XPlatApplicationPhase.Stopped);
+        }
+
+        // Unconditional, unlike Stopping and Stopped: this is the only teardown a forwarded launch
+        // or a headless render sees, and the last point at which a hook can reach a service the
+        // container still owns.
+        RaisePhase(XPlatApplicationPhase.Disposed);
+
         _provider.Dispose();
 
         if (ReferenceEquals(Current, this))

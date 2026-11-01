@@ -702,4 +702,10 @@ public sealed class AppKitWindowBackend : IXPlatWindowBackend
 
         public override void DidEndLiveResize(NSNotification notification) => _backend.RaiseStateChangedIfNeeded();
     }
+
+    /// <inheritdoc />
+    public void RunWindowHooks(XPlatWindowPhase phase, XPlatWindow window)
+    {
+        // Empty on purpose: this backend declares no typed window hooks yet.
+    }
 }

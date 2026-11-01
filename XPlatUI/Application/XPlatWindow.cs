@@ -25,6 +25,7 @@ public sealed partial class XPlatWindow : IDisposable
 {
     private readonly XPlatApplication _application;
     private readonly IServiceScope _scope;
+    private readonly IXPlatWindowHook[] _windowHooks;
     private XPlatControl? _content;
     private XPlatMenuBar? _menuBar;
     private XPlatWindow? _owner;
@@ -87,6 +88,10 @@ public sealed partial class XPlatWindow : IDisposable
         Backend.ClientSizeChanged += OnBackendClientSizeChanged;
         Backend.ScaleChanged += OnBackendScaleChanged;
         Backend.StateChanged += OnBackendStateChanged;
+
+        // Window-scoped, so each window gets its own instance and its own per-window state.
+        _windowHooks = _scope.ServiceProvider.GetServices<IXPlatWindowHook>().ToArray();
+        RaisePhase(XPlatWindowPhase.Created);
     }
 
     /// <summary>The control tree's root. Assigning it is the same as assigning <see cref="XPlatUiHost.Root"/>.</summary>
@@ -385,8 +390,13 @@ public sealed partial class XPlatWindow : IDisposable
 
         Backend.Dispose();
 
+        RaisePhase(XPlatWindowPhase.Closed);
         Closed?.Invoke(this, EventArgs.Empty);
         _application.UnregisterWindow(this);
+
+        // The scope, and the hook instances in it, are still alive here; that is what makes this
+        // the last point at which a hook can reach other scoped services.
+        RaisePhase(XPlatWindowPhase.Disposed);
         _scope.Dispose();
     }
 
@@ -402,6 +412,7 @@ public sealed partial class XPlatWindow : IDisposable
         ApplyDefaultSize();
         Backend.MenuBar = _menuBar ?? _application.Options.MenuBar;
         Backend.Owner = _owner?.Backend;
+        RaisePhase(XPlatWindowPhase.Showing);
         Backend.Show();
         RaiseShown();
     }
@@ -424,6 +435,7 @@ public sealed partial class XPlatWindow : IDisposable
             return false;
         }
 
+        RaisePhase(XPlatWindowPhase.Closing);
         Dispose();
         return true;
     }
@@ -454,6 +466,7 @@ public sealed partial class XPlatWindow : IDisposable
         ApplyDefaultSize();
         Backend.MenuBar = _menuBar ?? _application.Options.MenuBar;
         Backend.Owner = _owner?.Backend;
+        RaisePhase(XPlatWindowPhase.Showing);
         Backend.ShowDialog();
         RaiseShown();
 
@@ -513,6 +526,7 @@ public sealed partial class XPlatWindow : IDisposable
 
         _shownRaised = true;
         _application.NotifyWindowShown(this);
+        RaisePhase(XPlatWindowPhase.Shown);
         Shown?.Invoke(this, EventArgs.Empty);
     }
 
@@ -540,6 +554,56 @@ public sealed partial class XPlatWindow : IDisposable
 
     private void OnBackendStateChanged(object? sender, EventArgs e) =>
         Guard(() => StateChanged?.Invoke(this, EventArgs.Empty));
+
+    /// <summary>
+    /// Raises <paramref name="phase"/> on the portable hooks and then hands it to the backend's
+    /// typed ones, reversing both layers for a descending phase.
+    /// </summary>
+    /// <remarks>
+    /// The same nesting rule as the application's phases: a hook registered first sets up first and
+    /// tears down last. A hook that throws reaches
+    /// <see cref="XPlatApplication.UnhandledException"/> and does not stop the hooks after it.
+    /// </remarks>
+    private void RaisePhase(XPlatWindowPhase phase)
+    {
+        var ascending = phase is XPlatWindowPhase.Created or XPlatWindowPhase.Showing or XPlatWindowPhase.Shown;
+
+        if (!ascending)
+        {
+            RunBackendHooks(phase);
+        }
+
+        for (var i = 0; i < _windowHooks.Length; i++)
+        {
+            var hook = _windowHooks[ascending ? i : _windowHooks.Length - 1 - i];
+
+            try
+            {
+                hook.OnPhase(phase, this);
+            }
+            catch (Exception ex)
+            {
+                XPlatApplication.HandleNativeBoundary(ex);
+            }
+        }
+
+        if (ascending)
+        {
+            RunBackendHooks(phase);
+        }
+    }
+
+    private void RunBackendHooks(XPlatWindowPhase phase)
+    {
+        try
+        {
+            Backend.RunWindowHooks(phase, this);
+        }
+        catch (Exception ex)
+        {
+            XPlatApplication.HandleNativeBoundary(ex);
+        }
+    }
 
     /// <summary>
     /// Runs work a backend raises from a platform callback, so a failure reaches

@@ -96,4 +96,27 @@ public interface IXPlatApplicationBackend
 
     /// <summary>Releases the loop's resources once <see cref="Run"/> has returned.</summary>
     void Shutdown();
+
+    /// <summary>
+    /// Runs the backend's own typed application hooks for <paramref name="phase"/>.
+    /// </summary>
+    /// <param name="phase">The phase the application has just entered.</param>
+    /// <param name="application">The application it belongs to.</param>
+    /// <remarks>
+    /// <para>
+    /// The model calls this once per phase, after the portable
+    /// <see cref="IXPlatApplicationHook"/>s in an ascending phase and before them in a descending
+    /// one, so a typed hook always tears down before the portable hook that set it up. The backend
+    /// resolves its own <c>IXPlat&lt;Platform&gt;ApplicationHook</c> services from
+    /// <paramref name="application"/> and runs them in registration order, reversed for a
+    /// descending phase.
+    /// </para>
+    /// <para>
+    /// An empty body is the correct implementation for a backend with no typed hooks: nothing
+    /// registers them unless a feature or the application does, and a hook nobody registers is
+    /// trimmed away with its registration. The member exists so a feature can add a typed hook
+    /// without the always-on path naming it.
+    /// </para>
+    /// </remarks>
+    void RunApplicationHooks(XPlatApplicationPhase phase, XPlatApplication application);
 }

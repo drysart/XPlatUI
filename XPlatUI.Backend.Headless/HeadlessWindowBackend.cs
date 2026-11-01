@@ -243,4 +243,10 @@ public sealed class HeadlessWindowBackend : IXPlatWindowBackend
 
     /// <inheritdoc />
     public event EventHandler? StateChanged;
+
+    /// <inheritdoc />
+    public void RunWindowHooks(XPlatWindowPhase phase, XPlatWindow window)
+    {
+        // Empty on purpose: this backend declares no typed window hooks yet.
+    }
 }

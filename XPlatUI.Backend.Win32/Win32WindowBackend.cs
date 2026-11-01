@@ -1434,4 +1434,10 @@ internal sealed class Win32WindowBackend : IXPlatWindowBackend
         _bufferWidth = 0;
         _bufferHeight = 0;
     }
+
+    /// <inheritdoc />
+    public void RunWindowHooks(XPlatWindowPhase phase, XPlatWindow window)
+    {
+        // Empty on purpose: this backend declares no typed window hooks yet.
+    }
 }

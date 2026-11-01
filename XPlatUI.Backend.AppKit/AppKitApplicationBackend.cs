@@ -308,6 +308,12 @@ public sealed class AppKitApplicationBackend : IXPlatApplicationBackend
     }
 
     /// <inheritdoc />
+    public void RunApplicationHooks(XPlatApplicationPhase phase, XPlatApplication application)
+    {
+        // Empty on purpose: this backend declares no typed application hooks yet.
+    }
+
+    /// <inheritdoc />
     public void Shutdown()
     {
         if (_shutDown)

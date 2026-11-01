@@ -100,6 +100,12 @@ public sealed class HeadlessApplicationBackend : IXPlatApplicationBackend
             new SKRect(0f, 0f, DefaultScreenSize.Width, DefaultScreenSize.Height), 1f, isPrimary: true)];
 
     /// <inheritdoc />
+    public void RunApplicationHooks(XPlatApplicationPhase phase, XPlatApplication application)
+    {
+        // Empty on purpose: this backend declares no typed application hooks yet.
+    }
+
+    /// <inheritdoc />
     public void Shutdown() => _pending.Clear();
 
     /// <summary>Runs the work queued by <see cref="Invoke"/> with <c>synchronous: false</c>.</summary>

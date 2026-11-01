@@ -14,7 +14,7 @@ internal sealed class XPlatWindowAccessor
 }
 
 /// <summary>Registration helpers for services whose lifetime is one window.</summary>
-public static class XPlatServiceCollectionExtensions
+public static partial class XPlatServiceCollectionExtensions
 {
     /// <summary>
     /// Registers a service that is created once per window, receives that window, and is disposed
