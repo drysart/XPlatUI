@@ -7,8 +7,9 @@ namespace XPlatUI.Backend.Gtk4;
 /// <para>
 /// The GTK binding surfaces <c>Gdk.FileList</c> as a create-only type: it can build one from a list
 /// of files, but it generates no accessor for the files a list already holds. The two GTK entry
-/// points that read it are therefore called directly. Both are part of the stable GTK4 and GLib ABI,
-/// and this backend only ever runs on Linux.
+/// points that read it are therefore called directly, with their C names spelled out because the
+/// generated marshalling would otherwise look the method names up verbatim, and in the wrong
+/// library. Both are part of the stable GTK4 and GLib ABI, and this backend only runs on Linux.
 /// </para>
 /// <para>
 /// A <c>GSList</c> node is a pair of pointers - the data, then the next node - so the list is walked
@@ -46,9 +47,9 @@ internal static partial class Gtk4FileList
         return [.. paths];
     }
 
-    [LibraryImport("libgtk-4.so.1")]
+    [LibraryImport("libgdk-4.so.1", EntryPoint = "gdk_file_list_get_files")]
     private static partial IntPtr GdkFileListGetFiles(IntPtr fileList);
 
-    [LibraryImport("libgio-2.0.so.0")]
+    [LibraryImport("libgio-2.0.so.0", EntryPoint = "g_file_peek_path")]
     private static partial IntPtr GFilePeekPath(IntPtr file);
 }
