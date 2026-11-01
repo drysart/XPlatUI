@@ -50,7 +50,9 @@
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">
     <PublishAot>true</PublishAot>
     <PublishTrimmed>true</PublishTrimmed>
-    <TrimMode>full</TrimMode>
+    <!-- The macOS SDK chooses the linker mode itself, and warns if NativeAOT sees TrimMode set at all,
+         because NativeAOT requires every assembly to be linked. -->
+    <TrimMode Condition="'$(TargetFramework)' != 'net10.0-macos'">full</TrimMode>
     <PublishReadyToRun>false</PublishReadyToRun>
     <!-- Set to false to stop embedding the Skia native library, which puts
          libSkiaSharp.dll/libSkiaSharp.so back beside the executable. -->
