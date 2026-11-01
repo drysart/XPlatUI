@@ -43,6 +43,19 @@ internal sealed class AppKitSkiaView : NSView
 
     private const long Mib = 1024 * 1024;
 
+    /// <summary>The pasteboard type of a dragged file.</summary>
+    private const string FileUrlType = "public.file-url";
+
+    /// <summary>The pasteboard type of dragged plain text.</summary>
+    private const string PlainTextType = "public.utf8-plain-text";
+
+    /// <summary>The effects a drop offers the drag source.</summary>
+    private const XPlatDragDropEffects DragEffects =
+        XPlatDragDropEffects.Copy | XPlatDragDropEffects.Move;
+
+    /// <summary>The pasteboard types this view is registered to receive as a drag destination.</summary>
+    private static readonly string[] DragTypes = [FileUrlType, PlainTextType];
+
     private readonly XPlatUiHost _host;
 
     private NSTrackingArea? _trackingArea;
@@ -62,6 +75,7 @@ internal sealed class AppKitSkiaView : NSView
     private bool _inDraw;
     private bool _invalidationDuringDraw;
     private int _deferredRepaints;
+    private XPlatDataObject? _dragData;
 
     private long _frames;
     private long _buffersAllocated;
@@ -82,6 +96,9 @@ internal sealed class AppKitSkiaView : NSView
         // Layer backed from the start, so AppKit never creates a backing store for this view and
         // the first frame already goes through the layer instead of the window's context.
         WantsLayer = true;
+
+        // AppKit only sends a drag here when the pasteboard offers one of these types.
+        RegisterForDraggedTypes(DragTypes);
     }
 
     /// <summary>
@@ -400,6 +417,61 @@ internal sealed class AppKitSkiaView : NSView
         }
     }
 
+    /// <summary>Called when a drag enters the view, and says whether the view would take the drop.</summary>
+    public override NSDragOperation DraggingEntered(INSDraggingInfo sender)
+    {
+        var data = ReadDragData(sender);
+        if (data is null)
+        {
+            _dragData = null;
+            return NSDragOperation.None;
+        }
+
+        _dragData = data;
+        return ToOperation(_host.ProcessDragEnter(PointFrom(sender), data, DragEffects, DragModifiers()));
+    }
+
+    /// <summary>Called as a drag moves over the view, and says what a drop there would do.</summary>
+    public override NSDragOperation DraggingUpdated(INSDraggingInfo sender)
+    {
+        if (_dragData is null)
+        {
+            return NSDragOperation.None;
+        }
+
+        return ToOperation(_host.ProcessDragOver(PointFrom(sender), _dragData, DragEffects, DragModifiers()));
+    }
+
+    /// <summary>Called when the drag leaves the view without being dropped.</summary>
+    public override void DraggingExited(INSDraggingInfo? sender)
+    {
+        if (_dragData is null)
+        {
+            return;
+        }
+
+        _dragData = null;
+        _host.ProcessDragLeave();
+    }
+
+    /// <summary>Called when the drag is released over the view; true says the drop will be taken.</summary>
+    public override bool PrepareForDragOperation(INSDraggingInfo sender) => _dragData is not null;
+
+    /// <summary>Called when the drag is released over the view, and routes the drop.</summary>
+    public override bool PerformDragOperation(INSDraggingInfo sender)
+    {
+        var data = ReadDragData(sender) ?? _dragData;
+        _dragData = null;
+
+        if (data is null)
+        {
+            return false;
+        }
+
+        return _host.ProcessDragDrop(PointFrom(sender), data, DragEffects, DragModifiers()) !=
+            XPlatDragDropEffects.None;
+    }
+
     /// <summary>
     /// The parameterless <c>Dispose</c> on <see cref="NSObject"/> is sealed, so the teardown hook is
     /// the protected overload every NSObject subclass overrides.
@@ -507,6 +579,67 @@ internal sealed class AppKitSkiaView : NSView
     {
         var point = ConvertPointFromView(theEvent.LocationInWindow, null!);
         return new SKPoint((float)point.X, (float)point.Y);
+    }
+
+    private SKPoint PointFrom(INSDraggingInfo sender)
+    {
+        var point = ConvertPointFromView(sender.DraggingLocation, null!);
+        return new SKPoint((float)point.X, (float)point.Y);
+    }
+
+    /// <summary>
+    /// Reads whatever the dragged pasteboard offers that the library understands. Files come first
+    /// because a file drag also carries its name as text, and the file is the more useful of the two.
+    /// </summary>
+    private static XPlatDataObject? ReadDragData(INSDraggingInfo sender)
+    {
+        try
+        {
+            var pasteboard = sender.DraggingPasteboard;
+            var objects = pasteboard.ReadObjectsForClasses([new Class(typeof(NSUrl))], null!);
+            string[] paths = objects is null
+                ? []
+                :
+                [
+                    .. objects
+                        .OfType<NSUrl>()
+                        .Select(url => url.Path ?? string.Empty)
+                        .Where(path => path.Length > 0),
+                ];
+
+            if (paths.Length > 0)
+            {
+                XPlatDataObject fromFiles = new();
+                fromFiles.SetFiles(paths);
+                return fromFiles;
+            }
+
+            return pasteboard.GetStringForType(PlainTextType) is { Length: > 0 } text
+                ? XPlatDataObject.FromText(text)
+                : null;
+        }
+        catch (Exception ex)
+        {
+            Trace($"reading the dragged data failed: {ex.GetType().Name}: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>Reads the modifier keys that are down right now, which AppKit keeps on the event.</summary>
+    private static XPlatModifiers DragModifiers() =>
+        NSApplication.SharedApplication.CurrentEvent is { } current
+            ? AppKitKeyMap.ToModifiers(current.ModifierFlags)
+            : XPlatModifiers.None;
+
+    /// <summary>Translates the effect the UI accepted into the operation AppKit shows for it.</summary>
+    private static NSDragOperation ToOperation(XPlatDragDropEffects effect)
+    {
+        if (effect.HasFlag(XPlatDragDropEffects.Move))
+        {
+            return NSDragOperation.Move;
+        }
+
+        return effect.HasFlag(XPlatDragDropEffects.Copy) ? NSDragOperation.Copy : NSDragOperation.None;
     }
 
     private static XPlatModifiers ModifiersFrom(NSEvent theEvent) => AppKitKeyMap.ToModifiers(theEvent.ModifierFlags);

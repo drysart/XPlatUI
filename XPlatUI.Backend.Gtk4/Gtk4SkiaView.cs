@@ -39,6 +39,10 @@ public sealed class Gtk4SkiaView : IDisposable
 
     private const long MemoryReportIntervalMs = 5000;
 
+    /// <summary>The effects a drop target offers the drag source.</summary>
+    private const XPlatDragDropEffects DragEffects =
+        XPlatDragDropEffects.Copy | XPlatDragDropEffects.Move;
+
     /// <summary>Set <c>XPLATUI_DEBUG=1</c> to trace host work to stderr, which helps on odd setups.</summary>
     private static readonly bool DebugTrace =
         Environment.GetEnvironmentVariable("XPLATUI_DEBUG") is "1" or "true";
@@ -68,6 +72,10 @@ public sealed class Gtk4SkiaView : IDisposable
     private bool _metricsPending;
     private int _deferredRepaints;
     private bool _disposed;
+
+    private Gtk.DropTarget? _fileDropTarget;
+    private Gtk.DropTarget? _textDropTarget;
+    private XPlatDataObject? _dragData;
 
     private long _frames;
     private long _reportedAt;
@@ -189,6 +197,18 @@ public sealed class Gtk4SkiaView : IDisposable
         XPlatTheme.Changed -= OnThemeChanged;
         Host.Invalidated -= OnHostInvalidated;
         Host.CursorChanged -= OnHostCursorChanged;
+
+        if (_fileDropTarget is not null)
+        {
+            _area.RemoveController(_fileDropTarget);
+            _fileDropTarget = null;
+        }
+
+        if (_textDropTarget is not null)
+        {
+            _area.RemoveController(_textDropTarget);
+            _textDropTarget = null;
+        }
 
         _picture.SetPaintable(null);
         _frame?.Dispose();
@@ -358,6 +378,174 @@ public sealed class Gtk4SkiaView : IDisposable
         key.OnKeyPressed += OnKeyPressed;
         key.OnKeyReleased += OnKeyReleased;
         _area.AddController(key);
+
+        AttachDrop();
+    }
+
+    /// <summary>Wires up the drop targets, which is how GTK4 delivers a drag from another app.</summary>
+    /// <remarks>
+    /// <para>
+    /// One target per data type. The binding offers no way to add a second type to a target, and GTK
+    /// only activates the target whose declared type matches the data on offer, so the file target
+    /// and the text target never both fire for the same drag.
+    /// </para>
+    /// <para>
+    /// Preloading makes GTK fetch the data before <c>accept</c> runs, so the formats are known while
+    /// the drag is still moving, which is what the drop routing in the host expects.
+    /// </para>
+    /// </remarks>
+    private void AttachDrop()
+    {
+        _fileDropTarget = AddDropTarget(Gdk.FileList.GetGType());
+        _textDropTarget = AddDropTarget(GObject.Type.String);
+    }
+
+    /// <summary>Adds a drop target for one data type, and hooks the signals a drag raises on it.</summary>
+    private Gtk.DropTarget AddDropTarget(GObject.Type type)
+    {
+        var target = Gtk.DropTarget.New(type, Gdk.DragAction.Copy | Gdk.DragAction.Move);
+        target.SetPreload(true);
+        target.OnAccept += OnDragAccept;
+        target.OnEnter += OnDragEnter;
+        target.OnMotion += OnDragMotion;
+        target.OnLeave += OnDragLeaveSignal;
+        target.OnDrop += OnDragDrop;
+        _area.AddController(target);
+        return target;
+    }
+
+    /// <summary>Decides whether a drag may be dropped, and reads the data it carries.</summary>
+    private bool OnDragAccept(Gtk.DropTarget sender, Gtk.DropTarget.AcceptSignalArgs args)
+    {
+        try
+        {
+            _dragData = ReadDropValue(sender, sender.GetValue());
+            return _dragData is not null;
+        }
+        catch (Exception ex)
+        {
+            XPlatApplication.HandleNativeBoundary(ex);
+            _dragData = null;
+            return false;
+        }
+    }
+
+    /// <summary>Reports the drag crossing into the view, and what a drop there would do.</summary>
+    private Gdk.DragAction OnDragEnter(Gtk.DropTarget sender, Gtk.DropTarget.EnterSignalArgs args)
+    {
+        try
+        {
+            var data = _dragData ?? ReadDropValue(sender, sender.GetValue());
+            if (data is null)
+            {
+                return Gdk.DragAction.None;
+            }
+
+            _dragData = data;
+            var point = new SKPoint((float)args.X, (float)args.Y);
+            return ToAction(Host.ProcessDragEnter(point, data, DragEffects, CurrentModifiers(sender)));
+        }
+        catch (Exception ex)
+        {
+            XPlatApplication.HandleNativeBoundary(ex);
+            return Gdk.DragAction.None;
+        }
+    }
+
+    /// <summary>Reports the drag moving over the view, and what a drop there would do.</summary>
+    private Gdk.DragAction OnDragMotion(Gtk.DropTarget sender, Gtk.DropTarget.MotionSignalArgs args)
+    {
+        if (_dragData is null)
+        {
+            return Gdk.DragAction.None;
+        }
+
+        try
+        {
+            var point = new SKPoint((float)args.X, (float)args.Y);
+            return ToAction(Host.ProcessDragOver(point, _dragData, DragEffects, CurrentModifiers(sender)));
+        }
+        catch (Exception ex)
+        {
+            XPlatApplication.HandleNativeBoundary(ex);
+            return Gdk.DragAction.None;
+        }
+    }
+
+    /// <summary>Reports the drag leaving the view without being dropped.</summary>
+    private void OnDragLeaveSignal(Gtk.DropTarget sender, EventArgs args)
+    {
+        if (_dragData is null)
+        {
+            return;
+        }
+
+        _dragData = null;
+        Host.ProcessDragLeave();
+    }
+
+    /// <summary>Routes the drop into the control tree.</summary>
+    private bool OnDragDrop(Gtk.DropTarget sender, Gtk.DropTarget.DropSignalArgs args)
+    {
+        try
+        {
+            var data = ReadDropValue(sender, args.Value) ?? _dragData;
+            _dragData = null;
+
+            if (data is null)
+            {
+                return false;
+            }
+
+            var point = new SKPoint((float)args.X, (float)args.Y);
+            return Host.ProcessDragDrop(point, data, DragEffects, CurrentModifiers(sender)) !=
+                XPlatDragDropEffects.None;
+        }
+        catch (Exception ex)
+        {
+            XPlatApplication.HandleNativeBoundary(ex);
+            _dragData = null;
+            return false;
+        }
+    }
+
+    /// <summary>Turns the value GTK negotiated for a drag into the library's data object.</summary>
+    private XPlatDataObject? ReadDropValue(Gtk.DropTarget sender, GObject.Value? value)
+    {
+        if (value is null)
+        {
+            return null;
+        }
+
+        if (ReferenceEquals(sender, _fileDropTarget))
+        {
+            var paths = Gtk4FileList.ReadPaths(value.GetBoxed());
+            if (paths.Length == 0)
+            {
+                return null;
+            }
+
+            XPlatDataObject fromFiles = new();
+            fromFiles.SetFiles(paths);
+            return fromFiles;
+        }
+
+        return value.GetString() is { Length: > 0 } text ? XPlatDataObject.FromText(text) : null;
+    }
+
+    /// <summary>Reads the modifier keys that are down right now, as the drag controller sees them.</summary>
+    private static XPlatModifiers CurrentModifiers(Gtk.DropTarget sender) =>
+        Gtk4KeyMap.MapModifiers(sender.GetCurrentEventState());
+
+    /// <summary>Translates the effect the UI accepted into the action GTK shows for it.</summary>
+    private static Gdk.DragAction ToAction(XPlatDragDropEffects effect)
+    {
+        if (effect.HasFlag(XPlatDragDropEffects.Move))
+        {
+            return Gdk.DragAction.Move;
+        }
+
+        return effect.HasFlag(XPlatDragDropEffects.Copy) ? Gdk.DragAction.Copy : Gdk.DragAction.None;
     }
 
     private void OnPressed(Gtk.GestureClick gesture, Gtk.GestureClick.PressedSignalArgs args)

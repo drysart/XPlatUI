@@ -65,6 +65,7 @@ internal sealed class Win32WindowBackend : IXPlatWindowBackend
     private SKSurface? _skia;
 
     private bool _trackingLeave;
+    private Win32DropTarget? _dropTarget;
     private long _lastClickTime;
     private int _clickCount;
     private int _lastClickX;
@@ -451,6 +452,10 @@ internal sealed class Win32WindowBackend : IXPlatWindowBackend
 
         XPlatTheme.Changed -= OnThemeChanged;
 
+        // The drop target has to be revoked while the window still exists: OLE keeps calling into
+        // it for as long as the window is registered.
+        _dropTarget?.Revoke(_hwnd);
+
         if (_hwnd != IntPtr.Zero)
         {
             NativeMethods.DestroyWindow(_hwnd);
@@ -564,6 +569,11 @@ internal sealed class Win32WindowBackend : IXPlatWindowBackend
         PlaceInitially();
         ApplyResizable();
         ApplyIcon();
+
+        // Accepting drops is free when nothing is dragged, so it is unconditional: the shell only
+        // calls into the target while a drag is in progress.
+        _dropTarget = new Win32DropTarget(this);
+        _dropTarget.Register(_hwnd);
 
         UpdateHostSize();
         return true;
@@ -1167,6 +1177,36 @@ internal sealed class Win32WindowBackend : IXPlatWindowBackend
 
         _host.ProcessTextInput(character.ToString());
     }
+
+    /// <summary>
+    /// Routes the start of an OLE drag into the control tree. The point is in screen pixels, because
+    /// the shell does not know where this window's client area is.
+    /// </summary>
+    internal XPlatDragDropEffects OnDragEnter(
+        NativeMethods.POINT screen,
+        XPlatDataObject data,
+        XPlatDragDropEffects allowedEffects,
+        XPlatModifiers modifiers) =>
+        _host.ProcessDragEnter(ScreenToLogical(screen), data, allowedEffects, modifiers);
+
+    /// <summary>Routes a drag move into the control tree.</summary>
+    internal XPlatDragDropEffects OnDragOver(
+        NativeMethods.POINT screen,
+        XPlatDataObject data,
+        XPlatDragDropEffects allowedEffects,
+        XPlatModifiers modifiers) =>
+        _host.ProcessDragOver(ScreenToLogical(screen), data, allowedEffects, modifiers);
+
+    /// <summary>Tells the control tree that the drag left the window without being dropped.</summary>
+    internal void OnDragLeave() => _host.ProcessDragLeave();
+
+    /// <summary>Routes a drop into the control tree.</summary>
+    internal XPlatDragDropEffects OnDrop(
+        NativeMethods.POINT screen,
+        XPlatDataObject data,
+        XPlatDragDropEffects allowedEffects,
+        XPlatModifiers modifiers) =>
+        _host.ProcessDragDrop(ScreenToLogical(screen), data, allowedEffects, modifiers);
 
     private void UpdateHostSize()
     {

@@ -139,7 +139,18 @@ internal static class NativeMethods
 
     // Clipboard.
     internal const uint CfUnicodeText = 13;
+    internal const uint CfHDrop = 15;
     internal const uint GmemMoveable = 0x0002;
+
+    // Drag and drop. DROPEFFECT values are numerically the same as XPlatDragDropEffects, and the
+    // MK_* flags are the same bits IDropTarget receives in its key state argument.
+    internal const uint DropEffectNone = 0x00000000;
+    internal const uint DropEffectCopy = 0x00000001;
+    internal const uint DropEffectMove = 0x00000002;
+    internal const uint DropEffectLink = 0x00000004;
+    internal const uint MkShift = 0x0004;
+    internal const uint MkControl = 0x0008;
+    internal const uint MkAlt = 0x0020;
 
     // DPI.
     internal const uint SpiGetWorkArea = 0x0030;
@@ -202,6 +213,18 @@ internal static class NativeMethods
     {
         public int X;
         public int Y;
+    }
+
+    /// <summary>
+    /// <c>STGMEDIUM</c>: the transfer medium <c>IDataObject.GetData</c> returns. The middle field
+    /// is a union; for the global-memory medium this backend asks for it holds an <c>HGLOBAL</c>.
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct STGMEDIUM
+    {
+        public uint Tymed;
+        public IntPtr Handle;
+        public IntPtr UnknownForRelease;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -797,6 +820,9 @@ internal static class NativeMethods
     internal const uint CoInitApartmentThreaded = 0x00000002;
     internal const int SOk = 0;
     internal const int SFalse = 1;
+    internal const int ENoInterface = unchecked((int)0x80004002);
+    internal const int EPointer = unchecked((int)0x80004003);
+    internal const int EInvalidArgument = unchecked((int)0x80070057);
 
     [DllImport("ole32.dll", ExactSpelling = true)]
     internal static extern int CoInitializeEx(IntPtr reserved, uint flags);
@@ -818,4 +844,22 @@ internal static class NativeMethods
         IntPtr bindContext,
         in Guid interfaceId,
         out IntPtr item);
+
+    // OLE drag and drop. RegisterDragDrop hands the shell a COM object it calls into for the rest
+    // of the drag, and needs the thread to be in a single-threaded apartment that OLE has set up,
+    // which no other part of this backend asks for.
+    [DllImport("ole32.dll", ExactSpelling = true)]
+    internal static extern int OleInitialize(IntPtr reserved);
+
+    [DllImport("ole32.dll", ExactSpelling = true)]
+    internal static extern int RegisterDragDrop(IntPtr hwnd, IntPtr dropTarget);
+
+    [DllImport("ole32.dll", ExactSpelling = true)]
+    internal static extern int RevokeDragDrop(IntPtr hwnd);
+
+    [DllImport("ole32.dll", ExactSpelling = true)]
+    internal static extern void ReleaseStgMedium(ref STGMEDIUM medium);
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    internal static extern uint DragQueryFileW(IntPtr hDrop, uint index, [Out] char[]? fileName, uint cch);
 }
