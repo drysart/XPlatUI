@@ -1,13 +1,6 @@
 using SkiaSharp;
 using XPlatUI;
-
-#if WINDOWS
-using XPlatUI.Backend.Win32;
-#elif MACOS
-using XPlatUI.Backend.AppKit;
-#else
-using XPlatUI.Backend.Gtk4;
-#endif
+using XPlatUI.Backend;
 
 namespace XPlatUI.Minimal;
 
@@ -30,11 +23,6 @@ internal static class Program
     [STAThread]
     private static int Main()
     {
-        // Must run before anything touches SkiaSharp: an AOT publish carries the native Skia library
-        // inside the executable instead of next to it. The resource is embedded in this assembly by
-        // XPlatUI's build assets, which is why this assembly is the one named here.
-        SkiaNativeLoader.EnsureLoaded(typeof(Program).Assembly);
-
         var options = new XPlatApplicationOptions
         {
             ApplicationName = "XPlat UI Minimal",
@@ -44,7 +32,9 @@ internal static class Program
 #endif
         };
 
-        using var application = new XPlatApplication(CreateBackend(), options);
+        // Both of the platform-specific steps an application used to have to take itself - choosing
+        // the backend and making SkiaSharp's native library resolvable - happen inside this call.
+        using var application = new XPlatApplication(XPlatUIBackend.CreateDefault(), options);
 
         var window = new XPlatWindow("XPlat UI - Minimal", new XPlatLabel("Hello, XPlatUI."))
         {
@@ -56,14 +46,4 @@ internal static class Program
 
         return application.Run();
     }
-
-    /// <summary>Creates the backend for the platform this build is for.</summary>
-    private static IXPlatApplicationBackend CreateBackend() =>
-#if WINDOWS
-        new Win32ApplicationBackend();
-#elif MACOS
-        new AppKitApplicationBackend();
-#else
-        new Gtk4ApplicationBackend();
-#endif
 }
