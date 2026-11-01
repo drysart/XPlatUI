@@ -102,9 +102,9 @@ the application adds, which is the opt-in in its packaging form: a feature that 
 cannot be used and cannot be in the deliverable.
 
 A feature author writes one `<PackageReference>` with no `Condition`, on every platform. The package
-carries one assembly per platform plus the shared one, and NuGet selects the right platform's
-assembly at restore, from the consuming project's target framework. Nothing is dispatched at run
-time, and the platforms that were not selected are not in the deliverable.
+carries one assembly per platform, and NuGet selects the right platform's assembly at restore, from
+the consuming project's target framework. Nothing is dispatched at run time, and the platforms that
+were not selected are not in the deliverable.
 
 One consequence applies to every rung-3 feature: its surface is extension members, because a
 separate assembly cannot add members to a type declared in `XPlatUI`. §5's shape is therefore
@@ -113,50 +113,80 @@ type cannot take this rung at all.
 
 #### The project layout
 
-One project per platform, plus a shared one:
+One project, four folders:
 
 ```
-XPlatUI.Feature.<feature>.Common/    portable code, net10.0
-XPlatUI.Feature.<feature>.Win32/     net10.0-windows
-XPlatUI.Feature.<feature>.AppKit/    net10.0-macos
-XPlatUI.Feature.<feature>.Gtk4/      net10.0
+XPlatUI.Feature.<feature>/
+    common/     portable code, compiled into every platform
+    windows/    net10.0-windows
+    macos/      net10.0-macos
+    linux/      net10.0
 ```
 
-This mirrors the backend projects, which are already one project per platform, and each of these is
-an ordinary single-target-framework project. Nothing in a project file is conditional: no host
-detection, no `Compile Remove` glob, no `#if`. The platform projects are named after the backend
-they sit on, the way the backends are named after the toolkit rather than the operating system, so a
-project name says which native API its code is written against.
+The project multi-targets every platform the feature supports, and each inner build compiles
+`common/` plus exactly one platform folder:
 
-The platform projects reference `Common`, which is where anything portable lives. A platform project
-is only ever built for its own framework, so its code can use that platform's APIs directly and can
-be read without mentally subtracting the other two thirds. `#if` is still available inside `Common`
-for differences too small to justify a file in each platform project, and a feature with nothing
-portable has no `Common` project at all.
+```xml
+<PropertyGroup>
+  <TargetFrameworks>net10.0-windows;net10.0-macos;net10.0</TargetFrameworks>
+</PropertyGroup>
 
-`Common` is a separate assembly, so anything the platform projects use has to be `public`, or
-`internal` with `InternalsVisibleTo` naming the platform assemblies. The second is the better
-default: it keeps the shared surface small without turning the platform projects into public API.
+<ItemGroup>
+  <Compile Remove="windows/**;macos/**;linux/**" />
+  <Compile Include="windows/**" Condition="'$(TargetFramework)' == 'net10.0-windows'" />
+  <Compile Include="macos/**" Condition="'$(TargetFramework)' == 'net10.0-macos'" />
+  <Compile Include="linux/**" Condition="'$(TargetFramework)' == 'net10.0'" />
+</ItemGroup>
+```
 
-A consuming solution is also simpler than the single-project layout would have made it. Each
-platform project has one target framework, so a project reference to it dispatches into nothing and
-needs no `Compile Remove` guard; the only condition is the one that picks which platform project to
-reference, exactly as `XPlatUIDemo.App` does for its backend.
+Verified with a planted error in each platform folder in turn: a build narrowed to
+`net10.0-windows` reported neither the `macos/` nor the `linux/` error, and a `net10.0` build
+reported the `linux/` one and not the `windows/` one. Each folder is compiled on its own branch and
+no other. The folders are named after the platform rather than the backend, so a feature author
+chooses a folder by the operating system being supported, and which backend that folder targets
+follows from the framework, since `net10.0-windows` can only mean Win32.
 
-The macOS project is the one that cannot go in the repository's solution file. A machine without the
-`macos` workload fails a solution build with `NETSDK1147`, and most Windows machines do not have it;
-`XPlatUI.Backend.AppKit` is likewise absent from `WinFormsApp3.slnx`. The project is still built,
-through a project reference from a host-conditioned consumer or by the pack pipeline on a Mac.
+Sharing is a folder, not an assembly. `common/` compiles into each platform's output, so nothing has
+to be `public` for the sake of another platform, there is no `InternalsVisibleTo`, and there is no
+second assembly to place in each `lib/` folder. `#if` is still available inside `common/` for
+differences too small to justify a file in each platform folder, and a feature with nothing portable
+simply has an empty `common/`. The same `$(TargetFramework)` condition is how a platform's
+`PackageReference` is applied, which is what produces the per-platform dependency groups below.
 
-#### Shipping: four packs, one package
+A consuming solution is simpler than either alternative. The project reference is one unconditional
+line, and MSBuild builds only the inner build that matches the consuming project, so there is no
+host detection and no condition choosing which platform to reference. Only the feature project's own
+build enumerates all three, which matters in one case: a direct or solution build of the project
+needs every platform's workload.
 
-Each project packs on its own, and the pipeline merges the results into one package:
+The `macos` workload is therefore a build requirement for this project. It is installed here and the
+`macos` inner build succeeds, but a Windows machine without it fails with `NETSDK1147`, which is why
+`XPlatUI.Backend.AppKit` is absent from `WinFormsApp3.slnx`. A feature project follows the same
+rule: it stays out of the development solution, and the pack pipeline builds it on a machine with
+all three workloads. For local work, `dotnet build -p:TargetFrameworks=net10.0-windows` narrows the
+build to one platform without editing the file, and `-p:TargetFramework=net10.0` narrows it to one
+framework. Both verified.
 
-1. Run `dotnet pack` on `Common` once, and on each platform project on its own platform.
-2. Unpack them and build one package whose `lib/` folder holds, for each platform, that platform's
-   assembly together with `Common`.
-3. Write one dependency group per platform, each naming `XPlatUI` plus whatever feed packages that
-   platform needs, and repack.
+Pin the macOS target framework version rather than writing the floating `net10.0-macos`. The packed
+`lib/` folder name carries whatever platform version the build machine's workload supplies, and an
+unpinned build produced `lib/net10.0-macos26.0/`. A consumer on an older workload then resolves to a
+lower platform version and does not match the folder.
+
+#### Shipping: one pack
+
+`dotnet pack` on the project produces the whole package, because each inner build contributes its
+own `lib/` folder and its own dependency group:
+
+1. One `lib/<tfm>/` folder per platform, each holding that platform's assembly. Nothing else needs
+   to go in it, because `common/` was compiled into it.
+2. One dependency group per platform, naming `XPlatUI` plus whatever feed packages that platform
+   needs, generated from the same `$(TargetFramework)` conditions that selected the source folder.
+
+Verified with the four-folder project above, carrying one `PackageReference` conditioned on the
+Windows framework: one `dotnet pack` produced `lib/net10.0/`, `lib/net10.0-windows7.0/` and
+`lib/net10.0-macos26.0/`, with an empty group for `net10.0`, an empty group for the macOS framework,
+and a Windows group. No merge step, no hand-written groups, no `SuppressDependenciesWhenPacking`,
+and no `NU5128`.
 
 A dependency group per platform is what makes a platform-only package tolerable. Dependencies are
 selected by the same nearest-framework rule as assemblies, so a macOS-only package listed in the
@@ -172,34 +202,80 @@ dependencies. Verified: a package with no Windows group restored the Linux depen
 restored nothing. Each group must also be the platform's whole closure rather than its extras,
 because nothing is inherited from the `net10.0` group once a platform group is chosen.
 
-Step 2 has the same hazard, in a worse form, because it fails silently. NuGet chooses one `lib/`
-folder per package per target framework, not one folder per assembly, so `Common` left in its own
-`lib/net10.0/` folder is not referenced by a `net10.0-windows` application at all: the package
-listing shows it, the build cannot see it, and the application fails to compile against types that
-appear to be present. Verified with a hand-built package, where the consuming project's assets
-listed only `lib/net10.0-windows7.0/Plat.dll`, and copying the shared assembly into that folder made
-both appear. A missing Windows `lib/` folder is worse still, because the consumer then compiles
-against the `net10.0` folder instead and a Windows application ships the Linux assembly. Verified: a
-`net10.0-windows` consumer of a package with no Windows folder compiled and printed the marker
-string from the `net10.0` assembly.
+The same rule governs the `lib/` folders, where the failure is worse because it is silent. NuGet
+chooses one `lib/` folder per package per target framework, so a missing Windows folder is not an
+error: the `net10.0-windows` consumer compiles against the `net10.0` folder instead, and a Windows
+application ships the Linux assembly. Verified: a `net10.0-windows` consumer of a package with no
+Windows folder compiled and printed the marker string from the `net10.0` assembly. A project that
+multi-targets cannot produce that shape by accident, because each folder is written by the same
+inner build that the `TargetFrameworks` list requires.
 
-Step 3 is also where the sibling projects stop being dependencies. A platform project that
-references `Common` packs a dependency on it named after the project, which no feed can satisfy.
-`SuppressDependenciesWhenPacking` removes the whole dependency group rather than one entry, which
-drops the real feed packages with it and emits `NU5128` because the groups no longer match the
-`lib/` folders. So the pipeline takes each platform pack's generated group, removes the entries
-naming sibling projects, unions in the feed packages from `Common`'s group, and writes the result.
-Groups that match the `lib/` folders are what `dotnet pack` produces normally, and do not warn.
+#### The `net10.0` fallback guard
 
-That merge is the only part of this rung that is easy to get wrong, so it belongs in one shared
-pipeline step used by every feature package rather than being written per feature.
+A missing `lib/` folder cannot be caught at build time, so a feature's Linux build carries a runtime
+guard: a module initializer that fails the process if the `net10.0` assembly is loaded anywhere but
+Linux. The `net10.0` folder is the only one that needs it, because it is the only one that is
+compatible with another platform's target framework.
+
+```csharp
+// linux/PlatformGuard.cs
+internal static class PlatformGuard
+{
+#pragma warning disable CA2255
+    [ModuleInitializer]
+#pragma warning restore CA2255
+    internal static void Verify()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            Environment.FailFast(
+                "XPlatUI.Feature.<feature>: the net10.0 (Linux) assembly was loaded on "
+                + RuntimeInformation.OSDescription
+                + ". The package is missing this platform's lib folder.");
+        }
+    }
+}
+```
+
+`FailFast` rather than an exception, because this is a packaging bug rather than a condition an
+application can handle. The alternative is a feature that misbehaves somewhere unrelated, and an
+exception can be caught and masked. The process dies with a distinctive exit code and the message on
+standard error. `OperatingSystem.IsLinux()` is a constant check with no reflection, so it is safe
+under trimming and AOT.
+
+Verified, with the guard deliberately set to fire:
+
+| Build | Behaviour |
+|---|---|
+| framework-dependent | runs before `Main`, stack shows `<Module>..cctor()`, exit `0x80131623` |
+| `PublishTrimmed` | runs before `Main`, exit `0x80131623` |
+| `PublishAot` | runs during startup, stack shows `RunModuleInitializers`, exit `0xC0000409` |
+
+The analyzer warns `CA2255`, that module initializers are intended for application code. That is the
+intended use here, so it is suppressed at the attribute with a comment. The guard's own cost is one
+method and one string in the Linux assembly, inside a package the application has already chosen to
+reference.
+
+The guard is a detector, not the guarantee. The guarantee is target framework selection, which is a
+build-time decision; the guard exists because the failure it detects is otherwise silent. Two limits
+are worth knowing:
+
+- A module initializer does not keep its own assembly alive. If trimming inlines away everything
+  reachable in the assembly, the assembly and its initializer are deleted together and the guard
+  never runs. Verified: a library whose only used method returned a constant was eliminated and the
+  guard did not fire, while the same library with one non-inlinable member survived and fired. A
+  real feature assembly is not in danger, but the guard should not be the only code in its folder,
+  and a test that exercises it is worth having.
+- The guard runs when the assembly is loaded, which in a framework-dependent build is the first use
+  of the feature. An application that never touches the feature never loads the assembly, and has
+  nothing to guard.
 
 Packaging does not change the namespace (§5.6). A feature in `XPlatUI.Feature.Clocks` is still
 `namespace XPlatUI.Clocks`, so moving a feature between rung 2 and rung 3 does not touch application
 code.
 
-This rung has a cost of its own (four projects per feature, more versioning, more places to look),
-so it is chosen for a stated reason rather than by default.
+This rung has a cost of its own (a project to version and publish, a workload requirement to build
+it, and a package to keep correct), so it is chosen for a stated reason rather than by default.
 
 ## 5. Expressing a feature as an extension
 
@@ -709,14 +785,14 @@ in reverse creation order, and the `Creating` phase resolves every portable hook
 resolves any typed one, so typed application hooks are disposed first.
 
 **A rung-3 feature reuses all of this.** The typed interfaces live in the backend assembly, so a
-feature package cannot add to them, and does not need to: the feature's platform project references
+feature package cannot add to them, and does not need to: the feature's platform folder references
 the backend package, implements `IXPlatWin32WindowHook` there, and registers itself from its own
 `Add<Feature>()`. The backend's loop finds it in the container whether the implementation came from
 the backend or from a package that referenced the backend.
 
 What changes is only where the registration lives. A backend must not reference a feature package,
 so the same-named `Add<Feature>()` extension belongs to the feature instead, declared in each
-platform project (§4). The application still references one package per feature, unconditionally,
+platform folder (§4). The application still references one package per feature, unconditionally,
 and forgetting a platform is still a compile error on that platform.
 
 **A platform that cannot support a feature still declares it.** The extension method exists
@@ -881,10 +957,10 @@ held to the policy.
 - Carry the migration for the surface move in `README.md`, as a before-and-after of the two things
   an application does with the feature: setting `AllowDrop` and subscribing to the four events.
 - Add the checklist in §11 to the review expectations for feature work.
-- Keep the package layout in §4 current, so a feature's pull request can name the project it belongs
+- Keep the package layout in §4 current, so a feature's pull request can name the folder it belongs
   in rather than inventing one.
-- Add the shared pack-and-merge step from §4 to the pipeline before the first feature package
-  ships, so no feature author has to write it.
+- Add the feature pack job to the pipeline, on a machine with the Windows, macOS and Linux
+  workloads, so no feature author has to arrange a multi-platform build.
 
 ### Phase 5: hold new work to it
 
@@ -911,7 +987,7 @@ lower, and the measured cost for an application that does not use it.
 - [ ] If the feature wants members on `XPlatControl` or a subclass, is it exposed as extension
 	  members in its own namespace instead, with the exception stated if not?
 - [ ] If it needs events, does it expose them as `AddXHandler`/`RemoveXHandler` extension methods?
-- [ ] If it is native, is the implementation in each backend or in the feature's platform project,
+- [ ] If it is native, is the implementation in each backend or in the feature's platform folder,
 	  is the registration a same-named extension in the feature's namespace, and does each backend's
 	  always-on path name none of it? Does `Headless` stay free of the extension?
 - [ ] If a hook needs the concrete backend, is it a typed hook (§6.5) rather than a downcast, and is
@@ -921,6 +997,8 @@ lower, and the measured cost for an application that does not use it.
 - [ ] If it ships as its own package, does every platform get a `lib/` folder and a dependency
 	  group, is the group the platform's whole closure, and is an empty group present where a
 	  platform needs no extra packages?
+- [ ] If it ships as its own package, does the `net10.0` assembly carry the fallback guard (§4), and
+	  is it in a platform folder with other code rather than alone?
 - [ ] If it needs per-control state, where does that state live, and what does each access cost?
 
 ## 12. Decisions and open questions
@@ -966,15 +1044,18 @@ lower, and the measured cost for an application that does not use it.
 - **Packaging.** `XPlatUI` plus `XPlatUI.Backend.<platform>` is the whole requirement for an
   application using the common controls. Rung 3 is one `XPlatUI.Feature.<feature>` package per
   feature, referenced deliberately and unconditionally, and it is also where a feature goes when it
-  is simply too rare to belong in the main package. The feature is one project per platform plus a
-  `Common` project, each an ordinary single-target-framework project, so no project file is
-  conditional and a solution build needs only the current platform's workload. The single package is
-  produced by packing all four and merging. A platform-only NuGet dependency is tolerable because
-  dependencies are grouped per platform and selected by target framework, so a macOS-only package is
-  never restored by a Windows application; every platform therefore gets a group, empty if it needs
-  nothing, since a missing group falls back to the `net10.0` one. The merge has to copy `Common` into
-  each platform's `lib/` folder, because NuGet picks one folder per target framework. Namespaces do
-  not change with the packaging. See §4.
+  is simply too rare to belong in the main package. The feature is one multi-targeted project with
+  four folders, `common/`, `windows/`, `macos/` and `linux/`, of which each inner build compiles
+  `common/` plus one platform folder; sharing is a folder rather than an assembly, so there is no
+  `InternalsVisibleTo` and nothing to copy between `lib/` folders. One `dotnet pack` produces the
+  package, because the SDK writes one `lib/` folder and one dependency group per target framework.
+  Building it needs all three workloads, so the project stays out of the development solution. A
+  platform-only NuGet dependency is tolerable because dependencies are grouped per platform and
+  selected by target framework, so a macOS-only package is never restored by a Windows application;
+  every platform therefore gets a group, empty if it needs nothing, since a missing group falls back
+  to the `net10.0` one, and a missing `lib/` folder silently ships the wrong assembly. The Linux
+  assembly carries a module-initializer guard that fails the process if it loads on another
+  platform. Namespaces do not change with the packaging. See §4.
 - **Seam cost.** The hook seam is accepted rather than budgeted, because it is what makes the
   extensibility points possible. There is no byte target, and no hook point is rejected on size
   alone; the seam keeps a stability promise and a shape rule instead, and the types it retains
