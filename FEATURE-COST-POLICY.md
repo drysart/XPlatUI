@@ -692,24 +692,30 @@ everywhere so application code compiles, and the platform-neutral service report
 throws `PlatformNotSupportedException` from the operation. A silent no-op is how the macOS image
 drag ended up arriving as its own URL string and reading as success.
 
-## 7. The seam's own budget
+## 7. The seam is an accepted cost
 
-The interface, the enumeration and the dispatch loop are paid by every application, forever. They
-therefore get a size budget and a stability promise:
+The interface, the enumeration and the dispatch loop are paid by every application, forever. That
+cost is accepted rather than budgeted. The seam is what makes the extensibility points possible, so
+there is no byte target for it and no hook is rejected for costing more than another. What the seam
+gets instead is a stability promise and a shape rule:
 
 - Keep the seam to a handful of tiny types with no dependencies of their own.
 - No feature-specific types may appear in the seam; a hook signature that names a drag payload or a
   menu item has already lost.
-- Adding a hook point is a deliberate act with a measured cost, not a convenience.
-- Target: the whole seam costs low single-digit kilobytes in the AOT binary. If a proposed hook
-  point cannot meet that, it belongs on rung 3.
-- Named exception: the action wrappers from §6.2 are seam types, so they are retained whether or
-  not anything calls the overload. One class and one method each is the price of not forcing a class
-  on a one-line hook, and it is small enough to pay once.
-- Named exception: `RunApplicationHooks` and `RunWindowHooks` (§6.5) exist only to keep features out
-  of the backends. Both are empty where nothing is registered, and both are what lets a platform
-  feature be reachable from the opt-in alone. Two members is the cheapest form of that, so they
-  stay.
+- Adding a hook point is a deliberate act, not a convenience, and the reason it cannot be expressed
+  as an extension member (§5) is recorded in the pull request.
+
+The seam's cost is still reported (§8), because a number that only ever grows unnoticed is how a
+small seam becomes a large one. It is a trend to watch, not a threshold to pass.
+
+Two of the seam's types are retained whether or not anything uses them, deliberately:
+
+- The action wrappers from §6.2 are seam types, so they are retained even when no application calls
+  the overload. One class and one method each is the price of not forcing a class on a one-line
+  hook.
+- `RunApplicationHooks` and `RunWindowHooks` (§6.5) exist only to keep features out of the backends.
+  Both are empty where nothing is registered, and both are what lets a platform feature be reachable
+  from the opt-in alone. They stay.
 
 ## 8. How we verify
 
@@ -792,8 +798,9 @@ against those numbers. Nothing else is meaningful until this exists.
   §6.5 exists before any feature needs it.
 - Keep every hook implementation-free: the seam names no feature.
 
-Measure: the seam's own delta on the minimal app, which is the number the budget in §7 is checked
-against.
+Measure: the seam's own delta on the minimal app, and record it as the baseline for later phases.
+There is no target to compare it against (§7); it is the reference point that shows whether the seam
+is growing.
 
 ### Phase 2: the event convention
 
@@ -919,6 +926,10 @@ lower, and the measured cost for an application that does not use it.
   `windows/`, `macos/` and `linux/` directories and a host-conditional `TargetFramework`, so a
   solution build needs only the current platform's workload, and the single package is produced by
   packing on each platform and merging. Namespaces do not change with the packaging. See §4.
+- **Seam cost.** The hook seam is accepted rather than budgeted, because it is what makes the
+  extensibility points possible. There is no byte target, and no hook point is rejected on size
+  alone; the seam keeps a stability promise and a shape rule instead, and the types it retains
+  unconditionally are named. Its cost is still measured so that growth is visible. See §7.
 - **Opt-in granularity.** Opting in is a per-application decision, and it buys the whole feature:
   once it is called, every window gets the feature's per-window setup regardless of any runtime
   value such as `AllowDrop`, because such a value can change after the window is shown and there is
@@ -929,14 +940,12 @@ lower, and the measured cost for an application that does not use it.
 
 These need answers before Phase 1, and the answers belong in this document:
 
-1. **The seam's size budget.** Low single-digit kilobytes is a guess. Phase 1 produces the real
-   number, and this document should be corrected to it.
-2. **Retrofitting.** Which existing features get moved onto the policy, and in what order? Menus,
+1. **Retrofitting.** Which existing features get moved onto the policy, and in what order? Menus,
    dialogs, timers and single instance all predate the policy and none has been measured.
-3. **Moving the drag and drop surface.** `AllowDrop` and the four events shipped in the release
+2. **Moving the drag and drop surface.** `AllowDrop` and the four events shipped in the release
    before this policy existed. Do we move them to `XPlatUI.DragDrop` extensions, which is breaking
    but is what §5 asks for, or keep them and record the cost?
-4. **`RemoveXHandler` next to the token.** The `IDisposable` from `AddXHandler` already covers scope
+3. **`RemoveXHandler` next to the token.** The `IDisposable` from `AddXHandler` already covers scope
    based removal. Is the explicit `RemoveXHandler` worth keeping for symmetry with the pattern, or
    does it just add surface?
 
