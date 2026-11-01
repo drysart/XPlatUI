@@ -69,8 +69,13 @@ internal static class NativeMethods
     internal const uint SwpShowWindow = 0x0040;
 
     /// <summary>SetWindowPos z-order insert-after values.</summary>
+    /// <remarks>
+    /// <c>HWND_NOTOPMOST</c> is the only value that takes a window out of the topmost band.
+    /// <c>HWND_TOP</c> only reorders it within whatever band it is already in, so it cannot undo
+    /// <c>HWND_TOPMOST</c>.
+    /// </remarks>
     internal static readonly IntPtr HwndTopMost = new(-1);
-    internal static readonly IntPtr HwndTop = new(0);
+    internal static readonly IntPtr HwndNoTopMost = new(-2);
 
     // Popup menu window.
     internal const uint WsPopup = 0x80000000;
