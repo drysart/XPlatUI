@@ -3,7 +3,7 @@
 How XPlatUI adds features without taxing the applications that do not use them.
 
 Status: policy proposed on `feature/opt-in-features`. This document is the first and, so far, only
-change on that branch; the implementation plan in §9 has not been started.
+change on that branch; the implementation plan in §10 has not been started.
 
 ---
 
@@ -37,7 +37,7 @@ it?". The patterns that answer "yes" are the ones to avoid:
 
 | Pattern | Why the code survives trimming |
 |---|---|
-| A new virtual method or interface implementation on `XPlatControl` or on a backend view type | The type is always retained, and a retained type keeps its overrides and interface implementations to fill its vtable. The member is kept even if nothing calls it. |
+| A new member on `XPlatControl` or on a backend view type: a virtual method, an interface implementation, or an event | The type is always retained, and a retained type keeps its overrides and interface implementations to fill its vtable. Field-like events add a delegate field to every instance and keep their accessors. All of it is kept even if nothing calls it. Section 5 is the shape that avoids this. |
 | Work performed at window creation | Runs for every window in every app, and is reachable from `Show`, so the code behind it is kept. |
 | Reflection: `Activator.CreateInstance`, `Type.GetType`, assembly scanning, attribute-driven registration | The trimmer cannot prove what is reachable, so it keeps the world (or warns and keeps it). |
 | Module initializers, or static constructors and static state on a type every app touches | They run the first time the type is touched, which every app does. |
@@ -62,6 +62,9 @@ registration, no changes to always-retained types.
 This is the default and should be the answer for most new controls: a control the app must name
 costs nothing when it is not named.
 
+When a feature wants to present itself as new members on a control that already exists, §5 is the
+shape that keeps it on this rung.
+
 ### Rung 2: opt-in registration or hook
 
 If the feature genuinely must do work at application startup or window creation, the *registration*
@@ -78,12 +81,99 @@ deliverable never contains it and no amount of trimming cleverness is required.
 This is a deliberate fallback, not a failure, but it has a cost of its own (more projects, more
 versioning, more places to look), so it should be chosen for a stated reason rather than by default.
 
-## 5. The opt-in mechanism
+## 5. Expressing a feature as an extension
+
+The most natural way for a feature to present itself is as new members on `XPlatControl` or on one
+of its subclasses: a property here, a method there, an event when something happens. Those members
+must not be added to the type. The feature's implementation goes in its own namespace and is exposed
+through extension members, so the surface reads as part of the control while the code stays
+removable.
+
+This is a shape rule rather than a size rule, and it is the main way a feature stays on rung 1.
+
+### 5.1 Why this is the trim-safe shape
+
+An extension member compiles to a static method on a static class. It adds nothing to the extended
+type: no new member, no vtable slot, no interface implementation, no instance field. An extension
+member that nothing calls is trimmed, one member at a time, which is finer granularity than a member
+of a retained type ever gets.
+
+For contrast, `AllowDrop` plus the four drag events on `XPlatControl` are real members of a retained
+type. The events are field-like, so every control instance in every application carries four
+delegate fields (32 bytes on 64-bit) whether or not anything ever drags, and the accessors stay with
+the type.
+
+### 5.2 What the language allows
+
+Verified against the toolchain this repository builds with (`net10.0`, C# 14):
+
+| Member kind | Available | Notes |
+|---|---|---|
+| Methods | Yes | The classic extension method. |
+| Properties, including setters | Yes | Extension blocks (`extension(T value) { ... }`), not only methods. |
+| Properties in object initializers | Yes | `new XPlatLabel { AllowDrop = true }` still compiles, so the object-initializer style the demo uses survives. |
+| Indexers, operators, static members | Yes | Available if a feature needs them. |
+| Events | No | `CS9282`, "This member is not allowed in an extension block". See §5.4. |
+
+Extension blocks are a C# 14 feature, so the policy assumes the library and its consumers are on the
+same compiler. They are, because the library targets `net10.0`.
+
+### 5.3 Access and state
+
+- **Access.** An extension block in the same assembly can read and write `internal` members of the
+  extended type; it cannot reach `private` ones. That is enough for a rung 1 feature, which lives in
+  `XPlatUI` and can use internal seams instead of widening the public API. A feature that has to
+  live in its own assembly (rung 3) needs public accessors or `InternalsVisibleTo`.
+- **State.** Extension members cannot add fields to the control, so per-control state belongs to the
+  feature: a lazily created helper object, or a `ConditionalWeakTable<XPlatControl, TState>` keyed
+  on the control. Both are trimmed with the feature, but both cost a lookup per access, so a hot
+  path caches the helper rather than looking it up again.
+- **No reflection discovery.** Extension members are invisible to `GetMethods()` on the type. That
+  is good for trimming, and it means nothing may register a feature by scanning for its members.
+
+### 5.4 When the feature needs events
+
+Extension events do not exist, so an event-shaped feature hands back a helper object from an
+extension method:
+
+```csharp
+var drop = control.DragDrop();   // extension method, one helper per control
+drop.Enabled = true;
+drop.Dropped += OnDropped;
+```
+
+The helper is the feature's own type, so it is trimmed when nothing calls `DragDrop()`, and the
+control carries nothing. The other option, an interface the control implements, is reserved for the
+case in §5.5.
+
+### 5.5 When a member does belong on the control
+
+Three exceptions, each of which has to be stated in the pull request:
+
+1. **The control cannot work without it.** Core behaviour is not optional and does not belong behind
+   an opt-in. A text box that cannot accept typing is not a feature.
+2. **Subclasses must be able to override it.** Use an interface the control implements, never a
+   virtual on the base class: a virtual or override on a retained type is kept for every
+   application, while an interface is only retained by the controls that implement it.
+3. **The extension shape would break a common idiom.** If the alternative makes ordinary application
+   code awkward, say so, take the member, and measure what it costs.
+
+### 5.6 Naming
+
+- One namespace per feature: `XPlatUI.DragDrop`, rather than members sprinkled across `XPlatUI`.
+- The `using` is the visible opt-in. An application that never writes `using XPlatUI.DragDrop;`
+  never sees the surface, which also reminds the reader that it is not paying for it.
+- Extension classes are named for the type they extend plus the feature:
+  `XPlatControlDragDropExtensions`.
+- A helper returned by an extension method is named for the feature: `control.DragDrop()` returns
+  something like `XPlatDragDrop`.
+
+## 6. The opt-in mechanism
 
 The shape below is a sketch of the intended design, not a settled API. Names, signatures and the
 exact hook points will be decided when we implement Phase 1.
 
-### 5.1 Two phases, because services and work happen at different times
+### 6.1 Two phases, because services and work happen at different times
 
 `XPlatApplication` builds its container in one place and runs the loop in another, so a feature may
 need two distinct things:
@@ -96,7 +186,7 @@ need two distinct things:
 
 A feature that needs both registers a service and a hook, in the same opt-in call.
 
-### 5.2 The hook
+### 6.2 The hook
 
 ```csharp
 public interface IXPlatApplicationStartupHook
@@ -135,7 +225,7 @@ The trim property that makes this work: `GetServices<T>()` on a service nobody r
 empty sequence, and the only thing retained is the interface itself. The concrete hook type is
 reachable solely from the registration call, so an app without that call publishes without it.
 
-### 5.3 Hook points
+### 6.3 Hook points
 
 A single startup hook is not enough, because most expensive work is per window rather than per
 process. The set to provide, and to keep stable:
@@ -153,7 +243,7 @@ handle without the model having to expose anything new. A control-level "attache
 deliberately out of scope for now; the window points are enough for every feature currently on the
 roadmap, and each added point is permanent cost in the seam.
 
-### 5.4 Rules for hook implementations
+### 6.4 Rules for hook implementations
 
 - **Standalone classes, never backend views.** A hook implemented on `Win32SkiaView`,
   `AppKitSkiaView` or `Gtk4SkiaView` would be retained with those types and defeat the purpose. The
@@ -170,7 +260,7 @@ roadmap, and each added point is permanent cost in the seam.
   rather than silently aborting startup.
 - **Root provider only.** Application hooks resolve from the root provider, not from a window scope.
 
-## 6. The seam's own budget
+## 7. The seam's own budget
 
 The interface, the enumeration and the dispatch loop are paid by every application, forever. They
 therefore get a size budget and a stability promise:
@@ -182,7 +272,7 @@ therefore get a size budget and a stability promise:
 - Target: the whole seam costs low single-digit kilobytes in the AOT binary. If a proposed hook
   point cannot meet that, it belongs on rung 3.
 
-## 7. How we verify
+## 8. How we verify
 
 Claims about cost are worth nothing without a number. Every feature lands with:
 
@@ -201,7 +291,7 @@ This needs a stable measurement fixture: a minimal app (one window, one label, n
 the repository and published by the same commands every time. Without a fixed fixture the numbers
 are not comparable and the policy becomes folklore.
 
-## 8. Case study: drag and drop as merged
+## 9. Case study: drag and drop as merged
 
 Drag and drop is the first feature that fails this policy, and it is worth writing down exactly how,
 because it is the template for the fix.
@@ -220,15 +310,20 @@ members are retained with them, and the per-window native registration happens f
 
 Target state: an application that never drops anything publishes without OLE initialisation, without
 a COM drop target, without registered pasteboard types and without GTK controllers, by virtue of not
-calling the opt-in. The shared payload types and the `AllowDrop` property can stay where they are:
-they are small and inert, and they cost nothing until something calls them.
+calling the opt-in. The shared payload types can stay where they are: they are small and inert, and
+they cost nothing until something calls them.
+
+`AllowDrop` and the four events are a different matter. Under §5 the surface for this feature should
+be `using XPlatUI.DragDrop;`, `AllowDrop` as an extension property, and the events on a helper
+returned by `control.DragDrop()`, which would take those members off `XPlatControl` altogether.
+Whether to make that move on an API that already shipped is open question 7.
 
 Note the trap: making `AllowDrop` the opt-in would *not* achieve this. `AllowDrop` lives on
 `XPlatControl`, which is always retained, so the code behind it is reachable and kept regardless of
 whether any application ever sets it. Per-control opt-in is a nice ergonomic layer on top; it is not
 a substitute for an application-level opt-in.
 
-## 9. Implementation plan
+## 10. Implementation plan
 
 ### Phase 0: the measurement fixture
 
@@ -244,7 +339,7 @@ against those numbers. Nothing else is meaningful until this exists.
   shutdown point alongside `IXPlatApplicationBackend.Shutdown`.
 - Keep every hook implementation-free: the seam names no feature.
 
-Measure: the seam's own delta on the minimal app, which is the number the budget in §6 is checked
+Measure: the seam's own delta on the minimal app, which is the number the budget in §7 is checked
 against.
 
 ### Phase 2: drag and drop as the first consumer
@@ -266,14 +361,14 @@ held to the policy.
 
 - Point `README.md` at this policy from the drag and drop section and from wherever features are
   listed.
-- Add the checklist in §10 to the review expectations for feature work.
+- Add the checklist in §11 to the review expectations for feature work.
 
 ### Phase 4: hold new work to it
 
 Every subsequent feature states, in its pull request, which rung it sits on, why it could not sit
 lower, and the measured cost for an application that does not use it.
 
-## 10. Checklist for a new feature
+## 11. Checklist for a new feature
 
 - [ ] Does any always-retained type (a control, a backend view, `XPlatUiHost`, `XPlatApplication`)
 	  gain a member or an interface implementation? If so, why is that unavoidable?
@@ -288,12 +383,16 @@ lower, and the measured cost for an application that does not use it.
 	  quoted in the pull request?
 - [ ] Were the trim/AOT warnings for the new code reviewed?
 - [ ] If it could not be made opt-in, is it in a separate project instead, with the reason recorded?
+- [ ] If the feature wants members on `XPlatControl` or a subclass, is it exposed as extension
+	  members in its own namespace instead, with the exception stated if not?
+- [ ] If it needs events, does it use a helper object rather than adding events to the control?
+- [ ] If it needs per-control state, where does that state live, and what does each access cost?
 
-## 11. Open questions
+## 12. Open questions
 
 These need answers before Phase 1, and the answers belong in this document:
 
-1. **Hook shape.** A marker interface resolved as `IEnumerable<T>` (as sketched in §5), or a
+1. **Hook shape.** A marker interface resolved as `IEnumerable<T>` (as sketched in §6), or a
    builder-style `application.Enable<T>()`? The builder reads better but needs somewhere to live
    before the container exists, which is exactly the awkward moment.
 2. **Scoping.** Are hooks always root-provider singletons, or is a per-window scope useful enough to
@@ -306,13 +405,19 @@ These need answers before Phase 1, and the answers belong in this document:
    number, and this document should be corrected to it.
 6. **Retrofitting.** Which existing features get moved onto the policy, and in what order? Menus,
    dialogs, timers and single instance all predate the policy and none has been measured.
+7. **Moving the drag and drop surface.** `AllowDrop` and the four events shipped in the release
+   before this policy existed. Do we move them to `XPlatUI.DragDrop` extensions, which is breaking
+   but is what §5 asks for, or keep them and record the cost?
+8. **Helper naming.** What is the convention for the object an extension method returns when it
+   carries events: `control.DragDrop()` returning `XPlatDragDrop`, or a name that says what it is
+   for?
 
-## 12. Non-goals
+## 13. Non-goals
 
 - Retrofitting everything at once. The policy applies to new work, with drag and drop as the
   deliberate exception because it is the case study.
 - Making an API awkward to hit a byte target. If the zero-cost shape would hurt the API, say so, take
   rung 2 or 3, and record the reason.
 - A promise of literally zero cost. The standard is bare minimal, measured, and justified.
-- A trimming/AOT test suite. The checks in §7 are a publish comparison and a warning review, run when
+- A trimming/AOT test suite. The checks in §8 are a publish comparison and a warning review, run when
   a feature lands, not a new CI project.
