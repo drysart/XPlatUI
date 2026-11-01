@@ -178,4 +178,55 @@ internal static class AppKitKeyMap
 
         return true;
     }
+
+    /// <summary>
+    /// The key equivalent character for a shortcut key, or null for a key AppKit cannot spell that
+    /// way. AppKit describes a menu shortcut as a character rather than a key code, which is why
+    /// the arrows and the other non-text keys use the function-key code points.
+    /// </summary>
+    public static string? ToKeyEquivalent(XPlatKey key) => key switch
+    {
+        >= XPlatKey.A and <= XPlatKey.Z => ((char)('a' + ((int)key - (int)XPlatKey.A))).ToString(),
+        >= XPlatKey.D0 and <= XPlatKey.D9 => ((char)('0' + ((int)key - (int)XPlatKey.D0))).ToString(),
+        XPlatKey.Tab => "\t",
+        XPlatKey.Enter => "\r",
+        XPlatKey.Escape => "\u001B",
+        XPlatKey.Backspace => "\b",
+        XPlatKey.Delete => "\u007F",
+        XPlatKey.Left => "\uF702",
+        XPlatKey.Right => "\uF703",
+        XPlatKey.Up => "\uF700",
+        XPlatKey.Down => "\uF701",
+        XPlatKey.Home => "\uF729",
+        XPlatKey.End => "\uF72B",
+        XPlatKey.PageUp => "\uF72C",
+        XPlatKey.PageDown => "\uF72D",
+        _ => null,
+    };
+
+    /// <summary>
+    /// The AppKit modifier mask for a shortcut. <see cref="XPlatModifiers.Control"/> is the
+    /// library's accelerator modifier, which macOS spells Command.
+    /// </summary>
+    public static NSEventModifierMask ToKeyEquivalentMask(XPlatModifiers modifiers)
+    {
+        var mask = (NSEventModifierMask)0;
+
+        if ((modifiers & XPlatModifiers.Control) != 0)
+        {
+            mask |= NSEventModifierMask.CommandKeyMask;
+        }
+
+        if ((modifiers & XPlatModifiers.Shift) != 0)
+        {
+            mask |= NSEventModifierMask.ShiftKeyMask;
+        }
+
+        if ((modifiers & XPlatModifiers.Alt) != 0)
+        {
+            mask |= NSEventModifierMask.AlternateKeyMask;
+        }
+
+        return mask;
+    }
 }

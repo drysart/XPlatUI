@@ -41,8 +41,21 @@ public sealed class XPlatMenuItem
     /// <summary>True for the item the platform should activate on a double click or Enter.</summary>
     public bool IsDefault { get; set; }
 
-    /// <summary>Shortcut hint shown next to the text, for platforms that render one.</summary>
+    /// <summary>
+    /// The accelerator that runs this item from the keyboard, or null for none. Setting it is what
+    /// makes the shortcut work rather than merely appear: the window checks its menu bar before the
+    /// focused control sees the key, and the macOS backend turns it into a native key equivalent.
+    /// </summary>
+    public XPlatShortcut? Shortcut { get; set; }
+
+    /// <summary>
+    /// Overrides the hint shown next to the text, for a menu that wants to describe a key it does
+    /// not dispatch itself. Null shows <see cref="Shortcut"/> instead.
+    /// </summary>
     public string? ShortcutText { get; set; }
+
+    /// <summary>The hint a presenter should draw to the right of the label, or null for none.</summary>
+    public string? ShortcutDisplayText => ShortcutText ?? Shortcut?.DisplayText;
 
     /// <summary>A separator line between two groups of items.</summary>
     public static XPlatMenuItem Separator { get; } = new(string.Empty, null, true);

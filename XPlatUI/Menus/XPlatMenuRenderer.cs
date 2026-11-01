@@ -215,9 +215,9 @@ public static class XPlatMenuRenderer
             height += m.ItemHeight;
 
             var needed = (m.Padding * 2f) + m.CheckColumnWidth + FontFor(item, f).MeasureWidth(item.Text);
-            if (!string.IsNullOrEmpty(item.ShortcutText))
+            if (item.ShortcutDisplayText is { } hint)
             {
-                needed += m.ShortcutGap + f.MeasureWidth(item.ShortcutText);
+                needed += m.ShortcutGap + f.MeasureWidth(hint);
             }
 
             width = MathF.Max(width, needed);
@@ -346,10 +346,10 @@ public static class XPlatMenuRenderer
             text.Color = Scale(item.Enabled ? XPlatTheme.Foreground : XPlatTheme.DisabledForeground, MathF.Max(alpha, 0.85f));
             canvas.DrawText(item.Text, textLeft, baseline, SKTextAlign.Left, rowFont.SkFont, text);
 
-            if (!string.IsNullOrEmpty(item.ShortcutText))
+            if (item.ShortcutDisplayText is { } hint)
             {
                 text.Color = Scale(item.Enabled ? XPlatTheme.MutedForeground : XPlatTheme.DisabledForeground, MathF.Max(alpha, 0.85f));
-                canvas.DrawText(item.ShortcutText, textRight, baseline, SKTextAlign.Right, f.SkFont, text);
+                canvas.DrawText(hint, textRight, baseline, SKTextAlign.Right, f.SkFont, text);
             }
         }
     }

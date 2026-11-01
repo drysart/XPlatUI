@@ -313,23 +313,23 @@ public class XPlatTextBox : XPlatControl
         return new XPlatContextMenu()
             .Add(new XPlatMenuItem("Cut", () => Cut())
             {
-                ShortcutText = "Ctrl+X",
+                Shortcut = new XPlatShortcut(XPlatKey.X),
                 Enabled = !ReadOnly && hasSelection,
             })
             .Add(new XPlatMenuItem("Copy", CopySelection)
             {
-                ShortcutText = "Ctrl+C",
+                Shortcut = new XPlatShortcut(XPlatKey.C),
                 Enabled = hasSelection || IsSelected,
             })
             .Add(new XPlatMenuItem("Paste", () => Paste())
             {
-                ShortcutText = "Ctrl+V",
+                Shortcut = new XPlatShortcut(XPlatKey.V),
                 Enabled = !ReadOnly,
             })
             .AddSeparator()
             .Add(new XPlatMenuItem("Select All", SelectAll)
             {
-                ShortcutText = "Ctrl+A",
+                Shortcut = new XPlatShortcut(XPlatKey.A),
                 Enabled = Text.Length > 0,
             });
     }

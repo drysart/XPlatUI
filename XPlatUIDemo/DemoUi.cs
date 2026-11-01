@@ -134,15 +134,21 @@ public sealed class DemoUi
             Margin = new XPlatThickness(8f, 20f, 28f, 0f),
         };
 
-        button.Click += (_, _) =>
-        {
-            XPlatTheme.Palette = XPlatTheme.IsDarkMode ? XPlatPalette.Light : XPlatPalette.Dark;
-            SetStatus(XPlatTheme.IsDarkMode
-                ? "Dark palette applied - every control recoloured on the next frame."
-                : "Light palette applied - every control recoloured on the next frame.");
-        };
+        button.Click += (_, _) => SetAppearance(XPlatTheme.IsDarkMode ? XPlatPalette.Light : XPlatPalette.Dark);
 
         return button;
+    }
+
+    /// <summary>
+    /// Applies <paramref name="palette"/> and reports it in the status line, so the header button
+    /// and the View menu describe the change the same way.
+    /// </summary>
+    public void SetAppearance(XPlatPalette palette)
+    {
+        XPlatTheme.Palette = palette;
+        SetStatus(ReferenceEquals(palette, XPlatPalette.Dark)
+            ? "Dark palette applied - every control recoloured on the next frame."
+            : "Light palette applied - every control recoloured on the next frame.");
     }
 
     /// <summary>
@@ -758,7 +764,7 @@ public sealed class DemoUi
             SetStatus("'Show formatting' picked - a checked item shows a tick."))
         {
             Checked = true,
-            ShortcutText = "Ctrl+Shift+F",
+            Shortcut = new XPlatShortcut(XPlatKey.F, XPlatModifiers.Control | XPlatModifiers.Shift),
         };
 
         var menu = new XPlatContextMenu();
@@ -766,17 +772,17 @@ public sealed class DemoUi
         menu.Add(new XPlatMenuItem("Copy rich text", () => SetStatus("'Copy rich text' picked."))
         {
             IsDefault = true,
-            ShortcutText = "Ctrl+C",
+            Shortcut = new XPlatShortcut(XPlatKey.C),
         });
 
         menu.Add(new XPlatMenuItem("Copy as plain text", () => SetStatus("'Copy as plain text' picked."))
         {
-            ShortcutText = "Ctrl+Shift+C",
+            Shortcut = new XPlatShortcut(XPlatKey.C, XPlatModifiers.Control | XPlatModifiers.Shift),
         });
 
         menu.AddSeparator();
         menu.Add(formatting);
-        menu.Add(new XPlatMenuItem("Undo formatting", null) { Enabled = false, ShortcutText = "Ctrl+Z" });
+        menu.Add(new XPlatMenuItem("Undo formatting", null) { Enabled = false, Shortcut = new XPlatShortcut(XPlatKey.Z) });
         return menu;
     }
 
