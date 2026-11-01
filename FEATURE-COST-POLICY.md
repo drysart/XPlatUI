@@ -72,6 +72,13 @@ becomes the opt-in point. Nothing registered means nothing runs, and the feature
 trimmed away along with the registration call. The framework supplies the seam; the feature supplies
 the hook implementation; the application supplies the one line that turns it on.
 
+The opt-in is coarse on purpose. It is a decision the application makes once, not a decision each
+control or each window makes, so an application that calls it pays the feature's full runtime cost
+even if it never exercises the feature, and that is accepted. Fine-grained gating would mean
+conditioning the work on a value the application can change at any moment, which is the same
+reachability problem §3 describes: the code behind the value is retained either way, so the gating
+buys nothing at publish time and risks a feature that is broken half the time at run time.
+
 ### Rung 3: separate project
 
 If neither of the above is practical, the implementation does not go into the base `XPlatUI`
@@ -643,10 +650,10 @@ What every application pays today, whether or not it sets `AllowDrop`:
 None of it is conditional on anything. The backend view types are always retained, so their drag
 members are retained with them, and the per-window native registration happens for every window.
 
-Target state: an application that never drops anything publishes without OLE initialisation, without
-a COM drop target, without registered pasteboard types and without GTK controllers, by virtue of not
-calling the opt-in. The shared payload types can stay where they are: they are small and inert, and
-they cost nothing until something calls them.
+Target state: an application that never calls the opt-in publishes without OLE initialisation,
+without a COM drop target, without registered pasteboard types and without GTK controllers. The
+shared payload types can stay where they are: they are small and inert, and they cost nothing until
+something calls them.
 
 `AllowDrop` and the four events are a different matter. Under §5 the surface for this feature should
 be `using XPlatUI.DragDrop;`, `AllowDrop` as an extension property, and `AddDragEnterHandler`,
@@ -658,6 +665,14 @@ Note the trap: making `AllowDrop` the opt-in would *not* achieve this. `AllowDro
 `XPlatControl`, which is always retained, so the code behind it is reachable and kept regardless of
 whether any application ever sets it. Per-control opt-in is a nice ergonomic layer on top; it is not
 a substitute for an application-level opt-in.
+
+The opt-in is coarse in the other direction too, and deliberately so. Once an application calls
+`AddDragDrop()`, every window gets its drop target in the `Created` phase whether or not any control
+ever sets `AllowDrop`, and nothing in the backend reads `AllowDrop` to decide whether to register.
+`AllowDrop` can be set, cleared and set again on a control that is already inside a shown window, so
+there is no correct moment at which the native registration could be made conditional on it. Gating
+on it would buy a per-window saving in exchange for a feature that stops working the first time
+someone toggles the property.
 
 ## 10. Implementation plan
 
@@ -709,6 +724,8 @@ removes.
 - Leave the payload types and the host routing where they are.
 - Move `AllowDrop` and the four handler pairs to `XPlatUI.DragDrop` extensions, unless the drag and
   drop surface question in §12 says otherwise.
+- Do not gate any of the above on `AllowDrop`. The window hook registers unconditionally, and
+  `AllowDrop` only decides whether the control accepts what arrives.
 
 Measure: an application that does not call the opt-in must lose OLE, the COM target, the pasteboard
 types and the GTK controllers, and the size must return to the Phase 0 baseline.
@@ -736,6 +753,8 @@ lower, and the measured cost for an application that does not use it.
 - [ ] Is there any reflection, assembly scanning, attribute-driven registration or
 	  `Activator.CreateInstance`?
 - [ ] Is there any module initializer, or static constructor or static state on a shared type?
+- [ ] If the feature gates per-window or per-control work on a runtime value, can the application
+	  change that value after the window is shown? If so, the work has to happen unconditionally.
 - [ ] Is the feature's code reachable only from the opt-in call, and therefore trimmed when the call
 	  is absent?
 - [ ] Was the publish size measured for an app that does not use it, on all three platforms, and
@@ -792,24 +811,26 @@ lower, and the measured cost for an application that does not use it.
 - **Event shape.** `AddXHandler`/`RemoveXHandler` pairs taking `Action<object, TPayload>`, or
   `Action<object>` when the event carries no payload. No `event` keyword, and no generic args
   wrapper: the payload is the type the event already has, or there is none. See §5.4.
+- **Opt-in granularity.** Opting in is a per-application decision, and it buys the whole feature:
+  once it is called, every window gets the feature's per-window setup regardless of any runtime
+  value such as `AllowDrop`, because such a value can change after the window is shown and there is
+  no correct moment to gate on it. An application that opts in and then never uses the feature pays
+  for it, and that is accepted. See §4 and §9.
 
 ### Open
 
 These need answers before Phase 1, and the answers belong in this document:
 
-1. **`AllowDrop` ergonomics.** Should setting `AllowDrop` implicitly opt the window in, on top of
-   the application-level opt-in, or should drag and drop always be an explicit application-level
-   choice?
-2. **What "separate project" means.** A separate assembly in this repository, or a separate package
+1. **What "separate project" means.** A separate assembly in this repository, or a separate package
    with its own version and release? Rung 3 is only useful if it is cheap to take.
-3. **The seam's size budget.** Low single-digit kilobytes is a guess. Phase 1 produces the real
+2. **The seam's size budget.** Low single-digit kilobytes is a guess. Phase 1 produces the real
    number, and this document should be corrected to it.
-4. **Retrofitting.** Which existing features get moved onto the policy, and in what order? Menus,
+3. **Retrofitting.** Which existing features get moved onto the policy, and in what order? Menus,
    dialogs, timers and single instance all predate the policy and none has been measured.
-5. **Moving the drag and drop surface.** `AllowDrop` and the four events shipped in the release
+4. **Moving the drag and drop surface.** `AllowDrop` and the four events shipped in the release
    before this policy existed. Do we move them to `XPlatUI.DragDrop` extensions, which is breaking
    but is what §5 asks for, or keep them and record the cost?
-6. **`RemoveXHandler` next to the token.** The `IDisposable` from `AddXHandler` already covers scope
+5. **`RemoveXHandler` next to the token.** The `IDisposable` from `AddXHandler` already covers scope
    based removal. Is the explicit `RemoveXHandler` worth keeping for symmetry with the pattern, or
    does it just add surface?
 
