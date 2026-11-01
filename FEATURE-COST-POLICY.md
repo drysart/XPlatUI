@@ -319,19 +319,47 @@ process. There are two kinds of hook, with two lifetimes:
 | Application hook | Singleton | The root provider | Process-wide platform initialisation that must precede any window (OLE initialisation, application-level pasteboard types), and process-wide teardown before the loop returns. |
 | Window hook | Window-scoped | `window.Services` | Per-window work: native registration once the handle exists (drop targets, extra pasteboard types, GTK controllers), and its teardown when the window closes. |
 
-Application points are startup and shutdown. Window points are created, shown, closing and closed,
-and they are one interface rather than four, because one scoped instance serves all four for its
-window:
+Application points are startup and shutdown. Window points are phases of one lifecycle, and they are
+one interface rather than eight, because one scoped instance serves every phase for its window:
 
 ```csharp
+public enum XPlatWindowPhase
+{
+	Created,
+	Showing,
+	Shown,
+	Hiding,
+	Hidden,
+	Closing,
+	Closed,
+	Disposed,
+}
+
 public interface IXPlatWindowHook
 {
-	void OnCreated(XPlatWindow window);
-	void OnShown(XPlatWindow window);
-	void OnClosing(XPlatWindow window);
-	void OnClosed(XPlatWindow window);
+	void OnPhase(XPlatWindowPhase phase, XPlatWindow window);
 }
 ```
+
+| Phase | When it fires | Direction | Raised today |
+|---|---|---|---|
+| `Created` | The native window exists and is not visible yet. | Ascending | Yes |
+| `Showing` | `Show` has been called; the native window is not ordered front yet. | Ascending | Yes |
+| `Shown` | The window is visible. | Ascending | Yes |
+| `Hiding` | The window is about to become invisible. | Descending | Reserved |
+| `Hidden` | The window is invisible and still alive. | Descending | Reserved |
+| `Closing` | The window is about to close; the native handle is still alive. | Descending | Yes |
+| `Closed` | The native window is gone and the backend is disposed. | Descending | Yes |
+| `Disposed` | The window object is being disposed; its scope is still alive. | Descending | Yes |
+
+`Hiding` and `Hidden` are declared and raised by nothing, because `XPlatWindow` has no `Visible`
+property and no `Hide` method yet. Declaring them now costs one enum member and stops the hide and
+show feature from renumbering a public enum later.
+
+**Ascending phases run hooks in registration order; descending phases run them in reverse.** The two
+halves of the list are the two directions of a window's life, and reversing the teardown half is
+what makes a pair of hooks nest: if `A` registers before `B`, `A` sets up before `B` and tears down
+after `B`, whatever order the phases arrive in.
 
 The window lifetime already exists, so this costs nothing new. `XPlatWindow` creates an
 `IServiceScope` in its constructor (`XPlatWindow.cs:60`), exposes it as `Services` (`:115`), and
@@ -345,15 +373,20 @@ services.AddWindowScoped<IXPlatWindowHook>((window, provider) => new DragDropWin
 ```
 
 The ordering matters and is easy to get wrong. `XPlatWindow` disposes the backend at `:386`, raises
-`Closed` at `:388` and disposes the scope at `:390`, so a scoped hook's own `Dispose` runs after the
-native window is gone. Anything that has to happen while the handle is still alive, such as revoking
-a drop target before the window is destroyed, belongs in the closing point, which fires before the
-backend is disposed.
+`Closed` at `:388` and disposes the scope at `:390`. `Closing` therefore fires while the native
+handle is alive and `Closed` after it is gone, which is the split a feature needs: revoking a drop
+target before the window is destroyed belongs in `Closing`, and releasing managed bookkeeping
+belongs in `Closed` or `Disposed`. A scoped hook's own `Dispose` runs last of all, after the native
+window is gone.
 
-The window points take the window so the hook can reach the native handle without the model having
-to expose anything new. A control-level "attached to tree" point is deliberately out of scope for
-now; the window points are enough for every feature currently on the roadmap, and each added point
-is permanent cost in the seam.
+`Disposed` is the last point at which a hook can still reach other scoped services, and it fires
+after the backend is disposed. Two consequences, both rules in §6.4: a typed `Disposed` callback is
+managed-only, and the backend's phase entry point has to stay callable once it has been disposed.
+
+The window phases take the window so a portable hook can reach the native handle through
+`window.Backend` without the model having to expose anything new. A control-level "attached to tree"
+point is deliberately out of scope for now; the window phases are enough for every feature currently
+on the roadmap, and each added point is permanent cost in the seam.
 
 ### 6.4 Rules for hook implementations
 
@@ -363,7 +396,9 @@ is permanent cost in the seam.
 - **Explicit registration, never scanning.** Assembly scanning is the one common pattern that is not
   trimming-safe, and the codebase already forbids it for `ConfigureServices`. Hook discovery is
   registration order, full stop.
-- **Registration order is invocation order**, and it is documented so features can depend on it.
+- **Registration order is invocation order**, ascending in the phases that bring a window to life
+  and reversed in the phases that take it away (§6.3). Features may rely on the nesting this gives
+  them, which is why it is written down rather than left to chance.
 - **Runs on the UI thread.** Startup hooks run before the loop starts, on the thread that will own
   it; window hooks run on the UI thread. Documented rather than assumed.
 - **Per-window state lives on the hook instance.** A window hook is scoped, so each window gets its
@@ -378,10 +413,94 @@ is permanent cost in the seam.
 - **Dependencies point one way.** A window hook may depend on application singletons normally. A
   singleton must never hold a window hook, because that would keep one window's instance alive for
   the life of the process.
+- **Portable hooks are the outer layer.** They run before a backend's typed hooks (§6.5) in an
+  ascending phase and after them in a descending one, so a typed hook always tears down before the
+  portable hook that set it up.
+- **Typed hooks never derive from portable ones.** An `IXPlatWin32WindowHook` that also implemented
+  `IXPlatWindowHook` would be found by both loops and invoked twice.
+- **A backend's phase entry point survives its own `Dispose`.** `Disposed` fires after
+  `Backend.Dispose()` (`XPlatWindow.cs:386`) and before the scope goes (`:390`), so
+  `RunWindowHooks` must touch nothing native by then and must not assume the backend is alive.
 - **`Dispose` is the last teardown point, not the first.** The container disposes a hook that is
   `IDisposable`: a window hook with its scope, an application hook with the root provider. By then
   the native window or the process-wide state may already be gone, so anything that has to run while
   it still exists belongs in the closing or shutdown point.
+
+### 6.5 Platform-specific hooks
+
+A feature that is native on every platform is three layers, and only the middle one differs.
+
+| Layer | Lives in | Cost when the feature is unused |
+|---|---|---|
+| Contract: service interface, event args, control extension members | `XPlatUI`, in the feature's namespace | Trimmed per member |
+| Implementation: `Win32DragDrop`, `AppKitDragDrop`, `Gtk4DragDrop` | The matching backend assembly | Trimmed, unless something retained names it |
+| Selection: which implementation exists | The backend project reference in the app's project file | None |
+
+Core never references a backend, and an application references exactly one backend per target
+framework (`XPlatUIDemo.App.csproj`, "Exactly one backend per TFM"). The choice is therefore made
+when the application is compiled: no runtime dispatch, no reflection, no operating system check.
+
+**The registration call site has one name.** Each backend declares the same extension method, in the
+feature's namespace, so the application calls it without knowing which platform it is on:
+
+```csharp
+using XPlatUI.DragDrop;
+
+options.ConfigureServices = services => services.AddDragDrop();
+```
+
+That method is the opt-in, so it must be the only thing in the backend that names the
+implementation. If a backend's window creation path mentioned `Win32DropTarget`, the whole COM
+implementation would be retained in every Win32 application that never drags anything. It does not:
+the hook does the per-window wiring, so the always-on path contains no feature code and there is
+nothing to gate, look up or branch on.
+
+The contract across backends is a naming convention, and a backend that forgets it fails at compile
+time on that platform, which is the failure we want. `Headless` declares no feature extensions: it
+is referenced alongside a real backend, so a duplicate name would be an ambiguity error, and it has
+no windows to attach anything to.
+
+**Typed hooks remove the downcast.** A portable hook reaches its backend through
+`application.Backend` or `window.Backend`, both typed as the interface, so native work would start
+with a cast. Instead each backend declares its own hook interfaces, which name the backend by its
+concrete type:
+
+```csharp
+public interface IXPlatWin32ApplicationStartupHook
+{
+	void OnStartup(XPlatApplication application, Win32ApplicationBackend backend);
+}
+
+public interface IXPlatWin32WindowHook
+{
+	void OnPhase(XPlatWindowPhase phase, XPlatWindow window, Win32WindowBackend backend);
+}
+```
+
+They live in the backend assembly, so core pays nothing, and they are unrelated to the portable
+interfaces (§6.4). `XPlatApplication` runs the portable hooks and then hands the phase to the
+backend, which runs its own loop over its typed interface:
+
+```csharp
+// IXPlatApplicationBackend, after the portable startup loop
+void RunStartupHooks(XPlatApplication application);
+
+// IXPlatWindowBackend, after the portable hooks for the phase
+void RunWindowHooks(XPlatWindowPhase phase, XPlatWindow window);
+```
+
+Two seam members with empty bodies in a backend that has no typed hooks, and an indirect call that
+disappears when it does nothing. In exchange no feature type is reachable from the backend, which is
+the property a conditional lookup in the window creation path would have destroyed.
+
+At application level the container already gets the layering right for free: it disposes singletons
+in reverse creation order, and the startup loop creates every portable hook before the backend
+creates any typed one, so typed application hooks are disposed first.
+
+**A platform that cannot support a feature still declares it.** The extension method exists
+everywhere so application code compiles, and the platform-neutral service reports `IsSupported` or
+throws `PlatformNotSupportedException` from the operation. A silent no-op is how the macOS image
+drag ended up arriving as its own URL string and reading as success.
 
 ## 7. The seam's own budget
 
@@ -397,6 +516,10 @@ therefore get a size budget and a stability promise:
 - Named exception: the action wrappers from §6.2 are seam types, so they are retained whether or
   not anything calls the overload. One class and one method each is the price of not forcing a class
   on a one-line hook, and it is small enough to pay once.
+- Named exception: `RunStartupHooks` and `RunWindowHooks` (§6.5) exist only to keep features out of
+  the backends. Both are empty where nothing is registered, and both are what lets a platform
+  feature be reachable from the opt-in alone. Two members is the cheapest form of that, so they
+  stay.
 
 ## 8. How we verify
 
@@ -462,8 +585,12 @@ against those numbers. Nothing else is meaningful until this exists.
 
 - Add `IXPlatApplicationStartupHook` and invoke it in `XPlatApplication` after
   `BuildServiceProvider`.
-- Add the window-level points (created, shown, closed) around the window lifecycle, with the
-  shutdown point alongside `IXPlatApplicationBackend.Shutdown`.
+- Add `IXPlatWindowHook` and `XPlatWindowPhase` around the window lifecycle, raising the six phases
+  the model can raise today, with the shutdown point alongside
+  `IXPlatApplicationBackend.Shutdown`.
+- Add the two typed-phase seam members, `IXPlatApplicationBackend.RunStartupHooks` and
+  `IXPlatWindowBackend.RunWindowHooks`, with empty bodies in every backend, so the platform half of
+  §6.5 exists before any feature needs it.
 - Keep every hook implementation-free: the seam names no feature.
 
 Measure: the seam's own delta on the minimal app, which is the number the budget in §7 is checked
@@ -482,11 +609,14 @@ removes.
 
 ### Phase 3: drag and drop as the first consumer
 
-- Add the opt-in (`services.AddDragDrop()` or equivalent), registering whatever services and hooks
-  the feature needs.
-- Move `Win32DropTarget` construction and registration behind the window-created hook.
-- Move `RegisterForDraggedTypes` behind the window-created hook.
-- Move `Gtk.DropTarget` construction behind the window-created hook.
+- Add the opt-in as a same-named extension in each backend (§6.5), registering whatever services and
+  typed hooks the feature needs.
+- Move `Win32DropTarget` construction and registration (`Win32WindowBackend.cs:575-576`) behind the
+  Win32 window hook's `Created` phase, and its revoke (`:457`) behind `Closing`.
+- Move `RegisterForDraggedTypes` (`AppKitSkiaView.cs:101`) behind the AppKit window hook's `Created`
+  phase.
+- Move `Gtk.DropTarget` construction (`Gtk4SkiaView.cs:409-410`) and removal (`:201-210`) behind the
+  Gtk4 window hook's `Created` and `Closing` phases.
 - Leave the payload types and the host routing where they are.
 - Move `AllowDrop` and the four handler pairs to `XPlatUI.DragDrop` extensions, unless the drag and
   drop surface question in §12 says otherwise.
@@ -526,6 +656,11 @@ lower, and the measured cost for an application that does not use it.
 - [ ] If the feature wants members on `XPlatControl` or a subclass, is it exposed as extension
 	  members in its own namespace instead, with the exception stated if not?
 - [ ] If it needs events, does it expose them as `AddXHandler`/`RemoveXHandler` extension methods?
+- [ ] If it is native, is the implementation in each backend, is the registration a same-named
+	  extension in the feature's namespace, and does each backend's always-on path name none of it?
+	  Does `Headless` stay free of the extension?
+- [ ] If a hook needs the concrete backend, is it a typed hook (§6.5) rather than a downcast, and is
+	  it unrelated to the portable interface?
 - [ ] Is there any C# `event` keyword in the change, including on interfaces and backend types? It
 	  has to be an `AddXHandler`/`RemoveXHandler` pair instead (§5.4).
 - [ ] If it needs per-control state, where does that state live, and what does each access cost?
@@ -546,6 +681,18 @@ lower, and the measured cost for an application that does not use it.
 - **Hook disposal.** Both registration helpers take an optional `onDispose`, and the wrapper
   forwards it, so a lambda hook can own a disposable without a class. Hooks that are `IDisposable`
   are disposed by the container, windows before the application. See §6.2 and §6.4.
+- **Platform-specific hooks.** Contract in core, implementation in each backend, selection by the
+  project reference. The registration is a same-named extension in the feature's namespace, which
+  makes a backend that forgets it a compile error rather than a missing feature. `Headless`
+  declares none. See §6.5.
+- **Typed hooks.** Each backend declares its own application and window hook interfaces naming its
+  backend by its concrete type, and runs them from its own loop after the portable hooks. The
+  portable and typed interfaces are unrelated types. See §6.5.
+- **Window phases.** Created, Showing, Shown, Hiding, Hidden, Closing, Closed and Disposed, with
+  Hiding and Hidden reserved until `Visible` and `Hide` exist. Ascending phases run hooks in
+  registration order and descending phases in reverse. See §6.3.
+- **Hook callback shape.** One method taking the phase, not one method per phase. A no-op base class
+  can be added later for ergonomics without changing the interface.
 
 ### Open
 
