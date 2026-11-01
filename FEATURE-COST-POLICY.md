@@ -155,20 +155,41 @@ Each project packs on its own, and the pipeline merges the results into one pack
 1. Run `dotnet pack` on `Common` once, and on each platform project on its own platform.
 2. Unpack them and build one package whose `lib/` folder holds, for each platform, that platform's
    assembly together with `Common`.
-3. Write one dependency group per target framework naming `XPlatUI`, and repack.
+3. Write one dependency group per platform, each naming `XPlatUI` plus whatever feed packages that
+   platform needs, and repack.
 
-Step 2 is not tidiness. NuGet chooses one `lib/` folder per package per target framework, not one
-folder per assembly, so a package that leaves `Common` in its own `lib/net10.0/` folder is seen by a
-`net10.0-windows` application as containing the Windows assembly and nothing else. `Common` is in
-the package, is not referenced, and the application fails to compile against types that appear in
-the package listing. Verified with a hand-built package: the consuming project's assets listed only
-`lib/net10.0-windows7.0/Plat.dll`, and copying the shared assembly into that folder made both
-appear.
+A dependency group per platform is what makes a platform-only package tolerable. Dependencies are
+selected by the same nearest-framework rule as assemblies, so a macOS-only package listed in the
+macOS group is never restored by a Windows application. Verified with a package carrying three
+groups: a `net10.0-windows` consumer restored only the Windows dependency, a `net10.0` consumer only
+the Linux one, and a `net10.0-macos` consumer only the macOS one.
 
-Step 3 matters because a platform project that references `Common` packs a dependency on it, named
-after the project, which no feed can satisfy. `SuppressDependenciesWhenPacking` removes the whole
-dependency group rather than one entry, so the merged package's own groups are what an application
-sees, and they name `XPlatUI` and nothing else.
+What makes that safe is that every platform gets a group, even an empty one. When the matching group
+is absent NuGet falls back to a compatible one, and `net10.0` is always compatible with
+`net10.0-windows`, so a missing Windows group silently hands a Windows application the Linux
+dependencies. Verified: a package with no Windows group restored the Linux dependency into a
+`net10.0-windows` consumer, while an empty `<group targetFramework="net10.0-windows7.0" />`
+restored nothing. Each group must also be the platform's whole closure rather than its extras,
+because nothing is inherited from the `net10.0` group once a platform group is chosen.
+
+Step 2 has the same hazard, in a worse form, because it fails silently. NuGet chooses one `lib/`
+folder per package per target framework, not one folder per assembly, so `Common` left in its own
+`lib/net10.0/` folder is not referenced by a `net10.0-windows` application at all: the package
+listing shows it, the build cannot see it, and the application fails to compile against types that
+appear to be present. Verified with a hand-built package, where the consuming project's assets
+listed only `lib/net10.0-windows7.0/Plat.dll`, and copying the shared assembly into that folder made
+both appear. A missing Windows `lib/` folder is worse still, because the consumer then compiles
+against the `net10.0` folder instead and a Windows application ships the Linux assembly. Verified: a
+`net10.0-windows` consumer of a package with no Windows folder compiled and printed the marker
+string from the `net10.0` assembly.
+
+Step 3 is also where the sibling projects stop being dependencies. A platform project that
+references `Common` packs a dependency on it named after the project, which no feed can satisfy.
+`SuppressDependenciesWhenPacking` removes the whole dependency group rather than one entry, which
+drops the real feed packages with it and emits `NU5128` because the groups no longer match the
+`lib/` folders. So the pipeline takes each platform pack's generated group, removes the entries
+naming sibling projects, unions in the feed packages from `Common`'s group, and writes the result.
+Groups that match the `lib/` folders are what `dotnet pack` produces normally, and do not warn.
 
 That merge is the only part of this rung that is easy to get wrong, so it belongs in one shared
 pipeline step used by every feature package rather than being written per feature.
@@ -177,8 +198,8 @@ Packaging does not change the namespace (§5.6). A feature in `XPlatUI.Feature.C
 `namespace XPlatUI.Clocks`, so moving a feature between rung 2 and rung 3 does not touch application
 code.
 
-This rung has a cost of its own (four projects per feature, more versioning, more places to look), so
-it is chosen for a stated reason rather than by default.
+This rung has a cost of its own (four projects per feature, more versioning, more places to look),
+so it is chosen for a stated reason rather than by default.
 
 ## 5. Expressing a feature as an extension
 
@@ -897,6 +918,9 @@ lower, and the measured cost for an application that does not use it.
 	  it unrelated to the portable interface?
 - [ ] Is there any C# `event` keyword in the change, including on interfaces and backend types? It
 	  has to be an `AddXHandler`/`RemoveXHandler` pair instead (§5.4).
+- [ ] If it ships as its own package, does every platform get a `lib/` folder and a dependency
+	  group, is the group the platform's whole closure, and is an empty group present where a
+	  platform needs no extra packages?
 - [ ] If it needs per-control state, where does that state live, and what does each access cost?
 
 ## 12. Decisions and open questions
@@ -945,9 +969,12 @@ lower, and the measured cost for an application that does not use it.
   is simply too rare to belong in the main package. The feature is one project per platform plus a
   `Common` project, each an ordinary single-target-framework project, so no project file is
   conditional and a solution build needs only the current platform's workload. The single package is
-  produced by packing all four and merging, which has to copy `Common` into each platform's `lib/`
-  folder because NuGet picks one folder per target framework. Namespaces do not change with the
-  packaging. See §4.
+  produced by packing all four and merging. A platform-only NuGet dependency is tolerable because
+  dependencies are grouped per platform and selected by target framework, so a macOS-only package is
+  never restored by a Windows application; every platform therefore gets a group, empty if it needs
+  nothing, since a missing group falls back to the `net10.0` one. The merge has to copy `Common` into
+  each platform's `lib/` folder, because NuGet picks one folder per target framework. Namespaces do
+  not change with the packaging. See §4.
 - **Seam cost.** The hook seam is accepted rather than budgeted, because it is what makes the
   extensibility points possible. There is no byte target, and no hook point is rejected on size
   alone; the seam keeps a stability promise and a shape rule instead, and the types it retains
