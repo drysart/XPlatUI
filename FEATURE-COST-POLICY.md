@@ -816,7 +816,8 @@ another. What the seam gets instead is a stability promise and a shape rule:
   as an extension member (§5) is recorded in the pull request.
 
 The seam's cost is still reported (§8), because a number that only ever grows unnoticed is how a
-small seam becomes a large one. It is a trend to watch, not a threshold to pass.
+small seam becomes a large one. It is a trend to watch, not a threshold to pass, and the number it
+starts from is 10,240 bytes on Windows and 4,384 on Linux (§10).
 
 Two of the seam's types are retained whether or not anything uses them, deliberately:
 
@@ -979,6 +980,30 @@ Measure: the seam's own delta on the minimal app, and record it as the baseline 
 There is no target to compare it against (§7); it is the reference point that shows whether the seam
 is growing.
 
+#### The seam's cost
+
+Re-publishing the fixture with the seam in place, from the same three machines:
+
+| Measurement | win-x64 | linux-x64 | osx-arm64 |
+|---|---|---|---|
+| Minimal app, Skia embedded | 8,658,944 | 9,019,728 | not applicable |
+| Minimal app, Skia loose | 3,202,048 | 4,215,120 | 4,218,096 |
+| Seam delta, loose | 10,240 | 4,384 | 0 |
+
+The seam is 10,240 bytes on Windows and 4,384 on Linux, 0.32 and 0.10 percent of the fixture. The
+two are the same portable code, so the difference between them is layout rather than content: two
+linkers pad, deduplicate and order the same methods differently. Windows moved by more in absolute
+terms even though its backend is the smaller of the two, which is why Phase 0 insisted on measuring
+per platform rather than scaling one number to the others.
+
+macOS is byte-for-byte unchanged, executable and bundle both. Its arm64 image is linked in 16 KB
+pages and the seam fits in the slack of the pages it already had, so the honest reading is not that
+the seam is free there but that it is below what this measurement can resolve.
+
+Ten kilobytes for the whole extensibility model is the shape §7 accepted: it is a fixed cost that
+no feature adds to, because a feature is measured on top of the baseline rather than folded into
+it, and every later phase is judged against these three numbers.
+
 ### Phase 2: the event convention
 
 - Replace every `event` declaration with an `Add`/`Remove` handler pair (§5.4), across `XPlatUI`, the
@@ -1125,7 +1150,9 @@ lower, and the measured cost for an application that does not use it.
 - **Seam cost.** The hook seam is accepted rather than budgeted, because it is what makes the
   extensibility points possible. There is no byte target, and no hook point is rejected on size
   alone; the seam keeps a stability promise and a shape rule instead, and the types it retains
-  unconditionally are named. Its cost is still measured so that growth is visible. See §7.
+  unconditionally are named. Its cost is still measured so that growth is visible: 10,240 bytes on
+  Windows and 4,384 on Linux against the minimal fixture, and nothing measurable on macOS. See §7
+  and §10.
 - **Opt-in granularity.** Opting in is a per-application decision, and it buys the whole feature:
   once it is called, every window gets the feature's per-window setup regardless of any runtime
   value such as `AllowDrop`, because such a value can change after the window is shown and there is
