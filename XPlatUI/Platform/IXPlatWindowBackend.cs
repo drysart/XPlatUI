@@ -68,6 +68,17 @@ public interface IXPlatWindowBackend : IDisposable
     XPlatWindowState State { get; set; }
 
     /// <summary>
+    /// The window that owns this one, or null. An owned window is stacked above its owner and
+    /// minimizes with it.
+    /// </summary>
+    /// <remarks>
+    /// Assigning it once the native window exists applies the relationship immediately; before that
+    /// it is recorded and applied when the window is created. Closing owned windows is the model's
+    /// job, so a backend never has to cascade a close.
+    /// </remarks>
+    IXPlatWindowBackend? Owner { get; set; }
+
+    /// <summary>
     /// The window's menu bar, or null for none. Per window on Windows and Linux; the AppKit backend
     /// mirrors the active window's bar into the single global macOS menu bar, which is the only
     /// place the two presentations diverge.
@@ -75,18 +86,18 @@ public interface IXPlatWindowBackend : IDisposable
     XPlatMenuBar? MenuBar { get; set; }
 
     /// <summary>
-    /// Creates and shows the native window, owned by <paramref name="owner"/> when it is not null,
-    /// and returns without waiting for it to close. The model raises its own events from the ones
+    /// Creates and shows the native window, owned by <see cref="Owner"/> when it is set, and
+    /// returns without waiting for it to close. The model raises its own events from the ones
     /// below.
     /// </summary>
-    void Show(IXPlatWindowBackend? owner);
+    void Show();
 
     /// <summary>
-    /// Shows the window modally: disables <paramref name="owner"/> and runs a nested platform loop
-    /// that returns once this window has closed. The backend must tolerate that nesting - see
+    /// Shows the window modally: disables <see cref="Owner"/> and runs a nested platform loop that
+    /// returns once this window has closed. The backend must tolerate that nesting - see
     /// <see cref="IXPlatDialogService"/> for what it requires.
     /// </summary>
-    void ShowDialog(IXPlatWindowBackend? owner);
+    void ShowDialog();
 
     /// <summary>Brings the window to the front and gives it focus.</summary>
     void Activate();

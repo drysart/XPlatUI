@@ -38,6 +38,8 @@ public sealed class AppKitWindowBackend : IXPlatWindowBackend
     private SKPoint? _location;
     private bool _resizable = true;
     private bool _topMost;
+    private IXPlatWindowBackend? _owner;
+    private NSWindow? _attachedOwner;
     private XPlatWindowState _state = XPlatWindowState.Normal;
     private XPlatWindowState _reportedState = XPlatWindowState.Normal;
     private XPlatMenuBar? _menuBar;
@@ -203,6 +205,22 @@ public sealed class AppKitWindowBackend : IXPlatWindowBackend
         }
     }
 
+    /// <inheritdoc />
+    public IXPlatWindowBackend? Owner
+    {
+        get => _owner;
+        set
+        {
+            if (ReferenceEquals(_owner, value))
+            {
+                return;
+            }
+
+            _owner = value;
+            AttachOwner();
+        }
+    }
+
     /// <summary>
     /// The window's display state. <see cref="XPlatWindowState.FullScreen"/> maps to a zoomed
     /// window for now; true borderless full screen needs a style save/restore that is not worth
@@ -279,7 +297,7 @@ public sealed class AppKitWindowBackend : IXPlatWindowBackend
     internal NSWindow? Window => _window;
 
     /// <inheritdoc />
-    public void Show(IXPlatWindowBackend? owner)
+    public void Show()
     {
         if (!EnsureCreated())
         {
@@ -290,7 +308,7 @@ public sealed class AppKitWindowBackend : IXPlatWindowBackend
     }
 
     /// <inheritdoc />
-    public void ShowDialog(IXPlatWindowBackend? owner)
+    public void ShowDialog()
     {
         if (!EnsureCreated())
         {
@@ -380,6 +398,8 @@ public sealed class AppKitWindowBackend : IXPlatWindowBackend
         var window = _window;
         var view = _view;
 
+        DetachOwner();
+
         _window = null;
         _view = null;
         _presenter = null;
@@ -466,6 +486,10 @@ public sealed class AppKitWindowBackend : IXPlatWindowBackend
             window.Level = NSWindowLevel.Floating;
         }
 
+        // The child-window relationship is what makes an owned window stay above its owner and go
+        // with it when the owner is ordered out; AppKit has nothing else for it.
+        AttachOwner();
+
         Place(window);
 
         // A window that has never been focused is not the active window yet, but it is the one the
@@ -493,6 +517,41 @@ public sealed class AppKitWindowBackend : IXPlatWindowBackend
         }
 
         Shown?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>
+    /// Makes this window a child of its owner, or detaches it when the owner changed. A child window
+    /// is ordered above its parent and is ordered out with it, which is the whole of AppKit's
+    /// ownership model; closing is the model's job.
+    /// </summary>
+    private void AttachOwner()
+    {
+        if (_window is null)
+        {
+            return;
+        }
+
+        var parent = (_owner as AppKitWindowBackend)?.Window;
+
+        if (ReferenceEquals(parent, _attachedOwner))
+        {
+            return;
+        }
+
+        _attachedOwner?.RemoveChildWindow(_window);
+        _attachedOwner = parent;
+        parent?.AddChildWindow(_window, NSWindowOrderingMode.Above);
+    }
+
+    /// <summary>Breaks the child-window relationship, if there is one.</summary>
+    private void DetachOwner()
+    {
+        if (_attachedOwner is { } parent && _window is { } window)
+        {
+            parent.RemoveChildWindow(window);
+        }
+
+        _attachedOwner = null;
     }
 
     /// <summary>Makes the title bar and other AppKit chrome match the palette the library draws with.</summary>

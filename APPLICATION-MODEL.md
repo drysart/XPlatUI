@@ -406,9 +406,12 @@ Rules:
 - `Windows` returns a snapshot, so it is safe to enumerate while closing windows.
 - `WindowOpened` fires after `Show()` succeeds; `WindowClosed` fires after `Closed` and after the
   window has left `Windows`.
-- `Owner` must be set before `Show()`; setting it on a visible window throws
-  `InvalidOperationException`. An owned window always sits above its owner, minimizes with it and is
-  closed with it. `Show(owner)` is shorthand for setting `Owner` then `Show()`.
+- `Owner` can be set before or after `Show()`; assigning it on a visible window restacks the
+  native window (on Windows the frame is recomputed, otherwise the taskbar keeps the old grouping).
+  An owned window always sits above its owner, minimizes with it and is closed with it - the close
+  cascade is the model's, because no platform closes owned windows for us: AppKit only orders
+  children out and an `HWND` owner keeps its children alive. `Show(owner)` is shorthand for setting
+  `Owner` then `Show()`.
 - `ShowDialog()` disables the owner and runs a nested loop; it returns once the window has closed.
 - Process-wide services (`XPlatClipboard`, `XPlatSystemTheme`, `XPlatTheme`) are shared by every
   window. The context-menu presenter is per window, which the existing interface already implies.
@@ -868,10 +871,12 @@ public interface IXPlatWindowBackend : IDisposable
 	bool Resizable { get; set; }
 	bool TopMost { get; set; }
 	XPlatWindowState State { get; set; }
+	IXPlatWindowBackend? Owner { get; set; }   // applied live, not just at creation
+	XPlatWindowState State { get; set; }
 	XPlatMenuBar? MenuBar { get; set; }         // per window; macOS mirrors the active bar
 
-	void Show(IXPlatWindowBackend? owner);
-	void ShowDialog(IXPlatWindowBackend? owner);
+	void Show();
+	void ShowDialog();
 	void Activate();
 	void Close();                              // request close; the window raises Closing
 	void SetTitleBarAppearance(bool dark);     // dark chrome on macOS, dark caption on Windows
@@ -1034,7 +1039,7 @@ Tier 1 **is** the v1 scope (D12, D13).
 |---|---|
 | `XPlatTimer` (public) | Animations, polling, debounce — without it every app rolls its own `SetTimer`. |
 | Window icons | Title bar + taskbar; three different APIs. Done: one `XPlatIcon` carrying pixels and a theme name (§4.3). |
-| `Activated`/`Deactivated`, `TopMost`, `Owner` | Taskbar grouping and modality on Windows; window ordering on macOS. |
+| `Activated`/`Deactivated`, `TopMost`, `Owner` | Taskbar grouping and modality on Windows; window ordering on macOS. Done, with one caveat: GTK4 cannot keep a window above others (`TopMost`) and Wayland leaves the stacking of an owned window to the compositor. |
 | App-scoped single instance / re-activate | Common enough that every app writes it wrong. Done: `SingleInstance`/`InstanceKey` plus app-level `Activated` and `SecondInstance` (§4.6). |
 
 ### Tier 3 — native feel
@@ -1311,6 +1316,10 @@ fine and then misbehaved at run time:
   window placement is left to the compositor. `TopMost` and `MaximumClientSize` are likewise stored
   only, because the toolkit offers nothing to apply them with. This is the one place the GTK4
   backend is less capable than the other two, and the XML docs say so where a caller would look.
+- **`gtk_window_set_transient_for` is the whole of ownership on GTK4.** The backend applies it when
+  `Owner` changes, including clearing it, but the window manager decides what it means: on X11 an
+  owned window is stacked above its owner, on Wayland it is only a hint. The close cascade does not
+  depend on it - the model closes owned windows itself, on every platform.
 - **A monitor has no work area in GTK.** `GetScreens()` reports the full monitor geometry as the work
   area, so a maximized window may sit under a panel.
 - **`Gtk.Module.Initialize()` calls `exit(1)` when there is no display.** That is fine for the live

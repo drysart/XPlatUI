@@ -47,6 +47,7 @@ internal sealed class Win32WindowBackend : IXPlatWindowBackend
     private SKPoint? _location;
     private bool _resizable = true;
     private bool _topMost;
+    private IXPlatWindowBackend? _owner;
     private XPlatWindowState _state = XPlatWindowState.Normal;
     private XPlatMenuBar? _menuBar;
 
@@ -243,14 +244,7 @@ internal sealed class Win32WindowBackend : IXPlatWindowBackend
                 return;
             }
 
-            NativeMethods.SetWindowPos(
-                _hwnd,
-                value ? NativeMethods.HwndTopMost : NativeMethods.HwndTop,
-                0,
-                0,
-                0,
-                0,
-                NativeMethods.SwpNoMove | NativeMethods.SwpNoSize | NativeMethods.SwpNoActivate);
+            ApplyTopMost();
         }
     }
 
@@ -296,9 +290,45 @@ internal sealed class Win32WindowBackend : IXPlatWindowBackend
     internal IntPtr Handle => _hwnd;
 
     /// <inheritdoc />
-    public void Show(IXPlatWindowBackend? owner)
+    public IXPlatWindowBackend? Owner
     {
-        if (!EnsureCreated(owner))
+        get => _owner;
+        set
+        {
+            if (ReferenceEquals(_owner, value))
+            {
+                return;
+            }
+
+            _owner = value;
+
+            if (_hwnd == IntPtr.Zero)
+            {
+                return;
+            }
+
+            // The owner is part of what the shell sees, so the frame is recomputed rather than just
+            // the z-order adjusted: without it the taskbar keeps the old grouping.
+            NativeMethods.SetWindowLongPtrW(_hwnd, NativeMethods.GwlpHwndParent, OwnerHandle);
+            NativeMethods.SetWindowPos(
+                _hwnd,
+                IntPtr.Zero,
+                0,
+                0,
+                0,
+                0,
+                NativeMethods.SwpNoMove |
+                NativeMethods.SwpNoSize |
+                NativeMethods.SwpNoZOrder |
+                NativeMethods.SwpNoActivate |
+                NativeMethods.SwpFrameChanged);
+        }
+    }
+
+    /// <inheritdoc />
+    public void Show()
+    {
+        if (!EnsureCreated())
         {
             return;
         }
@@ -307,14 +337,14 @@ internal sealed class Win32WindowBackend : IXPlatWindowBackend
     }
 
     /// <inheritdoc />
-    public void ShowDialog(IXPlatWindowBackend? owner)
+    public void ShowDialog()
     {
-        if (!EnsureCreated(owner))
+        if (!EnsureCreated())
         {
             return;
         }
 
-        var ownerHandle = (owner as Win32WindowBackend)?._hwnd ?? IntPtr.Zero;
+        var ownerHandle = OwnerHandle;
 
         if (ownerHandle != IntPtr.Zero)
         {
@@ -464,7 +494,10 @@ internal sealed class Win32WindowBackend : IXPlatWindowBackend
         return screen;
     }
 
-    private bool EnsureCreated(IXPlatWindowBackend? owner)
+    /// <summary>The native handle of the owning window, or <see cref="IntPtr.Zero"/> when there is none.</summary>
+    private IntPtr OwnerHandle => (_owner as Win32WindowBackend)?._hwnd ?? IntPtr.Zero;
+
+    private bool EnsureCreated()
     {
         if (_hwnd != IntPtr.Zero)
         {
@@ -501,7 +534,6 @@ internal sealed class Win32WindowBackend : IXPlatWindowBackend
         // Create the window first: its DPI can only be queried once it exists, and sizing against
         // the wrong scale would crop the logical layout on high-DPI displays.
         var provisional = OuterSizeFor(_clientSize.Width, _clientSize.Height);
-        var ownerHandle = (owner as Win32WindowBackend)?._hwnd ?? IntPtr.Zero;
 
         _hwnd = NativeMethods.CreateWindowExW(
             0,
@@ -512,7 +544,7 @@ internal sealed class Win32WindowBackend : IXPlatWindowBackend
             0,
             Math.Max(provisional.Width, 1),
             Math.Max(provisional.Height, 1),
-            ownerHandle,
+            OwnerHandle,
             IntPtr.Zero,
             _moduleHandle,
             IntPtr.Zero);
@@ -533,18 +565,6 @@ internal sealed class Win32WindowBackend : IXPlatWindowBackend
         ApplyResizable();
         ApplyIcon();
 
-        if (_topMost)
-        {
-            NativeMethods.SetWindowPos(
-                _hwnd,
-                NativeMethods.HwndTopMost,
-                0,
-                0,
-                0,
-                0,
-                NativeMethods.SwpNoMove | NativeMethods.SwpNoSize | NativeMethods.SwpNoActivate);
-        }
-
         UpdateHostSize();
         return true;
     }
@@ -559,8 +579,26 @@ internal sealed class Win32WindowBackend : IXPlatWindowBackend
         NativeMethods.ShowWindow(_hwnd, NativeMethods.SwShow);
         NativeMethods.UpdateWindow(_hwnd);
 
+        // Windows ignores a z-order change on a hidden window, so topmost can only be applied once
+        // the window is visible - which is why it is not done when the window is created.
+        ApplyTopMost();
+
         Shown?.Invoke(this, EventArgs.Empty);
     }
+
+    /// <summary>
+    /// Puts the window in the topmost band, or takes it out of it. Only has an effect once the
+    /// window is visible.
+    /// </summary>
+    private void ApplyTopMost() =>
+        NativeMethods.SetWindowPos(
+            _hwnd,
+            _topMost ? NativeMethods.HwndTopMost : NativeMethods.HwndTop,
+            0,
+            0,
+            0,
+            0,
+            NativeMethods.SwpNoMove | NativeMethods.SwpNoSize | NativeMethods.SwpNoActivate);
 
     /// <summary>Puts the window on the primary display's working area, honouring an explicit location.</summary>
     private void PlaceInitially()

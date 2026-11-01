@@ -185,11 +185,30 @@ public sealed class Gtk4WindowBackend : IXPlatWindowBackend
         }
     }
 
-    /// <inheritdoc />
+    /// <summary>
+    /// True to keep the window above all others. GTK4 removed <c>gtk_window_set_keep_above</c> and
+    /// Wayland leaves stacking to the compositor, so the value is recorded and has no effect here.
+    /// </summary>
     public bool TopMost
     {
         get => _topMost;
         set => _topMost = value;
+    }
+
+    /// <inheritdoc />
+    public IXPlatWindowBackend? Owner
+    {
+        get => _owner;
+        set
+        {
+            if (ReferenceEquals(_owner, value))
+            {
+                return;
+            }
+
+            _owner = value;
+            SetTransient(_owner);
+        }
     }
 
     /// <summary>
@@ -260,13 +279,12 @@ public sealed class Gtk4WindowBackend : IXPlatWindowBackend
     }
 
     /// <inheritdoc />
-    public void Show(IXPlatWindowBackend? owner)
+    public void Show()
     {
         // GTK refuses a window created before GApplication::startup, and the model shows windows
         // before it enters the loop. Creation is therefore deferred to the activate signal, which
         // is GTK's equivalent of AppKit's finishLaunching.
         _presentPending = true;
-        _owner = owner;
 
         if (!_application.IsLoopRunning)
         {
@@ -277,10 +295,8 @@ public sealed class Gtk4WindowBackend : IXPlatWindowBackend
     }
 
     /// <inheritdoc />
-    public void ShowDialog(IXPlatWindowBackend? owner)
+    public void ShowDialog()
     {
-        _owner = owner;
-
         if (!EnsureCreated())
         {
             return;
@@ -544,12 +560,14 @@ public sealed class Gtk4WindowBackend : IXPlatWindowBackend
 
     private void SetTransient(IXPlatWindowBackend? owner)
     {
-        if (_window is null || owner is not Gtk4WindowBackend { Window: { } parent })
+        if (_window is null)
         {
             return;
         }
 
-        _window.SetTransientFor(parent);
+        // Null clears the relationship, which is what re-parenting a live window needs; GTK keeps
+        // the window manager in step without any extra call.
+        _window.SetTransientFor(owner is Gtk4WindowBackend { Window: { } parent } ? parent : null);
     }
 
     private void ApplyChrome()

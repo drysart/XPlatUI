@@ -117,7 +117,7 @@ internal static class Program
 #if !WINDOWS
         // The Win32 backend leaves the menu bar to the window's own system menu; GTK and macOS show
         // this one.
-        window.MenuBar = CreateMenuBar();
+        window.MenuBar = CreateMenuBar(window, demo);
 #endif
 
         application.MainWindow = window;
@@ -128,17 +128,73 @@ internal static class Program
                 ? "A second launch was handed to this window."
                 : $"A second launch was handed to this window: {string.Join(' ', e.Arguments)}");
 
+        // Activation is the other half of the multi-window story: the status line reports it, which
+        // is also the easiest way to see that an owned window taking the focus deactivates this one.
+        window.Activated += (_, _) => demo.SetStatus("Window activated - it has the keyboard focus.");
+        window.Deactivated += (_, _) => demo.SetStatus("Window deactivated - another window has the focus.");
+
+        // Windows has no menu bar to hang these off yet, so the same two window features are also
+        // reachable as flags: --topmost starts above everything, --owned opens a window owned by
+        // this one.
+        window.TopMost = Array.IndexOf(args, "--topmost") >= 0;
+
         window.Show();
+
+        if (Array.IndexOf(args, "--owned") >= 0)
+        {
+            ShowOwnedWindow(window);
+        }
 
         return application.Run();
     }
 
     /// <summary>The window's own menu bar, on the platforms that show one.</summary>
-    private static XPlatMenuBar CreateMenuBar() => new(
+    private static XPlatMenuBar CreateMenuBar(XPlatWindow window, DemoUi demo) => new(
         new XPlatMenu(
             "View",
             new XPlatMenuItem("Dark Mode", () => XPlatTheme.Palette = XPlatPalette.Dark),
-            new XPlatMenuItem("Light Mode", () => XPlatTheme.Palette = XPlatPalette.Light)));
+            new XPlatMenuItem("Light Mode", () => XPlatTheme.Palette = XPlatPalette.Light)),
+        new XPlatMenu(
+            "Window",
+            new XPlatMenuItem("Topmost", () =>
+            {
+                window.TopMost = !window.TopMost;
+                demo.SetStatus(window.TopMost
+                    ? "The window is now above every other window."
+                    : "The window is back in the normal stacking order.");
+            }),
+            new XPlatMenuItem("Owned Window", () => ShowOwnedWindow(window))));
+
+    /// <summary>
+    /// Shows a small window owned by <paramref name="owner"/>. Ownership is what makes a window
+    /// behave like a child of another: it stays above its owner, minimizes with it, and closes when
+    /// the owner closes. GTK4 is the odd one out on the first point - Wayland leaves stacking to the
+    /// compositor - but it still minimizes and closes with its owner.
+    /// </summary>
+    private static void ShowOwnedWindow(XPlatWindow owner)
+    {
+        var panel = new XPlatPanel
+        {
+            Padding = new XPlatThickness(16f),
+        };
+
+        panel.Controls.Add(new XPlatLabel(
+            "This window is owned by the main window: it stays above it, minimizes with it, and "
+            + "closes when it closes.")
+        {
+            Dock = DockStyle.Fill,
+            WrapText = true,
+            TextAlign = XPlatContentAlignment.MiddleCenter,
+        });
+
+        var window = new XPlatWindow("Owned Window", panel)
+        {
+            ClientSize = new SKSize(440f, 170f),
+            MinimumClientSize = new SKSize(300f, 130f),
+        };
+
+        window.Show(owner);
+    }
 
     /// <summary>
     /// The title bar text. It names the backend on purpose: three builds of the same program are
