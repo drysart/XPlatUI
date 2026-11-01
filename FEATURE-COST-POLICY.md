@@ -180,7 +180,7 @@ Rules:
   found a bug in the convention.
 - The payload is an `EventArgs`-derived type: the existing `XPlatDragEventArgs`, `XPlatMouseEventArgs`
   and friends stay as they are, and a feature with one payload value uses the generic `EventArgs<T>`
-  (open question 8).
+  (open question 7).
 
 ### 5.5 When a member does belong on the control
 
@@ -223,7 +223,7 @@ need two distinct things:
 
 A feature that needs both registers a service and a hook, in the same opt-in call.
 
-### 6.2 The hook
+### 6.2 The application hook
 
 ```csharp
 public interface IXPlatApplicationStartupHook
@@ -231,6 +231,9 @@ public interface IXPlatApplicationStartupHook
 	void OnStartup(XPlatApplication application);
 }
 ```
+
+The application-level hook is a singleton, because the work it does is process-wide. Per-window work
+has its own hook with its own lifetime; see §6.3.
 
 `XPlatApplication`, after `BuildServiceProvider` and before the loop runs, resolves them and invokes
 each one:
@@ -262,23 +265,51 @@ The trim property that makes this work: `GetServices<T>()` on a service nobody r
 empty sequence, and the only thing retained is the interface itself. The concrete hook type is
 reachable solely from the registration call, so an app without that call publishes without it.
 
-### 6.3 Hook points
+### 6.3 Hook points and lifetimes
 
 A single startup hook is not enough, because most expensive work is per window rather than per
-process. The set to provide, and to keep stable:
+process. There are two kinds of hook, with two lifetimes:
 
-| Point | What it is for |
-|---|---|
-| Application startup | Process-wide platform initialisation that must precede any window (for example OLE initialisation, or registering application-level pasteboard types). |
-| Window created | Per-window native registration once the handle exists (drop targets, extra pasteboard types, controllers). |
-| Window shown | Work that requires a visible window. |
-| Window closed | Teardown symmetry, so nothing leaks on close and reopen. |
-| Application shutdown | Process-wide teardown that must happen before the loop returns. |
+| Kind | Lifetime | Resolved from | What it is for |
+|---|---|---|---|
+| Application hook | Singleton | The root provider | Process-wide platform initialisation that must precede any window (OLE initialisation, application-level pasteboard types), and process-wide teardown before the loop returns. |
+| Window hook | Window-scoped | `window.Services` | Per-window work: native registration once the handle exists (drop targets, extra pasteboard types, GTK controllers), and its teardown when the window closes. |
 
-The window points take the window (or its `IXPlatWindowBackend`) so the hook can reach the native
-handle without the model having to expose anything new. A control-level "attached to tree" point is
-deliberately out of scope for now; the window points are enough for every feature currently on the
-roadmap, and each added point is permanent cost in the seam.
+Application points are startup and shutdown. Window points are created, shown, closing and closed,
+and they are one interface rather than four, because one scoped instance serves all four for its
+window:
+
+```csharp
+public interface IXPlatWindowHook
+{
+	void OnCreated(XPlatWindow window);
+	void OnShown(XPlatWindow window);
+	void OnClosing(XPlatWindow window);
+	void OnClosed(XPlatWindow window);
+}
+```
+
+The window lifetime already exists, so this costs nothing new. `XPlatWindow` creates an
+`IServiceScope` in its constructor (`XPlatWindow.cs:60`), exposes it as `Services` (`:115`), and
+disposes it when the window closes (`:390`). `AddWindowScoped<T>` (`XPlatWindowScope.cs:32`) is
+`AddScoped` with the window handed to the factory, and `XPlatWindowAccessor` is how a scoped service
+reaches its window. A window hook is therefore registered like this, and one window's instance is
+nobody else's:
+
+```csharp
+services.AddWindowScoped<IXPlatWindowHook>((window, provider) => new DragDropWindowHook(window));
+```
+
+The ordering matters and is easy to get wrong. `XPlatWindow` disposes the backend at `:386`, raises
+`Closed` at `:388` and disposes the scope at `:390`, so a scoped hook's own `Dispose` runs after the
+native window is gone. Anything that has to happen while the handle is still alive, such as revoking
+a drop target before the window is destroyed, belongs in the closing point, which fires before the
+backend is disposed.
+
+The window points take the window so the hook can reach the native handle without the model having
+to expose anything new. A control-level "attached to tree" point is deliberately out of scope for
+now; the window points are enough for every feature currently on the roadmap, and each added point
+is permanent cost in the seam.
 
 ### 6.4 Rules for hook implementations
 
@@ -291,11 +322,18 @@ roadmap, and each added point is permanent cost in the seam.
 - **Registration order is invocation order**, and it is documented so features can depend on it.
 - **Runs on the UI thread.** Startup hooks run before the loop starts, on the thread that will own
   it; window hooks run on the UI thread. Documented rather than assumed.
-- **Idempotent per window.** A window point must be safe to reach once per window, not once per
-  resize or repaint.
+- **Per-window state lives on the hook instance.** A window hook is scoped, so each window gets its
+  own instance and the created, shown, closing and closed callbacks share state without a table
+  keyed by window. A hook that finds itself needing such a table is registered at the wrong
+  lifetime.
 - **Failures surface.** A hook that throws goes through the existing `UnhandledException` path
   rather than silently aborting startup.
-- **Root provider only.** Application hooks resolve from the root provider, not from a window scope.
+- **Resolve from the right provider.** Application hooks come from the root provider; window hooks
+  come from `window.Services`. Resolving a scoped hook from the root is the trap: MEDI either throws
+  under scope validation or hands back a single instance that outlives every window.
+- **Dependencies point one way.** A window hook may depend on application singletons normally. A
+  singleton must never hold a window hook, because that would keep one window's instance alive for
+  the life of the process.
 
 ## 7. The seam's own budget
 
@@ -353,8 +391,8 @@ they cost nothing until something calls them.
 `AllowDrop` and the four events are a different matter. Under §5 the surface for this feature should
 be `using XPlatUI.DragDrop;`, `AllowDrop` as an extension property, and `AddDragEnterHandler`,
 `AddDragOverHandler`, `AddDragLeaveHandler` and `AddDragDropHandler` as extension methods, which
-takes those members off `XPlatControl` altogether.
-is open question 7.
+takes those members off `XPlatControl` altogether. Whether to make that move on an API that has
+already shipped is open question 6.
 
 Note the trap: making `AllowDrop` the opt-in would *not* achieve this. `AllowDrop` lives on
 `XPlatControl`, which is always retained, so the code behind it is reachable and kept regardless of
@@ -400,7 +438,7 @@ removes.
 - Move `Gtk.DropTarget` construction behind the window-created hook.
 - Leave the payload types and the host routing where they are.
 - Move `AllowDrop` and the four handler pairs to `XPlatUI.DragDrop` extensions, unless open
-  question 7 says otherwise.
+  question 6 says otherwise.
 
 Measure: an application that does not call the opt-in must lose OLE, the COM target, the pasteboard
 types and the GTK controllers, and the size must return to the Phase 0 baseline.
@@ -441,30 +479,37 @@ lower, and the measured cost for an application that does not use it.
 	  has to be an `AddXHandler`/`RemoveXHandler` pair instead (§5.4).
 - [ ] If it needs per-control state, where does that state live, and what does each access cost?
 
-## 12. Open questions
+## 12. Decisions and open questions
+
+### Decided
+
+- **Hook scoping.** Application hooks are singletons resolved from the root provider. Window hooks
+  are window-scoped services resolved from `window.Services`, which gives each window its own
+  instance and disposes it with the window. See §6.3 and §6.4.
+
+### Open
 
 These need answers before Phase 1, and the answers belong in this document:
 
 1. **Hook shape.** A marker interface resolved as `IEnumerable<T>` (as sketched in §6), or a
    builder-style `application.Enable<T>()`? The builder reads better but needs somewhere to live
    before the container exists, which is exactly the awkward moment.
-2. **Scoping.** Are hooks always root-provider singletons, or is a per-window scope useful enough to
-   justify the extra seam?
-3. **`AllowDrop` ergonomics.** Should setting `AllowDrop` implicitly opt the window in, on top of the
-   application-level opt-in, or should drag and drop always be an explicit application-level choice?
-4. **What "separate project" means.** A separate assembly in this repository, or a separate package
+2. **`AllowDrop` ergonomics.** Should setting `AllowDrop` implicitly opt the window in, on top of
+   the application-level opt-in, or should drag and drop always be an explicit application-level
+   choice?
+3. **What "separate project" means.** A separate assembly in this repository, or a separate package
    with its own version and release? Rung 3 is only useful if it is cheap to take.
-5. **The seam's size budget.** Low single-digit kilobytes is a guess. Phase 1 produces the real
+4. **The seam's size budget.** Low single-digit kilobytes is a guess. Phase 1 produces the real
    number, and this document should be corrected to it.
-6. **Retrofitting.** Which existing features get moved onto the policy, and in what order? Menus,
+5. **Retrofitting.** Which existing features get moved onto the policy, and in what order? Menus,
    dialogs, timers and single instance all predate the policy and none has been measured.
-7. **Moving the drag and drop surface.** `AllowDrop` and the four events shipped in the release
+6. **Moving the drag and drop surface.** `AllowDrop` and the four events shipped in the release
    before this policy existed. Do we move them to `XPlatUI.DragDrop` extensions, which is breaking
    but is what §5 asks for, or keep them and record the cost?
-8. **The generic event args type.** The convention is written as `EventHandler<EventArgs<Y>>`, which
+7. **The generic event args type.** The convention is written as `EventHandler<EventArgs<Y>>`, which
    means adding a generic args type. Is it `EventArgs<T>` (matches the sketch, sits next to
    `System.EventArgs` and will be confused with it) or `XPlatEventArgs<T>` (unambiguous, longer)?
-9. **`RemoveXHandler` next to the token.** The `IDisposable` from `AddXHandler` already covers scope
+8. **`RemoveXHandler` next to the token.** The `IDisposable` from `AddXHandler` already covers scope
    based removal. Is the explicit `RemoveXHandler` worth keeping for symmetry with the pattern, or
    does it just add surface?
 
