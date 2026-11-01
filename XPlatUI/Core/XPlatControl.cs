@@ -72,6 +72,21 @@ public class XPlatControl : IDisposable
 
     public event EventHandler? EnabledChanged;
 
+    /// <summary>Raised when a drag enters the control. Only fires when <see cref="AllowDrop"/> is set.</summary>
+    public event EventHandler<XPlatDragEventArgs>? DragEnter;
+
+    /// <summary>Raised as a drag moves over the control. Only fires when <see cref="AllowDrop"/> is set.</summary>
+    public event EventHandler<XPlatDragEventArgs>? DragOver;
+
+    /// <summary>Raised when a drag leaves the control or the drag is cancelled.</summary>
+    public event EventHandler? DragLeave;
+
+    /// <summary>
+    /// Raised when the user releases a drag over the control. Only fires when
+    /// <see cref="AllowDrop"/> is set.
+    /// </summary>
+    public event EventHandler<XPlatDragEventArgs>? DragDrop;
+
     /// <summary>Diagnostic name; defaults to the type name.</summary>
     public string Name { get; set; }
 
@@ -272,6 +287,13 @@ public class XPlatControl : IDisposable
             OnEnabledChanged(EventArgs.Empty);
         }
     }
+
+    /// <summary>
+    /// True to let the user drop data on this control, which makes the control a candidate for the
+    /// drag events. When a control under the pointer does not accept drops, the nearest ancestor
+    /// that does gets the events instead, so a panel can accept drops for everything it contains.
+    /// </summary>
+    public bool AllowDrop { get; set; }
 
     /// <summary>When true, containers size the control to its <see cref="DesiredSize"/>.</summary>
     public bool AutoSize
@@ -792,6 +814,38 @@ public class XPlatControl : IDisposable
         }
     }
 
+    internal void RaiseDragEnter(XPlatDragEventArgs e)
+    {
+        if (Enabled)
+        {
+            OnDragEnter(e);
+        }
+    }
+
+    internal void RaiseDragOver(XPlatDragEventArgs e)
+    {
+        if (Enabled)
+        {
+            OnDragOver(e);
+        }
+    }
+
+    internal void RaiseDragLeave()
+    {
+        if (Enabled)
+        {
+            OnDragLeave(EventArgs.Empty);
+        }
+    }
+
+    internal void RaiseDragDrop(XPlatDragEventArgs e)
+    {
+        if (Enabled)
+        {
+            OnDragDrop(e);
+        }
+    }
+
     internal void RaiseGotFocus()
     {
         IsFocused = true;
@@ -880,6 +934,14 @@ public class XPlatControl : IDisposable
     protected virtual void OnKeyUp(XPlatKeyEventArgs e) => KeyUp?.Invoke(this, e);
 
     protected virtual void OnTextInput(XPlatTextInputEventArgs e) => TextInput?.Invoke(this, e);
+
+    protected virtual void OnDragEnter(XPlatDragEventArgs e) => DragEnter?.Invoke(this, e);
+
+    protected virtual void OnDragOver(XPlatDragEventArgs e) => DragOver?.Invoke(this, e);
+
+    protected virtual void OnDragLeave(EventArgs e) => DragLeave?.Invoke(this, e);
+
+    protected virtual void OnDragDrop(XPlatDragEventArgs e) => DragDrop?.Invoke(this, e);
 
     protected virtual void OnGotFocus(EventArgs e) => GotFocus?.Invoke(this, e);
 

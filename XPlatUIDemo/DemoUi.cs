@@ -76,6 +76,11 @@ public sealed class DemoUi
         root.Controls.Add(BuildFooter());
         root.Controls.Add(BuildContent());
 
+        // The whole window takes drops, so files dragged in from the desktop and text dragged from
+        // any application land here unless the control under the pointer handles drops itself.
+        root.AllowDrop = true;
+        root.DragDrop += (_, e) => OnRootDrop(e);
+
         return root;
     }
 
@@ -275,6 +280,7 @@ public sealed class DemoUi
         {
             PlaceholderText = "Type your name",
             MaxLength = 24,
+            AllowDrop = true,
         };
         nameBox.TextChanged += (_, _) => SetStatus(nameBox.Text.Length == 0
             ? "Name cleared."
@@ -954,6 +960,40 @@ public sealed class DemoUi
     /// launch being handed to the running window.
     /// </remarks>
     public void SetStatus(string message) => _statusLabel.Text = message;
+
+    /// <summary>
+    /// Reports a drop on the window itself: the files that were dragged in from the desktop, or the
+    /// text that was dragged in from another application.
+    /// </summary>
+    private void OnRootDrop(XPlatDragEventArgs e)
+    {
+        var files = e.Data.GetFiles();
+        if (files.Length > 0)
+        {
+            var names = string.Join(", ", files.Select(Path.GetFileName));
+            SetStatus($"Dropped {files.Length} file(s): {names}");
+            e.Effect = XPlatDragDropEffects.Copy;
+            return;
+        }
+
+        var text = e.Data.GetText();
+        if (!string.IsNullOrEmpty(text))
+        {
+            SetStatus($"Dropped text: {Preview(text)}");
+            e.Effect = XPlatDragDropEffects.Copy;
+            return;
+        }
+
+        SetStatus("Dropped something this sample cannot read.");
+        e.Effect = XPlatDragDropEffects.None;
+    }
+
+    /// <summary>Shortens dropped text to one status-line's worth.</summary>
+    private static string Preview(string text)
+    {
+        var single = text.ReplaceLineEndings(" ");
+        return single.Length <= 60 ? single : string.Concat(single.AsSpan(0, 60), "...");
+    }
 
     private static SKImage CreateGradientImage(int width, int height)
     {

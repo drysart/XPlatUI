@@ -15,6 +15,7 @@ public sealed class XPlatUiHost
     private XPlatControl? _hovered;
     private XPlatControl? _captured;
     private XPlatControl? _focused;
+    private XPlatControl? _dropTarget;
     private XPlatControl? _selectionOwner;
     private XPlatCursor _cursor = XPlatCursor.Default;
     private SKPoint _selectionOrigin;
@@ -54,6 +55,7 @@ public sealed class XPlatUiHost
 
             _hovered?.RaiseMouseLeave();
             _hovered = null;
+            ClearDropTarget();
             _captured = null;
             _selecting = false;
             _draggingSelection = false;
@@ -109,6 +111,11 @@ public sealed class XPlatUiHost
     public XPlatControl? HoveredControl => _hovered;
 
     public XPlatControl? CapturedControl => _captured;
+
+    /// <summary>
+    /// The control currently receiving drag events, or null when no drag is over the host.
+    /// </summary>
+    public XPlatControl? DropTarget => _dropTarget;
 
     public XPlatCursor Cursor => _cursor;
 
@@ -283,6 +290,82 @@ public sealed class XPlatUiHost
         _hovered = null;
         SetCursor(XPlatCursor.Default);
     });
+
+    /// <summary>
+    /// Routes the start of a drag over the host and returns the effect the target accepted, which
+    /// the backend shows in its drag cursor.
+    /// </summary>
+    /// <remarks>
+    /// The control under the pointer receives the events when its
+    /// <see cref="XPlatControl.AllowDrop"/> is set; otherwise the nearest ancestor that accepts
+    /// drops does, so a panel can accept drops across its whole area without every child opting in.
+    /// A control that has <see cref="XPlatControl.AllowDrop"/> but refuses this payload passes the
+    /// drag to its parent as well.
+    /// </remarks>
+    /// <param name="location">The pointer in host coordinates.</param>
+    /// <param name="data">The payload being dragged.</param>
+    /// <param name="allowedEffects">What the drag source allows the target to do.</param>
+    /// <param name="modifiers">The modifier keys held down.</param>
+    public XPlatDragDropEffects ProcessDragEnter(
+        SKPoint location,
+        XPlatDataObject data,
+        XPlatDragDropEffects allowedEffects,
+        XPlatModifiers modifiers = XPlatModifiers.None) =>
+        Guard(
+            () => UpdateDropTarget(location, data, allowedEffects, modifiers, out var effect) is null
+                ? XPlatDragDropEffects.None
+                : effect,
+            XPlatDragDropEffects.None);
+
+    /// <summary>
+    /// Routes a drag move and returns the effect the target accepts. A backend that reports only
+    /// moves still produces a <see cref="XPlatControl.DragEnter"/> when the target changes.
+    /// </summary>
+    /// <param name="location">The pointer in host coordinates.</param>
+    /// <param name="data">The payload being dragged.</param>
+    /// <param name="allowedEffects">What the drag source allows the target to do.</param>
+    /// <param name="modifiers">The modifier keys held down.</param>
+    public XPlatDragDropEffects ProcessDragOver(
+        SKPoint location,
+        XPlatDataObject data,
+        XPlatDragDropEffects allowedEffects,
+        XPlatModifiers modifiers = XPlatModifiers.None) =>
+        Guard(
+            () => UpdateDropTarget(location, data, allowedEffects, modifiers, out var effect) is null
+                ? XPlatDragDropEffects.None
+                : effect,
+            XPlatDragDropEffects.None);
+
+    /// <summary>
+    /// Routes the end of a drag and returns the effect the target performed. The target gets
+    /// <see cref="XPlatControl.DragDrop"/> when it accepts drops at <paramref name="location"/>.
+    /// </summary>
+    /// <param name="location">The pointer in host coordinates.</param>
+    /// <param name="data">The payload being dropped.</param>
+    /// <param name="allowedEffects">What the drag source allows the target to do.</param>
+    /// <param name="modifiers">The modifier keys held down.</param>
+    public XPlatDragDropEffects ProcessDragDrop(
+        SKPoint location,
+        XPlatDataObject data,
+        XPlatDragDropEffects allowedEffects,
+        XPlatModifiers modifiers = XPlatModifiers.None) => Guard(() =>
+    {
+        ArgumentNullException.ThrowIfNull(data);
+
+        var target = UpdateDropTarget(location, data, allowedEffects, modifiers, out _);
+        if (target is null)
+        {
+            return XPlatDragDropEffects.None;
+        }
+
+        var args = new XPlatDragEventArgs(data, ToLocal(target, location), allowedEffects, modifiers);
+        target.RaiseDragDrop(args);
+        _dropTarget = null;
+        return args.Effect & allowedEffects;
+    }, XPlatDragDropEffects.None);
+
+    /// <summary>Tells the control under the pointer that the drag left, or was cancelled.</summary>
+    public void ProcessDragLeave() => Guard(ClearDropTarget);
 
     /// <summary>
     /// Shows the context menu for <paramref name="location"/>. Adapters call this from the
@@ -460,6 +543,79 @@ public sealed class XPlatUiHost
     }
 
     private XPlatControl? HitTest(SKPoint location) => _root?.HitTest(location);
+
+    /// <summary>
+    /// The control that accepts a drop at <paramref name="location"/>: the hit control when it has
+    /// <see cref="XPlatControl.AllowDrop"/>, otherwise the nearest ancestor that has it.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="XPlatControl.AllowDrop"/> alone does not make a control the target: a control that
+    /// declines the payload with <see cref="XPlatDragDropEffects.None"/> is passed over and the
+    /// search continues with its parent. That is what lets a drop land on the panel behind a child
+    /// that only accepts some kinds of drag, such as a text box that takes text but not files.
+    /// </remarks>
+    /// <returns>The control that accepted the drag, or null when nothing wanted it.</returns>
+    private XPlatControl? UpdateDropTarget(
+        SKPoint location,
+        XPlatDataObject data,
+        XPlatDragDropEffects allowedEffects,
+        XPlatModifiers modifiers,
+        out XPlatDragDropEffects effect)
+    {
+        ArgumentNullException.ThrowIfNull(data);
+
+        effect = XPlatDragDropEffects.None;
+
+        for (var control = HitTest(location); control is not null; control = control.Parent)
+        {
+            if (!control.AllowDrop)
+            {
+                continue;
+            }
+
+            if (ReferenceEquals(control, _dropTarget))
+            {
+                var over = new XPlatDragEventArgs(data, ToLocal(control, location), allowedEffects, modifiers);
+                control.RaiseDragOver(over);
+                effect = over.Effect & allowedEffects;
+                if (effect != XPlatDragDropEffects.None)
+                {
+                    return control;
+                }
+
+                ClearDropTarget();
+                continue;
+            }
+
+            var enter = new XPlatDragEventArgs(data, ToLocal(control, location), allowedEffects, modifiers);
+            control.RaiseDragEnter(enter);
+            var accepted = enter.Effect & allowedEffects;
+            if (accepted == XPlatDragDropEffects.None)
+            {
+                continue;
+            }
+
+            ClearDropTarget();
+            _dropTarget = control;
+            effect = accepted;
+            return control;
+        }
+
+        ClearDropTarget();
+        return null;
+    }
+
+    private void ClearDropTarget()
+    {
+        var previous = _dropTarget;
+        if (previous is null)
+        {
+            return;
+        }
+
+        _dropTarget = null;
+        previous.RaiseDragLeave();
+    }
 
     /// <summary>
     /// Runs an entry point that a backend calls from a platform callback, so a failure reaches

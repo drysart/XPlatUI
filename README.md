@@ -528,6 +528,54 @@ platform, **Window → Topmost** and **Window → Owned Window** add the menu it
 the `--topmost` / `--owned` command-line flags work everywhere (Windows has no menu bar yet). The
 status line reports activation changes.
 
+### Drag and drop
+
+Setting `AllowDrop` on a control makes it, and everything inside it, a drop target. The four drag
+events carry an `XPlatDragEventArgs`; the drop handler sets `Effect` to say what it did:
+
+```csharp
+root.AllowDrop = true;
+
+root.DragEnter += (_, e) => e.Effect = e.Data.Contains(XPlatDataFormats.FileDrop)
+    ? XPlatDragDropEffects.Copy
+    : XPlatDragDropEffects.None;
+
+root.DragDrop += (_, e) =>
+{
+    foreach (var path in e.Data.GetFiles())
+    {
+        status.Text = $"Dropped {Path.GetFileName(path)}";
+    }
+
+    e.Effect = XPlatDragDropEffects.Copy;
+};
+```
+
+`DragEnter`, `DragOver` and `DragDrop` share one argument type, so the same handler can serve all
+three. `DragLeave` has no arguments: by the time a drag has left, there is nothing left to say.
+`Location` is in the control's own logical pixels, the same units `Paint` uses, and `Modifiers`
+reports the shift, control and alt keys held at that moment.
+
+The data on offer is an `XPlatDataObject`: a bag of values keyed by `XPlatDataFormat`. `Text`,
+`Html` and `FileDrop` are the formats the backends fill in themselves; `XPlatDataFormats.Custom` is
+there for a drag this library is not the only participant in. `GetFiles` returns absolute paths.
+
+| Platform | Mechanism | What a drag carries |
+| --- | --- | --- |
+| Windows | A hand-built `IDropTarget` COM object registered with `RegisterDragDrop`, since a source-generated `ComWrappers` one is not a valid call target under the loader lock OLE calls it from | `CF_HDROP`, `CF_UNICODETEXT`, `HTML Format` |
+| macOS | The view registers `public.file-url` and `public.utf8-plain-text` and implements `NSDraggingDestination` | `NSPasteboard` file URLs (a web URL is not a file, so an image dragged out of a browser is refused), plain text |
+| Linux (GTK4) | One `GtkDropTarget` per kind of drag, both typed as text, with preload so the payload is in hand before the drop | File paths, read from the text form of the drag since a `GdkFileList` cannot be read without a portal round trip; strings |
+
+A drop is routed by hit testing, then by walking up the parents, so an `AllowDrop` panel accepts a
+drop anywhere inside it and a child that does not want the drop passes it to its parent. A control
+counts as wanting the drop when its `DragEnter` or `DragOver` answers with something other than
+`None`, so a text box that takes text but not files lets a file drop land on the panel behind it.
+The host clamps whatever `Effect` a handler sets to the effects the drag source allowed, so a
+control cannot claim a move the source never offered.
+
+The demo turns the whole window into a drop target: dropping files prints their names on the status
+line, and dropping text prints the first sixty characters.
+
 ## Writing a backend
 
 A backend is two interfaces plus one registration hook. `IXPlatApplicationBackend` owns the platform

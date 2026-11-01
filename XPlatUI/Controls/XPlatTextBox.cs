@@ -571,6 +571,53 @@ public class XPlatTextBox : XPlatControl
         e.Handled = true;
     }
 
+    /// <summary>
+    /// Accepts text dragged from another control or application. Dropping files is left to an
+    /// ancestor that knows what to do with them, so this refuses them.
+    /// </summary>
+    protected override void OnDragEnter(XPlatDragEventArgs e)
+    {
+        base.OnDragEnter(e);
+        e.Effect = Accepts(e.Data) ? XPlatDragDropEffects.Copy : XPlatDragDropEffects.None;
+    }
+
+    protected override void OnDragOver(XPlatDragEventArgs e)
+    {
+        base.OnDragOver(e);
+        e.Effect = Accepts(e.Data) ? XPlatDragDropEffects.Copy : XPlatDragDropEffects.None;
+    }
+
+    /// <summary>
+    /// Inserts the dropped text where the pointer is, so a drop lands where it was aimed rather than
+    /// at wherever the caret happened to be.
+    /// </summary>
+    protected override void OnDragDrop(XPlatDragEventArgs e)
+    {
+        base.OnDragDrop(e);
+
+        if (!Accepts(e.Data))
+        {
+            e.Effect = XPlatDragDropEffects.None;
+            return;
+        }
+
+        var text = Sanitize(e.Data.GetText());
+        if (text.Length == 0)
+        {
+            e.Effect = XPlatDragDropEffects.None;
+            return;
+        }
+
+        Focus();
+        Select(IndexFromX(e.Location.X), 0);
+        InsertText(text);
+        e.Effect = XPlatDragDropEffects.Copy;
+    }
+
+    /// <summary>True when the drag carries text this box could take.</summary>
+    private bool Accepts(XPlatDataObject data) =>
+        !ReadOnly && Sanitize(data.GetText()).Length > 0;
+
     protected override void OnTextChanged(EventArgs e)
     {
         _caretIndex = Math.Clamp(_caretIndex, 0, Text.Length);
