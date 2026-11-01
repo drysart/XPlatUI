@@ -385,10 +385,17 @@ public sealed class Gtk4SkiaView : IDisposable
     /// <summary>Wires up the drop targets, which is how GTK4 delivers a drag from another app.</summary>
     /// <remarks>
     /// <para>
-    /// One target per data type, because the binding offers no way to add a second type to a target.
-    /// GTK activates every target whose declared type matches the data on offer, and a file list
-    /// also matches the text target, so the text target turns file drags away rather than read a
-    /// file drop as the paths of the files it carries.
+    /// One target per kind of drag, because the binding offers no way to add a second type to a
+    /// target. Both are declared as text: a file list offers itself as the paths of the files it
+    /// carries, and asking GTK for a <c>GdkFileList</c> instead fails, because a file drag also
+    /// offers the portal transfer token that GDK then prefers, and that token can only be turned
+    /// into files by a portal round trip that the synchronous read cannot wait for. The text form
+    /// reads back immediately, one path per line.
+    /// </para>
+    /// <para>
+    /// Both targets match a file drag, so each accepts only the drags it is meant for: the file
+    /// target takes the drags that carry files and the text target turns those away rather than
+    /// read a file drop as the paths of the files it carries.
     /// </para>
     /// <para>
     /// Preloading makes GTK fetch the data as soon as the drag is accepted, so the payload is in
@@ -399,7 +406,7 @@ public sealed class Gtk4SkiaView : IDisposable
     /// </remarks>
     private void AttachDrop()
     {
-        _fileDropTarget = AddDropTarget(Gdk.FileList.GetGType());
+        _fileDropTarget = AddDropTarget(GObject.Type.String);
         _textDropTarget = AddDropTarget(GObject.Type.String);
     }
 
@@ -419,16 +426,25 @@ public sealed class Gtk4SkiaView : IDisposable
 
     /// <summary>Decides whether a drag may be dropped.</summary>
     /// <remarks>
-    /// GTK only activates a target whose declared type matches the data on offer, so a drag that
-    /// reaches this point is one this view can take. The payload is not readable yet - the preload
-    /// fetch is still running - so acceptance cannot depend on it. A file list also offers itself
-    /// as text, and the file target takes those drags so that dropping files is never mistaken for
-    /// dropping the paths they came from.
+    /// The payload is not readable yet - the preload fetch is still running - so the formats on
+    /// offer decide which target the drag belongs to. A drag that carries files goes to the file
+    /// target and one that does not goes to the text target, which keeps a file drop from being
+    /// read as the paths of the files it carries.
     /// </remarks>
-    private bool OnDragAccept(Gtk.DropTarget sender, Gtk.DropTarget.AcceptSignalArgs args) =>
-        ReferenceEquals(sender, _fileDropTarget) ||
-        args.Drop is null ||
-        !args.Drop.GetFormats().ContainGtype(Gdk.FileList.GetGType());
+    private bool OnDragAccept(Gtk.DropTarget sender, Gtk.DropTarget.AcceptSignalArgs args)
+    {
+        var formats = args.Drop?.GetFormats();
+        if (formats is null)
+        {
+            return true;
+        }
+
+        var files = formats.ContainGtype(Gdk.FileList.GetGType()) ||
+            formats.ContainMimeType("text/uri-list") ||
+            formats.ContainMimeType("application/vnd.portal.filetransfer");
+
+        return ReferenceEquals(sender, _fileDropTarget) ? files : !files;
+    }
 
     /// <summary>Reports the drag crossing into the view, and what a drop there would do.</summary>
     /// <remarks>
@@ -515,27 +531,54 @@ public sealed class Gtk4SkiaView : IDisposable
     }
 
     /// <summary>Turns the value GTK negotiated for a drag into the library's data object.</summary>
+    /// <remarks>
+    /// A file drag arrives as text, one path per line. A drag that offers files but names none that
+    /// are local - a web address, say - reads back as its text.
+    /// </remarks>
     private XPlatDataObject? ReadDropValue(Gtk.DropTarget sender, GObject.Value? value)
     {
-        if (value is null)
+        if (value is null || value.GetString() is not { Length: > 0 } text)
         {
             return null;
         }
 
-        if (ReferenceEquals(sender, _fileDropTarget))
+        if (ReferenceEquals(sender, _fileDropTarget) && ParsePaths(text) is { Length: > 0 } paths)
         {
-            var paths = Gtk4FileList.ReadPaths(value.GetBoxed());
-            if (paths.Length == 0)
-            {
-                return null;
-            }
-
             XPlatDataObject fromFiles = new();
             fromFiles.SetFiles(paths);
             return fromFiles;
         }
 
-        return value.GetString() is { Length: > 0 } text ? XPlatDataObject.FromText(text) : null;
+        return XPlatDataObject.FromText(text);
+    }
+
+    /// <summary>Reads the local paths out of the text form of a file drag, one per line.</summary>
+    /// <remarks>
+    /// The text form holds a plain path per line, but a source that only offers
+    /// <c>text/uri-list</c> hands over <c>file:</c> URIs instead, so both are accepted.
+    /// </remarks>
+    private static string[] ParsePaths(string text)
+    {
+        List<string> paths = [];
+        foreach (var line in text.Split('\n'))
+        {
+            var entry = line.Trim();
+            if (entry.Length == 0)
+            {
+                continue;
+            }
+
+            if (!Uri.TryCreate(entry, UriKind.Absolute, out var uri))
+            {
+                paths.Add(entry);
+            }
+            else if (uri.IsFile)
+            {
+                paths.Add(uri.LocalPath);
+            }
+        }
+
+        return [.. paths];
     }
 
     /// <summary>Reads the modifier keys that are down right now, as the drag controller sees them.</summary>
