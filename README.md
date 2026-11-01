@@ -564,7 +564,7 @@ there for a drag this library is not the only participant in. `GetFiles` returns
 | --- | --- | --- |
 | Windows | A hand-built `IDropTarget` COM object registered with `RegisterDragDrop`, since a source-generated `ComWrappers` one is not a valid call target under the loader lock OLE calls it from | `CF_HDROP`, `CF_UNICODETEXT`, `HTML Format` |
 | macOS | The view registers `public.file-url` and `public.utf8-plain-text` and implements `NSDraggingDestination` | `NSFilenamesPboardType` file URLs, plain text |
-| Linux (GTK4) | One `GtkDropTarget` per type, with preload so the formats are known before the drop | `GdkFileList`, strings |
+| Linux (GTK4) | One `GtkDropTarget` per kind of drag, both typed as text, with preload so the payload is in hand before the drop | File paths, read from the text form of the drag since a `GdkFileList` cannot be read without a portal round trip; strings |
 
 A drop is routed by hit testing, then by walking up the parents, so an `AllowDrop` panel accepts a
 drop anywhere inside it and a child that does not want the drop passes it to its parent. The host
