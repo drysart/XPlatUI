@@ -299,6 +299,8 @@ public sealed class XPlatUiHost
     /// The control under the pointer receives the events when its
     /// <see cref="XPlatControl.AllowDrop"/> is set; otherwise the nearest ancestor that accepts
     /// drops does, so a panel can accept drops across its whole area without every child opting in.
+    /// A control that has <see cref="XPlatControl.AllowDrop"/> but refuses this payload passes the
+    /// drag to its parent as well.
     /// </remarks>
     /// <param name="location">The pointer in host coordinates.</param>
     /// <param name="data">The payload being dragged.</param>
@@ -310,7 +312,9 @@ public sealed class XPlatUiHost
         XPlatDragDropEffects allowedEffects,
         XPlatModifiers modifiers = XPlatModifiers.None) =>
         Guard(
-            () => UpdateDropTarget(FindDropTarget(location), data, location, allowedEffects, modifiers),
+            () => UpdateDropTarget(location, data, allowedEffects, modifiers, out var effect) is null
+                ? XPlatDragDropEffects.None
+                : effect,
             XPlatDragDropEffects.None);
 
     /// <summary>
@@ -327,7 +331,9 @@ public sealed class XPlatUiHost
         XPlatDragDropEffects allowedEffects,
         XPlatModifiers modifiers = XPlatModifiers.None) =>
         Guard(
-            () => UpdateDropTarget(FindDropTarget(location), data, location, allowedEffects, modifiers),
+            () => UpdateDropTarget(location, data, allowedEffects, modifiers, out var effect) is null
+                ? XPlatDragDropEffects.None
+                : effect,
             XPlatDragDropEffects.None);
 
     /// <summary>
@@ -346,20 +352,10 @@ public sealed class XPlatUiHost
     {
         ArgumentNullException.ThrowIfNull(data);
 
-        var target = FindDropTarget(location);
+        var target = UpdateDropTarget(location, data, allowedEffects, modifiers, out _);
         if (target is null)
         {
-            ClearDropTarget();
             return XPlatDragDropEffects.None;
-        }
-
-        // A backend that reports the drop without ever reporting the drag entering still sees a
-        // consistent Enter/Drop pair, so handlers can rely on setting up in DragEnter.
-        if (!ReferenceEquals(target, _dropTarget))
-        {
-            ClearDropTarget();
-            _dropTarget = target;
-            target.RaiseDragEnter(new XPlatDragEventArgs(data, ToLocal(target, location), allowedEffects, modifiers));
         }
 
         var args = new XPlatDragEventArgs(data, ToLocal(target, location), allowedEffects, modifiers);
@@ -552,50 +548,61 @@ public sealed class XPlatUiHost
     /// The control that accepts a drop at <paramref name="location"/>: the hit control when it has
     /// <see cref="XPlatControl.AllowDrop"/>, otherwise the nearest ancestor that has it.
     /// </summary>
-    private XPlatControl? FindDropTarget(SKPoint location)
-    {
-        for (var control = HitTest(location); control is not null; control = control.Parent)
-        {
-            if (control.AllowDrop)
-            {
-                return control;
-            }
-        }
-
-        return null;
-    }
-
-    private XPlatDragDropEffects UpdateDropTarget(
-        XPlatControl? target,
-        XPlatDataObject data,
+    /// <remarks>
+    /// <see cref="XPlatControl.AllowDrop"/> alone does not make a control the target: a control that
+    /// declines the payload with <see cref="XPlatDragDropEffects.None"/> is passed over and the
+    /// search continues with its parent. That is what lets a drop land on the panel behind a child
+    /// that only accepts some kinds of drag, such as a text box that takes text but not files.
+    /// </remarks>
+    /// <returns>The control that accepted the drag, or null when nothing wanted it.</returns>
+    private XPlatControl? UpdateDropTarget(
         SKPoint location,
+        XPlatDataObject data,
         XPlatDragDropEffects allowedEffects,
-        XPlatModifiers modifiers)
+        XPlatModifiers modifiers,
+        out XPlatDragDropEffects effect)
     {
         ArgumentNullException.ThrowIfNull(data);
 
-        if (!ReferenceEquals(target, _dropTarget))
+        effect = XPlatDragDropEffects.None;
+
+        for (var control = HitTest(location); control is not null; control = control.Parent)
         {
-            ClearDropTarget();
-            if (target is null)
+            if (!control.AllowDrop)
             {
-                return XPlatDragDropEffects.None;
+                continue;
             }
 
-            _dropTarget = target;
-            var enter = new XPlatDragEventArgs(data, ToLocal(target, location), allowedEffects, modifiers);
-            target.RaiseDragEnter(enter);
-            return enter.Effect & allowedEffects;
+            if (ReferenceEquals(control, _dropTarget))
+            {
+                var over = new XPlatDragEventArgs(data, ToLocal(control, location), allowedEffects, modifiers);
+                control.RaiseDragOver(over);
+                effect = over.Effect & allowedEffects;
+                if (effect != XPlatDragDropEffects.None)
+                {
+                    return control;
+                }
+
+                ClearDropTarget();
+                continue;
+            }
+
+            var enter = new XPlatDragEventArgs(data, ToLocal(control, location), allowedEffects, modifiers);
+            control.RaiseDragEnter(enter);
+            var accepted = enter.Effect & allowedEffects;
+            if (accepted == XPlatDragDropEffects.None)
+            {
+                continue;
+            }
+
+            ClearDropTarget();
+            _dropTarget = control;
+            effect = accepted;
+            return control;
         }
 
-        if (target is null)
-        {
-            return XPlatDragDropEffects.None;
-        }
-
-        var over = new XPlatDragEventArgs(data, ToLocal(target, location), allowedEffects, modifiers);
-        target.RaiseDragOver(over);
-        return over.Effect & allowedEffects;
+        ClearDropTarget();
+        return null;
     }
 
     private void ClearDropTarget()

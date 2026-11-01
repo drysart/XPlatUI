@@ -563,13 +563,15 @@ there for a drag this library is not the only participant in. `GetFiles` returns
 | Platform | Mechanism | What a drag carries |
 | --- | --- | --- |
 | Windows | A hand-built `IDropTarget` COM object registered with `RegisterDragDrop`, since a source-generated `ComWrappers` one is not a valid call target under the loader lock OLE calls it from | `CF_HDROP`, `CF_UNICODETEXT`, `HTML Format` |
-| macOS | The view registers `public.file-url` and `public.utf8-plain-text` and implements `NSDraggingDestination` | `NSFilenamesPboardType` file URLs, plain text |
+| macOS | The view registers `public.file-url` and `public.utf8-plain-text` and implements `NSDraggingDestination` | `NSPasteboard` file URLs (a web URL is not a file, so an image dragged out of a browser is refused), plain text |
 | Linux (GTK4) | One `GtkDropTarget` per kind of drag, both typed as text, with preload so the payload is in hand before the drop | File paths, read from the text form of the drag since a `GdkFileList` cannot be read without a portal round trip; strings |
 
 A drop is routed by hit testing, then by walking up the parents, so an `AllowDrop` panel accepts a
-drop anywhere inside it and a child that does not want the drop passes it to its parent. The host
-clamps whatever `Effect` a handler sets to the effects the drag source allowed, so a control cannot
-claim a move the source never offered.
+drop anywhere inside it and a child that does not want the drop passes it to its parent. A control
+counts as wanting the drop when its `DragEnter` or `DragOver` answers with something other than
+`None`, so a text box that takes text but not files lets a file drop land on the panel behind it.
+The host clamps whatever `Effect` a handler sets to the effects the drag source allowed, so a
+control cannot claim a move the source never offered.
 
 The demo turns the whole window into a drop target: dropping files prints their names on the status
 line, and dropping text prints the first sixty characters.

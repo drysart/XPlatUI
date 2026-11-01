@@ -591,6 +591,11 @@ internal sealed class AppKitSkiaView : NSView
     /// Reads whatever the dragged pasteboard offers that the library understands. Files come first
     /// because a file drag also carries its name as text, and the file is the more useful of the two.
     /// </summary>
+    /// <remarks>
+    /// Only file URLs count as files. A web URL is also an <see cref="NSUrl"/>, and its
+    /// <see cref="NSUrl.Path"/> is the URL's path rather than anything on disk, so an image dragged
+    /// out of a browser would otherwise arrive as a "file" called <c>/images/logo.png</c>.
+    /// </remarks>
     private static XPlatDataObject? ReadDragData(INSDraggingInfo sender)
     {
         try
@@ -603,6 +608,7 @@ internal sealed class AppKitSkiaView : NSView
                 [
                     .. objects
                         .OfType<NSUrl>()
+                        .Where(url => url.IsFileUrl)
                         .Select(url => url.Path ?? string.Empty)
                         .Where(path => path.Length > 0),
                 ];
