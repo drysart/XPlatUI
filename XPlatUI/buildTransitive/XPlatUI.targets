@@ -1,0 +1,109 @@
+<Project>
+
+  <!-- Build assets for anything that references XPlatUI. A NuGet consumer gets this automatically,
+	   because it is packed into buildTransitive/; this repository's own projects use a
+	   ProjectReference, which imports nothing, so Directory.Build.targets imports it explicitly.
+	   Both routes end up in the same place, which is why the file lives here rather than in an app.
+
+	   A NativeAOT publish emits a single native executable, so SkiaSharp's native library cannot
+	   simply sit next to it. These targets compress the copy the build already resolved for this
+	   platform and embed it in the consuming application, which SkiaNativeLoader extracts and loads
+	   before the first call into Skia. Set $(EmbedSkiaSharpNative) to false to leave the library as
+	   a loose file beside the executable instead. -->
+
+  <PropertyGroup>
+	<!-- Decided once, here, so every target below shares one condition. macOS is excluded because a
+		 .app bundle already carries its native libraries as loose files, so there is nothing to fold
+		 in. NativeAOT only publishes for the host, so the host platform is the test. -->
+	<_XPlatUIEmbedSkiaSharpNative
+		Condition="'$(_XPlatUIEmbedSkiaSharpNative)' == ''
+				   and '$(PublishAot)' == 'true'
+				   and '$(EmbedSkiaSharpNative)' != 'false'
+				   and !$([MSBuild]::IsOSPlatform('osx'))">true</_XPlatUIEmbedSkiaSharpNative>
+  </PropertyGroup>
+
+  <UsingTask TaskName="XPlatUIGZipFile"
+			 TaskFactory="RoslynCodeTaskFactory"
+			 AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+	<ParameterGroup>
+	  <Source ParameterType="System.String" Required="true" />
+	  <Destination ParameterType="System.String" Required="true" />
+	</ParameterGroup>
+	<Task>
+	  <Using Namespace="System.IO" />
+	  <Using Namespace="System.IO.Compression" />
+	  <Code Type="Fragment" Language="cs"><![CDATA[
+		using (var input = File.OpenRead(Source))
+		using (var output = File.Create(Destination))
+		using (var gzip = new GZipStream(output, CompressionLevel.Optimal))
+		{
+			input.CopyTo(gzip);
+		}
+	  ]]></Code>
+	</Task>
+  </UsingTask>
+
+  <!-- Finds the Skia library the package graph resolved for this platform and registers the compressed
+	   copy as an embedded resource. This has to run before CreateManifestResourceNames (which is what
+	   turns @(EmbeddedResource) into compiler inputs), hence the hook on that target rather than on
+	   PrepareResourceNames, whose dependencies have already run by then.
+
+	   The file name is discovered rather than configured per target framework: the asset package
+	   names it libSkiaSharp.dll, libSkiaSharp.so or libSkiaSharp.dylib, and matching the stem covers
+	   all three without a property in every application. The extension is checked too, because the
+	   same package ships a symbol file with the same stem and only the library itself is wanted. -->
+  <Target Name="_XPlatUILocateSkiaSharpNative"
+		  Condition="'$(_XPlatUIEmbedSkiaSharpNative)' == 'true'"
+		  DependsOnTargets="ResolvePackageAssets"
+		  BeforeTargets="CreateManifestResourceNames">
+	<ItemGroup>
+	  <_XPlatUISkiaSharpNative Include="@(NativeCopyLocalItems)"
+							   Condition="'%(NativeCopyLocalItems.Filename)' == 'libSkiaSharp'
+										  and ('%(NativeCopyLocalItems.Extension)' == '.dll'
+											   or '%(NativeCopyLocalItems.Extension)' == '.so'
+											   or '%(NativeCopyLocalItems.Extension)' == '.dylib')" />
+	</ItemGroup>
+	<Error Condition="'@(_XPlatUISkiaSharpNative)' == ''"
+		   Text="Could not find libSkiaSharp among the resolved native assets, so it cannot be embedded in the executable. Set EmbedSkiaSharpNative to false to publish without embedding it." />
+	<PropertyGroup>
+	  <!-- IntermediateOutputPath is only known at execution time, so the archive path is computed
+		   here. Forward slashes so the same path works on Windows and Unix. -->
+	  <_XPlatUISkiaSharpNativeFileName>@(_XPlatUISkiaSharpNative->'%(Filename)%(Extension)')</_XPlatUISkiaSharpNativeFileName>
+	  <_XPlatUISkiaSharpArchive>$(IntermediateOutputPath)native/$(_XPlatUISkiaSharpNativeFileName).gz</_XPlatUISkiaSharpArchive>
+	</PropertyGroup>
+	<ItemGroup>
+	  <!-- Type/WithCulture are what CreateManifestResourceNames and _GenerateCompileInputs key off;
+		   without them the SDK drops non-resx resources on the floor. The logical name is the
+		   contract with SkiaNativeLoader, which looks it up by the file name it expects. -->
+	  <EmbeddedResource Include="$(_XPlatUISkiaSharpArchive)"
+						LogicalName="XPlatUI.Native.$(_XPlatUISkiaSharpNativeFileName).gz">
+		<Type>Non-Resx</Type>
+		<WithCulture>false</WithCulture>
+	  </EmbeddedResource>
+	</ItemGroup>
+  </Target>
+
+  <Target Name="_XPlatUICompressSkiaSharpNative"
+		  Condition="'$(_XPlatUIEmbedSkiaSharpNative)' == 'true'"
+		  DependsOnTargets="_XPlatUILocateSkiaSharpNative"
+		  BeforeTargets="CreateManifestResourceNames"
+		  Inputs="@(_XPlatUISkiaSharpNative->'%(FullPath)')"
+		  Outputs="$(_XPlatUISkiaSharpArchive)">
+	<MakeDir Directories="$(IntermediateOutputPath)native" />
+	<XPlatUIGZipFile Source="@(_XPlatUISkiaSharpNative->'%(FullPath)')"
+					 Destination="$(_XPlatUISkiaSharpArchive)" />
+  </Target>
+
+  <!-- The library now lives inside the executable, so keep it and the symbols out of the publish
+	   directory. What is left is the executable and its own symbol file (.pdb on Windows, .dbg on
+	   Linux), which the native compiler writes outside this item list. -->
+  <Target Name="_XPlatUIExcludeSkiaSharpNativeFromPublish"
+		  Condition="'$(_XPlatUIEmbedSkiaSharpNative)' == 'true'"
+		  AfterTargets="ComputeFilesToPublish">
+	<ItemGroup>
+	  <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)"
+							 Condition="'%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == '$(_XPlatUISkiaSharpNativeFileName)' or '%(ResolvedFileToPublish.Extension)' == '.pdb'" />
+	</ItemGroup>
+  </Target>
+
+</Project>

@@ -1,0 +1,10 @@
+<Project>
+
+  <!-- A NuGet consumer imports buildTransitive/XPlatUI.props from the package automatically. This
+	   repository's projects reference XPlatUI by project instead, and a ProjectReference imports no
+	   build assets at all, so the same file is imported here. Keeping the two routes identical is
+	   what makes the demo app a valid stand-in for an application that installs the package. -->
+
+  <Import Project="$(MSBuildThisFileDirectory)XPlatUI\buildTransitive\XPlatUI.props" />
+
+</Project>

@@ -1,0 +1,16 @@
+<Project>
+
+  <!-- Properties for anything that references XPlatUI. Packed into buildTransitive/ for NuGet
+	   consumers; this repository's projects get it through Directory.Build.targets importing the
+	   targets file, and a ProjectReference cannot import this one, so nothing here is load-bearing
+	   for the repository's own builds. It exists so a consumer does not have to repeat it. -->
+
+  <PropertyGroup>
+	<!-- A default, not a decision: the library is AOT compatible and an application built on it
+		 almost certainly wants the trim/AOT analyzers on its own code too. An application that does
+		 not care sets this to false in its own project file, which wins because it is evaluated
+		 later. -->
+	<IsAotCompatible Condition="'$(IsAotCompatible)' == ''">true</IsAotCompatible>
+  </PropertyGroup>
+
+</Project>

@@ -17,13 +17,14 @@ XPlatUI/                  net10.0 class library (no OS-specific code, IsAotCompa
   Platform/               the backend contract: IXPlatApplicationBackend, IXPlatWindowBackend, ...
   Selection/              text selection and its clipboard plumbing
   Services/               window-scoped service helpers
+  Native/                 SkiaNativeLoader.cs - unpacks the embedded Skia library after an AOT publish
+  buildTransitive/        the MSBuild that embeds it, shipped with the package
   XPlatUiHost.cs          platform-neutral host: layout, painting, input routing, focus
 XPlatUIDemo/              the sample control tree, shared by every platform
   DemoUi.cs               the demo layout, plus RenderToPng for headless renders
   DemoIcon.cs             the sample icon, drawn in code so no binary asset is needed
 XPlatUIDemo.App/          the one application: net10.0-windows, net10.0-macos or net10.0
   Program.cs              pick a backend, describe a window, run
-  Native/                 SkiaNativeLoader.cs - unpacks the embedded Skia library after an AOT publish
   app.manifest            per-monitor v2 DPI awareness (Windows)
   Info.plist              the bundle identity (macOS)
 XPlatUI.Backend.Win32/    net10.0-windows backend over raw Win32 (no WinForms, no System.Drawing)
@@ -650,18 +651,22 @@ optional `XPlatUIDemoApp.dbg`. It is genuinely standalone - copy just that one f
 runs, window and all.
 
 SkiaSharp only ships a dynamic `libSkiaSharp.dll`/`libSkiaSharp.so`, so a native executable cannot
-simply link it. When `PublishAot` is on, `XPlatUIDemo.App.csproj` gzips the RID-specific native
-library and embeds it in the assembly as the manifest resource
-`XPlatUI.Native.libSkiaSharp.dll.gz` (or `...libSkiaSharp.so.gz`); `Native/SkiaNativeLoader.cs`
-extracts it on first use to `%LOCALAPPDATA%\XPlatUI\native\<version>-<size>\libSkiaSharp.dll`
+simply link it. When `PublishAot` is on, XPlatUI's own build assets (`buildTransitive/` in the
+package, which `Directory.Build.targets` imports for this repository's projects) gzip the
+RID-specific native library and embed it in the application as the manifest resource
+`XPlatUI.Native.libSkiaSharp.dll.gz` (or `...libSkiaSharp.so.gz`); `SkiaNativeLoader`, in the
+library, extracts it on first use to `%LOCALAPPDATA%\XPlatUI\native\<version>-<size>\libSkiaSharp.dll`
 (`~/.local/share/XPlatUI/native/<version>-<size>/libSkiaSharp.so` on Linux, honouring
 `XDG_DATA_HOME`), which is cached so later runs just load it, and redirects SkiaSharp's P/Invoke at it
 before the first call into Skia. The redirect is not optional on Linux: `libSkiaSharp.so` carries no
-`SONAME`, so a library loaded by full path is not what `dlopen("libSkiaSharp.so")` resolves to. A
-regular (non-AOT) build is untouched: the native library is resolved the usual way (from the package
-cache, or copied next to the executable for a RID-specific build) and the loader does nothing. If you
-would rather ship a loose native library, set `EmbedSkiaSharpNative` to `false` - the publish then
-emits the executable and `libSkiaSharp.dll`/`libSkiaSharp.so` side by side again.
+`SONAME`, so a library loaded by full path is not what `dlopen("libSkiaSharp.so")` resolves to. The
+resource belongs to the application's assembly, because the copy to embed is the one the
+application's build resolved for its platform, so `Main` names that assembly:
+`SkiaNativeLoader.EnsureLoaded(typeof(Program).Assembly);`. A regular (non-AOT) build is untouched:
+the native library is resolved the usual way (from the package cache, or copied next to the
+executable for a RID-specific build) and the loader does nothing. If you would rather ship a loose
+native library, set `EmbedSkiaSharpNative` to `false` - the publish then emits the executable and
+`libSkiaSharp.dll`/`libSkiaSharp.so` side by side again.
 
 The Skia embedding targets run for the Windows and Linux target frameworks - the two that are
 published with AOT. macOS is deliberately left out: an `.app` bundle already carries its native

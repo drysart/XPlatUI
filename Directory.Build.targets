@@ -1,0 +1,10 @@
+<Project>
+
+  <!-- A NuGet consumer imports buildTransitive/*.targets from the package automatically. This
+	   repository's projects reference XPlatUI by project instead, and a ProjectReference imports no
+	   build assets at all, so the same file is imported here once. Every target in it is conditioned
+	   on publishing with AOT, which makes it inert for the library, the backends and the demo. -->
+
+  <Import Project="$(MSBuildThisFileDirectory)XPlatUI\buildTransitive\XPlatUI.targets" />
+
+</Project>

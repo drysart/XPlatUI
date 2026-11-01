@@ -3,19 +3,26 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using SkiaSharp;
 
-namespace XPlatUI.Demo.App;
+namespace XPlatUI;
 
 /// <summary>
-/// A NativeAOT publish produces a single native executable, so SkiaSharp's native library cannot
-/// simply sit next to it. When the application is published with AOT the build embeds a compressed
-/// copy of the platform's Skia library as a manifest resource; this extracts it into a per-user cache
-/// and redirects SkiaSharp's P/Invoke at it before the first call into Skia.
+/// Makes SkiaSharp's native library resolvable when a NativeAOT publish has folded it into the
+/// executable.
 /// </summary>
 /// <remarks>
-/// Windows and Linux only. macOS is not published with AOT because a <c>.app</c> bundle already
-/// carries its native libraries as loose files inside the bundle, so there is nothing to fold in.
+/// <para>
+/// An AOT publish produces a single native executable, so the Skia library cannot simply sit next to
+/// it. The build assets shipped with this library (<c>buildTransitive/XPlatUI.targets</c>) embed a
+/// compressed copy in the application and this extracts it into a per-user cache and redirects
+/// SkiaSharp's P/Invoke at it.
+/// </para>
+/// <para>
+/// The resource belongs to the <em>application</em>, not to this assembly, because the copy to embed
+/// is the one the application's build resolved for its platform. That is why
+/// <see cref="EnsureLoaded"/> takes the assembly to look in rather than assuming its own.
+/// </para>
 /// </remarks>
-internal static class SkiaNativeLoader
+public static class SkiaNativeLoader
 {
     /// <summary>The name SkiaSharp's <c>DllImport</c> attributes ask for, without the platform suffix.</summary>
     private const string ImportName = "libSkiaSharp";
@@ -26,19 +33,28 @@ internal static class SkiaNativeLoader
         : OperatingSystem.IsMacOS() ? "libSkiaSharp.dylib"
         : "libSkiaSharp.so";
 
-    private static readonly string ResourceName = $"XPlatUI.Native.{NativeLibraryFileName}.gz";
-
-    /// <summary>Makes sure the native Skia library can be resolved by the P/Invoke loader.</summary>
-    public static void EnsureLoaded()
+    /// <summary>
+    /// Makes sure the native Skia library can be resolved by the P/Invoke loader.
+    /// </summary>
+    /// <param name="resourceAssembly">
+    /// The assembly the embedded library was compiled into, which is the application's own assembly.
+    /// Pass <c>typeof(Program).Assembly</c>.
+    /// </param>
+    /// <remarks>
+    /// Must run before the first call into SkiaSharp, so it belongs at the top of <c>Main</c>. A
+    /// regular build copies the library next to the executable and this does nothing.
+    /// </remarks>
+    public static void EnsureLoaded(Assembly resourceAssembly)
     {
+        ArgumentNullException.ThrowIfNull(resourceAssembly);
+
         // A regular build copies the DLL next to the executable, so there is nothing to do.
         if (File.Exists(Path.Combine(AppContext.BaseDirectory, NativeLibraryFileName)))
         {
             return;
         }
 
-        var assembly = typeof(SkiaNativeLoader).Assembly;
-        using var resource = assembly.GetManifestResourceStream(ResourceName);
+        using var resource = resourceAssembly.GetManifestResourceStream(ResourceName);
         if (resource is null)
         {
             // Nothing embedded: let the default probing find it (e.g. an installed copy).
@@ -49,7 +65,7 @@ internal static class SkiaNativeLoader
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "XPlatUI",
             "native",
-            CacheKey(assembly, resource.Length));
+            CacheKey(resourceAssembly, resource.Length));
         var path = Path.Combine(directory, NativeLibraryFileName);
 
         if (!File.Exists(path))
@@ -68,6 +84,9 @@ internal static class SkiaNativeLoader
                 ? NativeLibrary.Load(path)
                 : IntPtr.Zero);
     }
+
+    /// <summary>The logical name <c>buildTransitive/XPlatUI.targets</c> embeds the library under.</summary>
+    private static string ResourceName => $"XPlatUI.Native.{NativeLibraryFileName}.gz";
 
     private static string CacheKey(Assembly assembly, long archiveLength)
     {

@@ -16,4 +16,11 @@
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.14" />
   </ItemGroup>
 
+  <!-- Build assets. A NuGet consumer imports these automatically; this repository's own projects get
+       them from Directory.Build.targets, because a ProjectReference imports no build assets. -->
+  <ItemGroup>
+    <None Include="buildTransitive\XPlatUI.props" Pack="true" PackagePath="buildTransitive\" />
+    <None Include="buildTransitive\XPlatUI.targets" Pack="true" PackagePath="buildTransitive\" />
+  </ItemGroup>
+
 </Project>

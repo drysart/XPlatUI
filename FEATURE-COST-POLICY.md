@@ -897,6 +897,10 @@ Add a minimal application (one window, one label, no features) and the publish c
 three platforms, and record its AOT sizes in this document. Everything after this phase is judged
 against those numbers. Nothing else is meaningful until this exists.
 
+The SkiaSharp and NativeAOT scaffolding every AOT application needs lives in XPlatUI's own
+`buildTransitive/` assets, so the fixture is an ordinary small project rather than a copy of the
+demo's project file. Its only Skia-specific line names its own assembly for `SkiaNativeLoader`.
+
 ### Phase 1: the seam
 
 - Add `IXPlatApplicationHook` and `XPlatApplicationPhase`, and raise the four phases from

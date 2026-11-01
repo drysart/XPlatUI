@@ -59,8 +59,9 @@ internal static class Program
     {
         // Must happen before anything touches SkiaSharp: an AOT publish carries the native Skia
         // library inside the executable instead of next to it. On macOS the library stays in the
-        // bundle, so the loader finds it where it expects it and does nothing.
-        SkiaNativeLoader.EnsureLoaded();
+        // bundle, so the loader finds it where it expects it and does nothing. The resource is
+        // embedded in this assembly by XPlatUI's build assets, which is why it is named here.
+        SkiaNativeLoader.EnsureLoaded(typeof(Program).Assembly);
 
         // Headless render of the sample UI, handy for visual checks and CI. It paints through the
         // headless backend rather than the window one, so it needs no window, no message loop and no
