@@ -17,7 +17,7 @@ XPlatUI/                  net10.0 class library (no OS-specific code, IsAotCompa
   Platform/               the backend contract: IXPlatApplicationBackend, IXPlatWindowBackend, ...
   Selection/              text selection and its clipboard plumbing
   Services/               window-scoped service helpers
-  Native/                 SkiaNativeLoader.cs - unpacks the embedded Skia library after an AOT publish
+  Native/                 SkiaNativeLoader.cs - unpacks the embedded Skia library in an AOT build
   buildTransitive/        the MSBuild that embeds it, shipped with the package
   XPlatUiHost.cs          platform-neutral host: layout, painting, input routing, focus
 XPlatUIDemo/              the sample control tree, shared by every platform
@@ -623,9 +623,9 @@ dotnet publish XPlatUIDemo.App\XPlatUIDemo.App.csproj -p:PublishProfile=FolderPr
 ```
 
 or right-click **Publish** in Visual Studio. The result is a **single** self-contained
-`XPlatUIDemoApp.exe` (~8.4 MB, of which ~5.2 MB is the compressed Skia native binary) and an optional
-`XPlatUIDemoApp.pdb` for debugging. Nothing else is needed to run it - the AOT build opens the real
-window and renders the demo.
+`XPlatUIDemoApp.exe` (9,241,600 bytes, 8.81 MiB, of which 5.2 MiB is the compressed Skia native
+binary) and an optional `XPlatUIDemoApp.pdb` for debugging. Nothing else is needed to run it - the
+AOT build opens the real window and renders the demo.
 
 On Windows this needs the MSVC linker (`link.exe`). The profile switches to
 `IlcUseEnvironmentalTools` automatically once a VC environment is initialized, so the most
@@ -647,9 +647,14 @@ package carries its own toolchain.
 dotnet publish XPlatUIDemo.App/XPlatUIDemo.App.csproj -c Release -r linux-x64 -p:PublishAot=true
 ```
 
-The result is a **single** `publish/XPlatUIDemoApp` (~8.9 MB, a stripped ELF executable) plus an
-optional `XPlatUIDemoApp.dbg`. It is genuinely standalone - copy just that one file anywhere and it
-runs, window and all.
+The result is a **single** `publish/XPlatUIDemoApp` (9,516,656 bytes, 9.08 MiB, a stripped ELF
+executable) plus an optional `XPlatUIDemoApp.dbg`. It is genuinely standalone - copy just that one
+file anywhere and it runs, window and all.
+
+`XPlatUI.Minimal` is the measurement fixture: one window, one label, no features. It publishes to
+8,648,704 bytes (8.25 MiB) on Windows and 9,015,344 (8.60 MiB) on Linux, so everything the demo
+demonstrates costs about 0.6 MB over the floor an application starts from. The full table, including
+macOS, is in [FEATURE-COST-POLICY.md](FEATURE-COST-POLICY.md) §10.
 
 SkiaSharp only ships a dynamic `libSkiaSharp.dll`/`libSkiaSharp.so`, so a native executable cannot
 simply link it. When `PublishAot` is on, XPlatUI's own build assets (`buildTransitive/` in the
