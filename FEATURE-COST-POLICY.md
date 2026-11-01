@@ -140,12 +140,24 @@ same compiler. They are, because the library targets `net10.0`.
 Extension members cannot be events: `CS9282`, "This member is not allowed in an extension block", for
 `event`, `add` and `remove` alike. Rather than work around that with a helper object, which makes the
 feature read as bolted on, the library does not use the C# `event` keyword at all. Every event is a
-pair of methods:
+pair of methods taking an `Action`:
 
 ```csharp
-public IDisposable AddDroppedHandler(EventHandler<XPlatDragEventArgs> handler);
-public void RemoveDroppedHandler(EventHandler<XPlatDragEventArgs> handler);
+public IDisposable AddDroppedHandler(Action<object, XPlatDragEventArgs> handler);
+public void RemoveDroppedHandler(Action<object, XPlatDragEventArgs> handler);
 ```
+
+The callback is the sender followed by the payload, and an event that carries no payload has no
+second parameter. That is most of them:
+
+```csharp
+public IDisposable AddClosedHandler(Action<object> handler);
+public IDisposable AddKeyDownHandler(Action<object, XPlatKeyEventArgs> handler);
+```
+
+No wrapper type is involved. The payload is whatever the event already carries, so a handler
+signature is the delegate the event would have had, written out, and nothing exists only to be
+unpacked again at the top of the lambda.
 
 Subscribing then reads like a member of the control, and because the pair is made of methods it can
 be written as extension methods for a feature:
@@ -155,8 +167,8 @@ using var subscription = control.AddDroppedHandler((sender, e) => { ... });
 control.RemoveDroppedHandler(handler);
 ```
 
-Verified in a throwaway project: the pair works as extension members, disposing the token
-unsubscribes, and `EventArgs<T>` sits beside `System.EventArgs` without ambiguity.
+Verified in a throwaway project: the pair works as extension members, both arities resolve, and
+disposing the token unsubscribes.
 
 This is a codebase-wide convention rather than a rule for opt-in features only. Core events on
 `XPlatControl`, `XPlatWindow`, `XPlatApplication` and the backend interfaces use the same shape, so
@@ -178,9 +190,12 @@ Rules:
   (§5.3), which is trimmed along with the feature.
 - No `event` keyword anywhere, including interfaces and backend types. A review that finds one has
   found a bug in the convention.
-- The payload is an `EventArgs`-derived type: the existing `XPlatDragEventArgs`, `XPlatMouseEventArgs`
-  and friends stay as they are, and a feature with one payload value uses the generic `EventArgs<T>`
-  (the generic event args question in §12).
+- The payload is whatever the event already carries. `XPlatDragEventArgs`, `XPlatMouseEventArgs` and
+  friends stay as they are, and a feature that needs a payload defines its own type rather than
+  wrapping a value in a generic one.
+- The `System.EventArgs` base on those classes is vestigial once nothing takes an `EventHandler`.
+  Dropping it is cosmetic, and belongs with the Phase 2 change that touches them rather than with a
+  feature.
 
 ### 5.5 When a member does belong on the control
 
@@ -672,6 +687,8 @@ against.
 
 - Replace every `event` declaration with an `Add`/`Remove` handler pair (§5.4), across `XPlatUI`, the
   four backends and the demo.
+- Payload-less events, which are most of them, become `Action<object>`. The rest become
+  `Action<object, TPayload>` with the args class they already have. No new payload types.
 - There are 95 declarations and roughly a hundred subscription sites today, so this is one change
   rather than a rolling one: half converted leaves two shapes in the API.
 - No behaviour change: same order, same thread, same exception path.
@@ -772,6 +789,9 @@ lower, and the measured cost for an application that does not use it.
   registration order and descending phases in reverse. See §6.3.
 - **Hook callback shape.** One method taking the phase, not one method per phase. A no-op base class
   can be added later for ergonomics without changing the interface.
+- **Event shape.** `AddXHandler`/`RemoveXHandler` pairs taking `Action<object, TPayload>`, or
+  `Action<object>` when the event carries no payload. No `event` keyword, and no generic args
+  wrapper: the payload is the type the event already has, or there is none. See §5.4.
 
 ### Open
 
@@ -789,10 +809,7 @@ These need answers before Phase 1, and the answers belong in this document:
 5. **Moving the drag and drop surface.** `AllowDrop` and the four events shipped in the release
    before this policy existed. Do we move them to `XPlatUI.DragDrop` extensions, which is breaking
    but is what §5 asks for, or keep them and record the cost?
-6. **The generic event args type.** The convention is written as `EventHandler<EventArgs<Y>>`, which
-   means adding a generic args type. Is it `EventArgs<T>` (matches the sketch, sits next to
-   `System.EventArgs` and will be confused with it) or `XPlatEventArgs<T>` (unambiguous, longer)?
-7. **`RemoveXHandler` next to the token.** The `IDisposable` from `AddXHandler` already covers scope
+6. **`RemoveXHandler` next to the token.** The `IDisposable` from `AddXHandler` already covers scope
    based removal. Is the explicit `RemoveXHandler` worth keeping for symmetry with the pattern, or
    does it just add surface?
 
