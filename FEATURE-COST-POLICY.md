@@ -50,8 +50,11 @@ has a second and third rung rather than just "make it lazy".
 
 ## 4. The three rungs
 
-In order of preference. Each feature must be placed on the lowest rung it can actually reach, and
-the reason it could not reach a lower one must be written down.
+In order of preference. Each feature sits on the lowest rung it can actually reach, and the reason
+it could not reach a lower one is written down. The one exception is a feature obscure enough that
+keeping it out of the main package is worth more than the trimming it would have earned: that
+belongs on rung 3 even if rung 1 or 2 would have worked, and the reason is written down the same
+way.
 
 ### Rung 1: zero cost by construction
 
@@ -79,14 +82,33 @@ conditioning the work on a value the application can change at any moment, which
 reachability problem §3 describes: the code behind the value is retained either way, so the gating
 buys nothing at publish time and risks a feature that is broken half the time at run time.
 
-### Rung 3: separate project
+### Rung 3: separate package
 
 If neither of the above is practical, the implementation does not go into the base `XPlatUI`
 projects at all. It goes into its own project that applications reference explicitly, so the base
 deliverable never contains it and no amount of trimming cleverness is required.
 
-This is a deliberate fallback, not a failure, but it has a cost of its own (more projects, more
-versioning, more places to look), so it should be chosen for a stated reason rather than by default.
+The library ships as a small set of packages, and this rung is where the rest of them live:
+
+| Package | Contents |
+|---|---|
+| `XPlatUI` | Everything platform-independent: the controls, the drawing model, the application and window types, and the hook seam. An application that uses only the common controls needs nothing else. |
+| `XPlatUI.Backend.<platform>` | One per supported platform. Exactly one is referenced by an application, and it is the only place that platform's native code lives. |
+| `XPlatUI.Feature.<feature>` | A feature that could not reach rung 1 or 2, or that is rare enough not to belong in the main package. |
+| `XPlatUI.Feature.<feature>.<platform>` | The native part of such a feature for one platform, which references the portable part. |
+
+An application references `XPlatUI` and one backend. That is enough for a simple application using
+the common controls, and it is what the project templates contain. Everything else is a reference
+the application adds, which is the opt-in in its packaging form: a feature that is not referenced
+cannot be used and cannot be in the deliverable. A feature with native work is referenced once,
+through its platform package, which pulls in the portable one.
+
+Packaging does not change the namespace (§5.6). A feature in `XPlatUI.Feature.Clocks` is still
+`namespace XPlatUI.Clocks`, so moving a feature between rung 2 and rung 3 does not touch application
+code.
+
+This rung has a cost of its own (more projects, more versioning, more places to look), so it is
+chosen for a stated reason rather than by default.
 
 ## 5. Expressing a feature as an extension
 
@@ -582,15 +604,28 @@ void RunApplicationHooks(XPlatApplicationPhase phase, XPlatApplication applicati
 void RunWindowHooks(XPlatWindowPhase phase, XPlatWindow window);
 ```
 
-Two seam members with empty bodies
-disappears when it does nothing. In exchange no feature type is reachable from the backend, which is
-the property a conditional lookup in the window creation path would have destroyed.
+Two seam members with empty bodies in `Headless`, and nothing else in the always-on path: a hook
+that nothing registers is trimmed away along with the registration. In exchange no feature type is
+reachable from the backend, which is the property a conditional lookup in the window creation path
+would have destroyed.
 
 At application level the container already gets the layering right for free: it disposes singletons
 in reverse creation order, and the `Creating` phase resolves every portable hook before the backend
 resolves any typed one, so typed application hooks are disposed first.
 
-**A platform that cannot support a feature still declares it.** The extension method exists
+**A rung-3 feature reuses all of this.** The typed interfaces live in the backend assembly, so a
+feature package cannot add to them, and does not need to: `XPlatUI.Feature.<feature>.<platform>`
+references the backend package, implements `IXPlatWin32WindowHook`, and registers itself from its
+own `Add<Feature>()`. The backend's loop finds it in the container whether the implementation came
+from the backend or from a package that referenced the backend.
+
+What changes is only where the registration lives. A backend must not reference a feature package,
+so the same-named `Add<Feature>()` extension belongs to the feature instead: one per platform
+variant, and the portable variant declares it only when the feature has no native work. The
+application still references one package per feature per target framework, and forgetting a
+platform is still a compile error.
+
+**A platform that cannot support a feature still declares it.**
 everywhere so application code compiles, and the platform-neutral service reports `IsSupported` or
 throws `PlatformNotSupportedException` from the operation. A silent no-op is how the macOS image
 drag ended up arriving as its own URL string and reading as success.
@@ -738,6 +773,8 @@ held to the policy.
 - Point `README.md` at this policy from the drag and drop section and from wherever features are
   listed.
 - Add the checklist in §11 to the review expectations for feature work.
+- Keep the package layout in §4 current, so a feature's pull request can name the project it belongs
+  in rather than inventing one.
 
 ### Phase 5: hold new work to it
 
@@ -760,13 +797,13 @@ lower, and the measured cost for an application that does not use it.
 - [ ] Was the publish size measured for an app that does not use it, on all three platforms, and
 	  quoted in the pull request?
 - [ ] Were the trim/AOT warnings for the new code reviewed?
-- [ ] If it could not be made opt-in, is it in a separate project instead, with the reason recorded?
+- [ ] If it could not be made opt-in, is it in a separate package instead, with the reason recorded?
 - [ ] If the feature wants members on `XPlatControl` or a subclass, is it exposed as extension
 	  members in its own namespace instead, with the exception stated if not?
 - [ ] If it needs events, does it expose them as `AddXHandler`/`RemoveXHandler` extension methods?
-- [ ] If it is native, is the implementation in each backend, is the registration a same-named
-	  extension in the feature's namespace, and does each backend's always-on path name none of it?
-	  Does `Headless` stay free of the extension?
+- [ ] If it is native, is the implementation in each backend or in the feature's platform package,
+	  is the registration a same-named extension in the feature's namespace, and does each backend's
+	  always-on path name none of it? Does `Headless` stay free of the extension?
 - [ ] If a hook needs the concrete backend, is it a typed hook (§6.5) rather than a downcast, and is
 	  it unrelated to the portable interface?
 - [ ] Is there any C# `event` keyword in the change, including on interfaces and backend types? It
@@ -811,6 +848,11 @@ lower, and the measured cost for an application that does not use it.
 - **Event shape.** `AddXHandler`/`RemoveXHandler` pairs taking `Action<object, TPayload>`, or
   `Action<object>` when the event carries no payload. No `event` keyword, and no generic args
   wrapper: the payload is the type the event already has, or there is none. See §5.4.
+- **Packaging.** `XPlatUI` plus `XPlatUI.Backend.<platform>` is the whole requirement for an
+  application using the common controls. Rung 3 is `XPlatUI.Feature.<feature>` and
+  `XPlatUI.Feature.<feature>.<platform>`, referenced deliberately, and it is also where a feature
+  goes when it is simply too rare to belong in the main package. Namespaces do not change with the
+  packaging. See §4.
 - **Opt-in granularity.** Opting in is a per-application decision, and it buys the whole feature:
   once it is called, every window gets the feature's per-window setup regardless of any runtime
   value such as `AllowDrop`, because such a value can change after the window is shown and there is
@@ -821,16 +863,14 @@ lower, and the measured cost for an application that does not use it.
 
 These need answers before Phase 1, and the answers belong in this document:
 
-1. **What "separate project" means.** A separate assembly in this repository, or a separate package
-   with its own version and release? Rung 3 is only useful if it is cheap to take.
-2. **The seam's size budget.** Low single-digit kilobytes is a guess. Phase 1 produces the real
+1. **The seam's size budget.** Low single-digit kilobytes is a guess. Phase 1 produces the real
    number, and this document should be corrected to it.
-3. **Retrofitting.** Which existing features get moved onto the policy, and in what order? Menus,
+2. **Retrofitting.** Which existing features get moved onto the policy, and in what order? Menus,
    dialogs, timers and single instance all predate the policy and none has been measured.
-4. **Moving the drag and drop surface.** `AllowDrop` and the four events shipped in the release
+3. **Moving the drag and drop surface.** `AllowDrop` and the four events shipped in the release
    before this policy existed. Do we move them to `XPlatUI.DragDrop` extensions, which is breaking
    but is what §5 asks for, or keep them and record the cost?
-5. **`RemoveXHandler` next to the token.** The `IDisposable` from `AddXHandler` already covers scope
+4. **`RemoveXHandler` next to the token.** The `IDisposable` from `AddXHandler` already covers scope
    based removal. Is the explicit `RemoveXHandler` worth keeping for symmetry with the pattern, or
    does it just add surface?
 
