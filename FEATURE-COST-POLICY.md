@@ -278,7 +278,11 @@ Rules:
 - `AddXHandler` returns an `IDisposable` that removes the handler when disposed, so a scope can own a
   subscription without holding the handler itself. Disposing twice is a no-op, and so is disposing a
   subscription whose owner has already been torn down.
-- `RemoveXHandler` covers removal by identity, which is what a long-lived handler needs.
+- `RemoveXHandler` stays alongside the token, because the two suit different call sites. A consumer
+  that already holds the handler callback can pass it again rather than storing a token next to it,
+  and a handler registered from a place with no natural scope has no obvious owner for a token
+  anyway. The pair is also what makes the shape look like the event it replaces; a lone `Add` would
+  read as a subscription that can only be ended by holding a token. Both are one line per event.
 - Handlers run on the UI thread in subscription order. A handler that throws stops the ones after it,
   as a C# event would, and the exception reaches `XPlatApplication.UnhandledException`.
 - The backing storage stays private and unchanged: one field per event, exactly as a field-like event
@@ -930,7 +934,9 @@ lower, and the measured cost for an application that does not use it.
   can be added later for ergonomics without changing the interface.
 - **Event shape.** `AddXHandler`/`RemoveXHandler` pairs taking `Action<object, TPayload>`, or
   `Action<object>` when the event carries no payload. No `event` keyword, and no generic args
-  wrapper: the payload is the type the event already has, or there is none. See §5.4.
+  wrapper: the payload is the type the event already has, or there is none. Both halves are kept,
+  because a consumer holding the callback can remove by identity instead of storing the token. See
+  §5.4.
 - **Packaging.** `XPlatUI` plus `XPlatUI.Backend.<platform>` is the whole requirement for an
   application using the common controls. Rung 3 is one `XPlatUI.Feature.<feature>` package per
   feature, referenced deliberately and unconditionally, and it is also where a feature goes when it
@@ -959,11 +965,8 @@ lower, and the measured cost for an application that does not use it.
 
 ### Open
 
-One question is left, and the answer belongs in this document:
-
-1. **`RemoveXHandler` next to the token.** The `IDisposable` from `AddXHandler` already covers scope
-   based removal. Is the explicit `RemoveXHandler` worth keeping for symmetry with the pattern, or
-   does it just add surface?
+None. Every question raised while writing this document has been answered, and the answers are
+above. A new one goes here when it arises, rather than being settled silently in a review thread.
 
 ## 13. Non-goals
 
