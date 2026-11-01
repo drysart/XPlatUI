@@ -106,6 +106,11 @@ carries one assembly per platform and NuGet selects the right one at restore, fr
 project's target framework. Nothing is dispatched at run time, and the platforms that were not
 selected are not in the deliverable.
 
+One consequence applies to every rung-3 feature: its surface is extension members, because a
+separate assembly cannot add members to a type declared in `XPlatUI`. §5's shape is therefore
+not a preference here but the only option, and a feature that genuinely needs a member on a core
+type cannot take this rung at all.
+
 #### The project layout
 
 One project per feature, with four directories:
@@ -758,11 +763,15 @@ without a COM drop target, without registered pasteboard types and without GTK c
 shared payload types can stay where they are: they are small and inert, and they cost nothing until
 something calls them.
 
-`AllowDrop` and the four events are a different matter. Under §5 the surface for this feature should
-be `using XPlatUI.DragDrop;`, `AllowDrop` as an extension property, and `AddDragEnterHandler`,
-`AddDragOverHandler`, `AddDragLeaveHandler` and `AddDragDropHandler` as extension methods, which
-takes those members off `XPlatControl` altogether. Whether to make that move on an API that has
-already shipped is the drag and drop surface question in §12.
+`AllowDrop` and the four events are a different matter, and moving them is not a judgement call.
+Their surface becomes `using XPlatUI.DragDrop;`, `AllowDrop` as an extension property, and
+`AddDragEnterHandler`, `AddDragOverHandler`, `AddDragLeaveHandler` and `AddDragDropHandler` as
+extension methods, which takes those members off `XPlatControl` altogether.
+
+Rung 3 forces it. A feature package is a different assembly, and an extension member is the only way
+one assembly can add a member to a type declared in another, so the members cannot stay on
+`XPlatControl` and still ship separately. The breaking change is a precondition of the rung rather
+than a cost weighed against the benefit of §5's shape. See the drag and drop surface entry in §12.
 
 Note the trap: making `AllowDrop` the opt-in would *not* achieve this. `AllowDrop` lives on
 `XPlatControl`, which is always retained, so the code behind it is reachable and kept regardless of
@@ -826,8 +835,9 @@ removes.
 - Move `Gtk.DropTarget` construction (`Gtk4SkiaView.cs:409-410`) and removal (`:201-210`) behind the
   Gtk4 window hook's `Created` and `Closing` phases.
 - Leave the payload types and the host routing where they are.
-- Move `AllowDrop` and the four handler pairs to `XPlatUI.DragDrop` extensions, unless the drag and
-  drop surface question in §12 says otherwise.
+- Move `AllowDrop` and the four handler pairs off `XPlatControl` into `XPlatUI.DragDrop` extensions.
+  This is the one breaking change in the plan, and rung 3 requires it: an assembly cannot add
+  members to a type declared in another assembly. See §12.
 - Do not gate any of the above on `AllowDrop`. The window hook registers unconditionally, and
   `AllowDrop` only decides whether the control accepts what arrives.
 
@@ -841,6 +851,8 @@ held to the policy.
 
 - Point `README.md` at this policy from the drag and drop section and from wherever features are
   listed.
+- Carry the migration for the surface move in `README.md`, as a before-and-after of the two things
+  an application does with the feature: setting `AllowDrop` and subscribing to the four events.
 - Add the checklist in §11 to the review expectations for feature work.
 - Keep the package layout in §4 current, so a feature's pull request can name the project it belongs
   in rather than inventing one.
@@ -939,15 +951,17 @@ lower, and the measured cost for an application that does not use it.
   study, so it carries the work of proving the mechanism. Menus, dialogs, timers and single instance
   all predate the policy and stay as they are; they may be moved later, but nothing is planned for
   them and no part of Phases 0 to 5 is sized for them. See §10 and §13.
+- **Drag and drop surface.** `AllowDrop` and the four events leave `XPlatControl` and become
+  extension members in `XPlatUI.DragDrop`, and that breaking change is accepted. It is not a trade
+  against §5's ergonomics: a rung-3 feature ships in its own assembly, and an assembly cannot add
+  members to a type declared in another assembly, so the extension surface is what makes the rung
+  possible in the first place. See §9 and §10.
 
 ### Open
 
-These need answers before Phase 1, and the answers belong in this document:
+One question is left, and the answer belongs in this document:
 
-1. **Moving the drag and drop surface.** `AllowDrop` and the four events shipped in the release
-   before this policy existed. Do we move them to `XPlatUI.DragDrop` extensions, which is breaking
-   but is what §5 asks for, or keep them and record the cost?
-2. **`RemoveXHandler` next to the token.** The `IDisposable` from `AddXHandler` already covers scope
+1. **`RemoveXHandler` next to the token.** The `IDisposable` from `AddXHandler` already covers scope
    based removal. Is the explicit `RemoveXHandler` worth keeping for symmetry with the pattern, or
    does it just add surface?
 
@@ -956,6 +970,8 @@ These need answers before Phase 1, and the answers belong in this document:
 - Retrofitting everything at once. The policy applies to new work, and drag and drop is the only
   existing feature being moved onto it, because it is the case study. Menus, dialogs, timers and
   single instance keep their current shape until there is a reason to revisit them.
+- Source compatibility for the drag and drop surface. It moves to extensions because rung 3 requires
+  it, and the migration is documented rather than avoided.
 - Making an API awkward to hit a byte target. If the zero-cost shape would hurt the API, say so, take
   rung 2 or 3, and record the reason.
 - A promise of literally zero cost. The standard is bare minimal, measured, and justified.
