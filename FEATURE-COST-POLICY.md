@@ -180,7 +180,7 @@ Rules:
   found a bug in the convention.
 - The payload is an `EventArgs`-derived type: the existing `XPlatDragEventArgs`, `XPlatMouseEventArgs`
   and friends stay as they are, and a feature with one payload value uses the generic `EventArgs<T>`
-  (open question 7).
+  (the generic event args question in §12).
 
 ### 5.5 When a member does belong on the control
 
@@ -260,6 +260,38 @@ turns on:
 ```csharp
 ConfigureServices = services => services.AddDragDrop(),
 ```
+
+A hook that is a single call does not need a class of its own. One overload in
+`XPlatServiceCollectionExtensions` wraps the action in a hook that already exists:
+
+```csharp
+public static IServiceCollection AddXPlatApplicationStartupHook(
+	this IServiceCollection services,
+	Action<XPlatApplication> startupHookFunc)
+{
+	ArgumentNullException.ThrowIfNull(services);
+	ArgumentNullException.ThrowIfNull(startupHookFunc);
+
+	return services.AddSingleton<IXPlatApplicationStartupHook>(
+	    _ => new ActionBasedAppStartupHook(startupHookFunc));
+}
+
+internal sealed class ActionBasedAppStartupHook : IXPlatApplicationStartupHook
+{
+	private readonly Action<XPlatApplication> _startupHookFunc;
+
+	public ActionBasedAppStartupHook(Action<XPlatApplication> startupHookFunc)
+	{
+	    _startupHookFunc = startupHookFunc;
+	}
+
+	public void OnStartup(XPlatApplication application) => _startupHookFunc(application);
+}
+```
+
+Window hooks get the same treatment: `AddXPlatWindowHook` takes one optional callback per point, so
+a feature that only cares about teardown still writes a single lambda. The wrappers are seam types,
+so the seam pays for them once whether or not anything calls them; see §7.
 
 The trim property that makes this work: `GetServices<T>()` on a service nobody registered returns an
 empty sequence, and the only thing retained is the interface itself. The concrete hook type is
@@ -346,6 +378,9 @@ therefore get a size budget and a stability promise:
 - Adding a hook point is a deliberate act with a measured cost, not a convenience.
 - Target: the whole seam costs low single-digit kilobytes in the AOT binary. If a proposed hook
   point cannot meet that, it belongs on rung 3.
+- Named exception: the action wrappers from §6.2 are seam types, so they are retained whether or
+  not anything calls the overload. One class and one method each is the price of not forcing a class
+  on a one-line hook, and it is small enough to pay once.
 
 ## 8. How we verify
 
@@ -392,7 +427,7 @@ they cost nothing until something calls them.
 be `using XPlatUI.DragDrop;`, `AllowDrop` as an extension property, and `AddDragEnterHandler`,
 `AddDragOverHandler`, `AddDragLeaveHandler` and `AddDragDropHandler` as extension methods, which
 takes those members off `XPlatControl` altogether. Whether to make that move on an API that has
-already shipped is open question 6.
+already shipped is the drag and drop surface question in §12.
 
 Note the trap: making `AllowDrop` the opt-in would *not* achieve this. `AllowDrop` lives on
 `XPlatControl`, which is always retained, so the code behind it is reachable and kept regardless of
@@ -437,8 +472,8 @@ removes.
 - Move `RegisterForDraggedTypes` behind the window-created hook.
 - Move `Gtk.DropTarget` construction behind the window-created hook.
 - Leave the payload types and the host routing where they are.
-- Move `AllowDrop` and the four handler pairs to `XPlatUI.DragDrop` extensions, unless open
-  question 6 says otherwise.
+- Move `AllowDrop` and the four handler pairs to `XPlatUI.DragDrop` extensions, unless the drag and
+  drop surface question in §12 says otherwise.
 
 Measure: an application that does not call the opt-in must lose OLE, the COM target, the pasteboard
 types and the GTK controllers, and the size must return to the Phase 0 baseline.
@@ -486,30 +521,33 @@ lower, and the measured cost for an application that does not use it.
 - **Hook scoping.** Application hooks are singletons resolved from the root provider. Window hooks
   are window-scoped services resolved from `window.Services`, which gives each window its own
   instance and disposes it with the window. See §6.3 and §6.4.
+- **Hook shape.** Marker interfaces resolved with `GetServices<T>()`, not a builder method on the
+  application. `application.Enable<T>()` cannot be the whole opt-in, because the container is built
+  in the `XPlatApplication` constructor (`XPlatApplication.cs:89-97`) and there is no moment when an
+  application exists and services can still be registered. The call site is a named
+  `services.AddX()` extension, and the `AddXPlatApplicationStartupHook(Action<XPlatApplication>)`
+  overload covers hooks that are one line. See §6.2.
 
 ### Open
 
 These need answers before Phase 1, and the answers belong in this document:
 
-1. **Hook shape.** A marker interface resolved as `IEnumerable<T>` (as sketched in §6), or a
-   builder-style `application.Enable<T>()`? The builder reads better but needs somewhere to live
-   before the container exists, which is exactly the awkward moment.
-2. **`AllowDrop` ergonomics.** Should setting `AllowDrop` implicitly opt the window in, on top of
+1. **`AllowDrop` ergonomics.** Should setting `AllowDrop` implicitly opt the window in, on top of
    the application-level opt-in, or should drag and drop always be an explicit application-level
    choice?
-3. **What "separate project" means.** A separate assembly in this repository, or a separate package
+2. **What "separate project" means.** A separate assembly in this repository, or a separate package
    with its own version and release? Rung 3 is only useful if it is cheap to take.
-4. **The seam's size budget.** Low single-digit kilobytes is a guess. Phase 1 produces the real
+3. **The seam's size budget.** Low single-digit kilobytes is a guess. Phase 1 produces the real
    number, and this document should be corrected to it.
-5. **Retrofitting.** Which existing features get moved onto the policy, and in what order? Menus,
+4. **Retrofitting.** Which existing features get moved onto the policy, and in what order? Menus,
    dialogs, timers and single instance all predate the policy and none has been measured.
-6. **Moving the drag and drop surface.** `AllowDrop` and the four events shipped in the release
+5. **Moving the drag and drop surface.** `AllowDrop` and the four events shipped in the release
    before this policy existed. Do we move them to `XPlatUI.DragDrop` extensions, which is breaking
    but is what §5 asks for, or keep them and record the cost?
-7. **The generic event args type.** The convention is written as `EventHandler<EventArgs<Y>>`, which
+6. **The generic event args type.** The convention is written as `EventHandler<EventArgs<Y>>`, which
    means adding a generic args type. Is it `EventArgs<T>` (matches the sketch, sits next to
    `System.EventArgs` and will be confused with it) or `XPlatEventArgs<T>` (unambiguous, longer)?
-8. **`RemoveXHandler` next to the token.** The `IDisposable` from `AddXHandler` already covers scope
+7. **`RemoveXHandler` next to the token.** The `IDisposable` from `AddXHandler` already covers scope
    based removal. Is the explicit `RemoveXHandler` worth keeping for symmetry with the pattern, or
    does it just add surface?
 
