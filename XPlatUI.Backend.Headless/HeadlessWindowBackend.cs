@@ -110,6 +110,9 @@ public sealed class HeadlessWindowBackend : IXPlatWindowBackend
     }
 
     /// <inheritdoc />
+    public IXPlatWindowBackend? Owner { get; set; }
+
+    /// <inheritdoc />
     public XPlatMenuBar? MenuBar { get; set; }
 
     /// <summary>True once the window is the current one on the stack.</summary>
@@ -119,7 +122,7 @@ public sealed class HeadlessWindowBackend : IXPlatWindowBackend
     public bool TitleBarIsDark { get; private set; }
 
     /// <inheritdoc />
-    public void Show(IXPlatWindowBackend? owner)
+    public void Show()
     {
         IsVisible = true;
         Shown?.Invoke(this, EventArgs.Empty);
@@ -127,7 +130,7 @@ public sealed class HeadlessWindowBackend : IXPlatWindowBackend
 
     /// <inheritdoc />
     /// <remarks>Nothing is modal without a display: this shows the window and returns immediately.</remarks>
-    public void ShowDialog(IXPlatWindowBackend? owner) => Show(owner);
+    public void ShowDialog() => Show();
 
     /// <inheritdoc />
     public void Activate()

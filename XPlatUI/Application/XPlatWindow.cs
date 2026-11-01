@@ -192,6 +192,12 @@ public sealed partial class XPlatWindow : IDisposable
     }
 
     /// <summary>True to keep the window above all others.</summary>
+    /// <remarks>
+    /// Windows and macOS honour this. Linux does not: GTK4 removed the keep-above call it would need,
+    /// and Wayland leaves stacking to the compositor, so the value is recorded and otherwise ignored.
+    /// Treat it as best effort rather than as the only thing keeping a window in front - use
+    /// <see cref="Owner"/> for that, and note that ownership is itself only a hint on Wayland.
+    /// </remarks>
     public bool TopMost
     {
         get => Backend.TopMost;
@@ -209,6 +215,10 @@ public sealed partial class XPlatWindow : IDisposable
     /// The window this one is owned by, or null. An owned window always sits above its owner,
     /// minimizes with it and is closed with it. Also the default owner for <see cref="ShowDialog()"/>.
     /// </summary>
+    /// <remarks>
+    /// Assigning an owner after the window is shown restacks the native window, so a window can be
+    /// re-parented at run time.
+    /// </remarks>
     public XPlatWindow? Owner
     {
         get => _owner;
@@ -225,6 +235,7 @@ public sealed partial class XPlatWindow : IDisposable
             }
 
             _owner = value;
+            Backend.Owner = value?.Backend;
         }
     }
 
@@ -345,6 +356,17 @@ public sealed partial class XPlatWindow : IDisposable
         _closed = true;
         _shown = false;
 
+        // Owned windows go with their owner, the way a Windows owner destroys its owned windows.
+        // No platform does this for us - AppKit only orders children out, and an HWND owner keeps
+        // its children alive - so the cascade belongs in the model, where it happens once.
+        foreach (var owned in _application.Windows)
+        {
+            if (ReferenceEquals(owned._owner, this))
+            {
+                owned.Dispose();
+            }
+        }
+
         Backend.Shown -= OnBackendShown;
         Backend.CloseRequested -= OnBackendCloseRequested;
         Backend.Closed -= OnBackendClosed;
@@ -372,7 +394,8 @@ public sealed partial class XPlatWindow : IDisposable
         _shown = true;
         ApplyDefaultSize();
         Backend.MenuBar = _menuBar ?? _application.Options.MenuBar;
-        Backend.Show(_owner?.Backend);
+        Backend.Owner = _owner?.Backend;
+        Backend.Show();
         RaiseShown();
     }
 
@@ -423,7 +446,8 @@ public sealed partial class XPlatWindow : IDisposable
         _shown = true;
         ApplyDefaultSize();
         Backend.MenuBar = _menuBar ?? _application.Options.MenuBar;
-        Backend.ShowDialog(_owner?.Backend);
+        Backend.Owner = _owner?.Backend;
+        Backend.ShowDialog();
         RaiseShown();
 
         // A backend that never reported the close would leave the window registered forever.

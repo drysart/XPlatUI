@@ -467,6 +467,38 @@ Wayland only the toolkit's own D-Bus registration can raise another process's wi
 backend has to own the mechanism. `TryClaimSingleInstance` runs after `Initialize` and returns false
 when this process is the second one; the headless backend always returns true.
 
+### Owned windows, topmost and activation
+
+`Owner` makes one window belong to another, `TopMost` floats a window above everything, and
+`Activated`/`Deactivated` report when a window gains or loses the foreground:
+
+```csharp
+var tool = new XPlatWindow("Tool", panel) { Owner = window };   // or: tool.Show(window);
+tool.TopMost = true;                                            // needs Owner == null
+
+window.Activated += (_, _) => status.Text = "Foreground";
+window.Deactivated += (_, _) => status.Text = "Background";
+```
+
+An owned window sits above its owner, minimizes with it and closes with it. The close is a cascade
+the library performs itself: no platform does it for us, so closing an owner disposes the windows
+whose `Owner` is that window, in every backend. `Owner` may be assigned before or after `Show()` -
+assigning it on a visible window restacks the native window rather than throwing.
+
+| Platform | `Owner` | `TopMost` |
+| --- | --- | --- |
+| Windows | The owner's `HWND` as the window's parent, applied with `GWLP_HWNDPARENT` plus a frame-changing `SetWindowPos` so the taskbar regroups | `HWND_TOPMOST` |
+| macOS | `AddChildWindow:ordered:`, detached with `RemoveChildWindow:` | `NSWindowLevel.Floating` |
+| Linux (GTK4) | `gtk_window_set_transient_for`, cleared when the owner is removed | **not implemented**: GTK4 removed `gtk_window_set_keep_above` and Wayland leaves stacking to the compositor, so the value is recorded and ignored |
+
+Wayland is also where ownership is weakest: `SetTransientFor` is a hint, so an owned window may not
+be stacked above its owner by the compositor. It still minimizes and closes with it.
+
+The demo exposes all three: the **Owned window** button in the header opens one from the UI on every
+platform, **Window → Topmost** and **Window → Owned Window** add the menu items on macOS and GTK, and
+the `--topmost` / `--owned` command-line flags work everywhere (Windows has no menu bar yet). The
+status line reports activation changes.
+
 ## Writing a backend
 
 A backend is two interfaces plus one registration hook. `IXPlatApplicationBackend` owns the platform
