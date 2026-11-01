@@ -31,6 +31,7 @@ XPlatUI.Backend.Win32/    net10.0-windows backend over raw Win32 (no WinForms, n
 XPlatUI.Backend.AppKit/   net10.0-macos backend over AppKit
 XPlatUI.Backend.Gtk4/     net10.0 backend over GTK4
 XPlatUI.Backend.Headless/ net10.0 backend that paints offscreen; what --render and the tests use
+XPlatUI.Backend/          multi-targeting selector: the backend for whichever TFM you built for
 XPlatUI.Minimal/          the measurement fixture: one window, one label, no features
 ```
 
@@ -41,6 +42,14 @@ and Xcode, which only exist on a Mac, so it must never appear in a TFM list that
 evaluate; and a portable `net10.0` build *on a Mac* defines neither `WINDOWS` nor `MACOS`, so it
 would silently compile the GTK4 branch and produce a Linux binary. One TFM per OS is what keeps
 `Program.cs`'s `#if` blocks honest. See [On macOS (AppKit)](#on-macos-appkit).
+
+`XPlatUI.Backend` is the way out of that `#if` for an application that wants nothing more than a
+default backend. It is a project that multi-targets and references exactly one backend per target
+framework, so referencing *it* is enough: the framework the application builds for decides which
+backend it gets, and a publish carries only that one. `XPlatUIBackend.CreateDefault()` returns the
+backend and loads the embedded Skia library on the way, so `Main` names no platform and no graphics
+library. `XPlatUI.Minimal` is written that way. `XPlatUIDemo.App` keeps its own factory, because it
+has to read `--classic-menus` before it can build a backend.
 
 ## Design
 
@@ -652,7 +661,7 @@ executable) plus an optional `XPlatUIDemoApp.dbg`. It is genuinely standalone - 
 file anywhere and it runs, window and all.
 
 `XPlatUI.Minimal` is the measurement fixture: one window, one label, no features. It publishes to
-8,648,704 bytes (8.25 MiB) on Windows and 9,015,344 (8.60 MiB) on Linux, so everything the demo
+8,649,216 bytes (8.25 MiB) on Windows and 9,015,344 (8.60 MiB) on Linux, so everything the demo
 demonstrates costs about 0.6 MB over the floor an application starts from. The full table, including
 macOS, is in [FEATURE-COST-POLICY.md](FEATURE-COST-POLICY.md) §10.
 
@@ -667,8 +676,10 @@ library, extracts it on first use to `%LOCALAPPDATA%\XPlatUI\native\<version>-<s
 before the first call into Skia. The redirect is not optional on Linux: `libSkiaSharp.so` carries no
 `SONAME`, so a library loaded by full path is not what `dlopen("libSkiaSharp.so")` resolves to. The
 resource belongs to the application's assembly, because the copy to embed is the one the
-application's build resolved for its platform, so `Main` names that assembly:
-`SkiaNativeLoader.EnsureLoaded(typeof(Program).Assembly);`. A regular (non-AOT) build is untouched:
+application's build resolved for its platform. `XPlatUIBackend.CreateDefault()` names it for you: it
+calls `SkiaNativeLoader.EnsureLoaded(Assembly.GetEntryAssembly())` before it returns the backend, so
+an application's `Main` never mentions SkiaSharp at all. Calling `EnsureLoaded` yourself as well is
+harmless; it is idempotent. A regular (non-AOT) build is untouched:
 the native library is resolved the usual way (from the package cache, or copied next to the
 executable for a RID-specific build) and the loader does nothing. If you would rather ship a loose
 native library, set `EmbedSkiaSharpNative` to `false` - the publish then emits the executable and

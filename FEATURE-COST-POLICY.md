@@ -899,7 +899,10 @@ against those numbers. Nothing else is meaningful until this exists.
 
 The SkiaSharp and NativeAOT scaffolding every AOT application needs lives in XPlatUI's own
 `buildTransitive/` assets, so the fixture is an ordinary small project rather than a copy of the
-demo's project file. Its only Skia-specific line names its own assembly for `SkiaNativeLoader`.
+demo's project file. It names no platform and no graphics library: it calls
+`XPlatUIBackend.CreateDefault()`, which loads the embedded SkiaSharp archive and returns the backend
+for the target framework. The fixture's project file therefore references one project, `XPlatUI`,
+and one more, `XPlatUI.Backend`, whose only job is to reference the right backend per framework.
 
 #### The numbers
 
@@ -911,22 +914,22 @@ differs between the three.
 | Measurement | win-x64 | linux-x64 | osx-arm64 |
 |---|---|---|---|
 | Bare AOT console app | 1,106,944 | 1,270,784 | 1,236,088 |
-| Minimal app, Skia embedded | 8,648,704 | 9,015,344 | not applicable |
+| Minimal app, Skia embedded | 8,649,216 | 9,015,344 | not applicable |
 | Minimal app, Skia loose | 3,191,808 | 4,210,736 | 4,218,096 |
-| Embedded Skia blob | 5,456,896 | 4,804,608 | not applicable |
+| Embedded Skia blob | 5,457,408 | 4,804,608 | not applicable |
 | XPlatUI plus its backend | 2,084,864 | 2,939,952 | 2,982,008 |
-| Delivered footprint | 8,648,704 | 9,015,344 | 21,413,792 |
+| Delivered footprint | 8,649,216 | 9,015,344 | 21,420,244 |
 
 The fixture is 8.25 MiB on Windows and the full demo publishes to 8.81 MiB, so the demo's menu bar,
 icon, headless render path, single-instance handling and every control in the library together cost
-592,896 bytes, or 501,312 on Linux. The rest of both numbers is the runtime, the backend and
+592,384 bytes, or 501,312 on Linux. The rest of both numbers is the runtime, the backend and
 SkiaSharp. That is the shape the policy predicted: the floor is high and mostly fixed, and features
 are cheap on top of it.
 
-The embedded blob is 5,456,896 of the Windows total, 63 percent of it. SkiaSharp's own IL is only
+The embedded blob is 5,457,408 of the Windows total, 63 percent of it. SkiaSharp's own IL is only
 about 109 KB; the blob is the native rasteriser, gzipped. It is a fixed cost of the graphics choice
 rather than of the library's design, and it is the one number here that no phase can move. It is
-also why `EmbedSkiaSharpNative` exists: turning it off trades 5,456,896 bytes of executable for a
+also why `EmbedSkiaSharpNative` exists: turning it off trades 5,457,408 bytes of executable for a
 12,903,776-byte `libSkiaSharp.dll` beside it, which is a deployment decision rather than a size one.
 
 XPlatUI plus its backend is 2,084,864 bytes on Windows but 2,939,952 on Linux and 2,982,008 on
@@ -937,11 +940,17 @@ comparing across them answers a different question.
 
 macOS has no embedded row because the gate excludes it: a `.app` bundle already carries loose native
 libraries, so embedding Skia there would only duplicate one. Its delivered footprint is the whole
-21,413,792-byte bundle, of which 15,804,304 is `libSkiaSharp.dylib` and 1,391,392 is .NET's own
+21,420,244-byte bundle, of which 15,804,304 is `libSkiaSharp.dylib` and 1,391,392 is .NET's own
 native shims, and its loose row is not comparable with the other two.
 
 Debug symbols are excluded throughout: 14,569,472 bytes of `.pdb` on Windows, 6,701,824 of `.dbg` on
 Linux, and dSYM bundles on macOS. They are not shipped to users.
+
+The backend selector is part of these numbers rather than a separate measurement. It is one more
+assembly in the graph, but the trimmed image absorbs it almost completely: it costs 512 bytes on
+Windows, nothing measurable on Linux or macOS, and it does not change the loose Windows executable
+at all. Its value is that the fixture's `Program.cs` contains no `#if` and names no platform, which
+is what a consumer of the two packages should be able to write.
 
 Later phases are measured against the loose rows, 3,191,808, 4,210,736 and 4,218,096, because
 that is where the library's own contribution is visible without the blob swamping it.
