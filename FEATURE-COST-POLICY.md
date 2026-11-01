@@ -935,24 +935,27 @@ lower, and the measured cost for an application that does not use it.
   value such as `AllowDrop`, because such a value can change after the window is shown and there is
   no correct moment to gate on it. An application that opts in and then never uses the feature pays
   for it, and that is accepted. See §4 and §9.
+- **Retrofitting.** Drag and drop is the only feature being moved onto the policy. It is the case
+  study, so it carries the work of proving the mechanism. Menus, dialogs, timers and single instance
+  all predate the policy and stay as they are; they may be moved later, but nothing is planned for
+  them and no part of Phases 0 to 5 is sized for them. See §10 and §13.
 
 ### Open
 
 These need answers before Phase 1, and the answers belong in this document:
 
-1. **Retrofitting.** Which existing features get moved onto the policy, and in what order? Menus,
-   dialogs, timers and single instance all predate the policy and none has been measured.
-2. **Moving the drag and drop surface.** `AllowDrop` and the four events shipped in the release
+1. **Moving the drag and drop surface.** `AllowDrop` and the four events shipped in the release
    before this policy existed. Do we move them to `XPlatUI.DragDrop` extensions, which is breaking
    but is what §5 asks for, or keep them and record the cost?
-3. **`RemoveXHandler` next to the token.** The `IDisposable` from `AddXHandler` already covers scope
+2. **`RemoveXHandler` next to the token.** The `IDisposable` from `AddXHandler` already covers scope
    based removal. Is the explicit `RemoveXHandler` worth keeping for symmetry with the pattern, or
    does it just add surface?
 
 ## 13. Non-goals
 
-- Retrofitting everything at once. The policy applies to new work, with drag and drop as the
-  deliberate exception because it is the case study.
+- Retrofitting everything at once. The policy applies to new work, and drag and drop is the only
+  existing feature being moved onto it, because it is the case study. Menus, dialogs, timers and
+  single instance keep their current shape until there is a reason to revisit them.
 - Making an API awkward to hit a byte target. If the zero-cost shape would hurt the API, say so, take
   rung 2 or 3, and record the reason.
 - A promise of literally zero cost. The standard is bare minimal, measured, and justified.
