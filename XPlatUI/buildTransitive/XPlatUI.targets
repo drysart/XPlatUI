@@ -14,11 +14,18 @@
   <PropertyGroup>
 	<!-- Decided once, here, so every target below shares one condition. macOS is excluded because a
 		 .app bundle already carries its native libraries as loose files, so there is nothing to fold
-		 in. NativeAOT only publishes for the host, so the host platform is the test. -->
+		 in. NativeAOT only publishes for the host, so the host platform is the test.
+
+		 OutputType is part of the test because PublishAot can arrive as a global property, and a
+		 global property reaches every project the publish touches: a class library that references
+		 XPlatUI, or XPlatUI itself in this repository, is then built with PublishAot set while
+		 having no runtime identifier and therefore no native assets to find. Only an application
+		 has anything to embed the library in. -->
 	<_XPlatUIEmbedSkiaSharpNative
 		Condition="'$(_XPlatUIEmbedSkiaSharpNative)' == ''
 				   and '$(PublishAot)' == 'true'
 				   and '$(EmbedSkiaSharpNative)' != 'false'
+				   and ('$(OutputType)' == 'Exe' or '$(OutputType)' == 'WinExe')
 				   and !$([MSBuild]::IsOSPlatform('osx'))">true</_XPlatUIEmbedSkiaSharpNative>
   </PropertyGroup>
 
