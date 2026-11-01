@@ -219,38 +219,55 @@ need two distinct things:
    `XPlatApplicationOptions.ConfigureServices`, which receives MEDI's own `IServiceCollection` and is
    documented to stay inside the AOT-safe subset (generic `AddSingleton<TService, TImpl>()`, factory
    overloads, `AddWindowScoped<T>`; no assembly scanning).
-2. **Run work**, after the container exists. This is the new hook.
+2. **Run work**, after the container exists, at one of the phases in §6.3. This is the new hook.
 
 A feature that needs both registers a service and a hook, in the same opt-in call.
 
 ### 6.2 The application hook
 
 ```csharp
-public interface IXPlatApplicationStartupHook
+public enum XPlatApplicationPhase
 {
-	void OnStartup(XPlatApplication application);
+	Creating,
+	Created,
+	Stopping,
+	Stopped,
+	Disposed,
+}
+
+public interface IXPlatApplicationHook
+{
+	void OnPhase(XPlatApplicationPhase phase, XPlatApplication application);
 }
 ```
 
 The application-level hook is a singleton, because the work it does is process-wide. Per-window work
-has its own hook with its own lifetime; see §6.3.
+has its own hook with its own lifetime; see §6.3, which also says when each phase fires and why they
+are split where they are.
 
-`XPlatApplication`, after `BuildServiceProvider` and before the loop runs, resolves them and invokes
-each one:
+`XPlatApplication` resolves them once, immediately after `BuildServiceProvider`, and keeps the
+instances so every later phase reaches the same objects:
 
 ```csharp
-foreach (var hook in Services.GetServices<IXPlatApplicationStartupHook>())
+_applicationHooks = Services.GetServices<IXPlatApplicationHook>().ToArray();
+
+foreach (var hook in _applicationHooks)
 {
-	hook.OnStartup(this);
+	hook.OnPhase(XPlatApplicationPhase.Creating, this);
 }
 ```
+
+Keeping them is not an optimisation. `Disposed` fires after the container has disposed every hook,
+and resolving from a disposed provider throws `ObjectDisposedException`, so a per-phase lookup would
+fail at exactly the phase that has no alternative. The kept instances are the disposed ones, and
+calling a method on them is legal; §6.3 says what such a call may do.
 
 The application opts in through the registration it already has:
 
 ```csharp
 new XPlatApplicationOptions
 {
-	ConfigureServices = services => services.AddSingleton<IXPlatApplicationStartupHook, DragDropStartupHook>(),
+	ConfigureServices = services => services.AddSingleton<IXPlatApplicationHook, DragDropHook>(),
 }
 ```
 
@@ -266,30 +283,47 @@ A hook that is a single call does not need a class of its own. One overload in
 optional teardown action so a lambda hook can own a disposable:
 
 ```csharp
-public static IServiceCollection AddXPlatApplicationStartupHook(
+public static IServiceCollection AddXPlatApplicationHook(
 	this IServiceCollection services,
-	Action<XPlatApplication> startupHookFunc,
+	XPlatApplicationPhase phase,
+	Action<XPlatApplication> hookFunc,
 	Action? onDispose = null)
 {
 	ArgumentNullException.ThrowIfNull(services);
-	ArgumentNullException.ThrowIfNull(startupHookFunc);
+	ArgumentNullException.ThrowIfNull(hookFunc);
 
-	return services.AddSingleton<IXPlatApplicationStartupHook>(
-		_ => new ActionBasedAppStartupHook(startupHookFunc, onDispose));
+	return services.AddSingleton<IXPlatApplicationHook>(
+		_ => new ActionBasedAppHook(phase, hookFunc, onDispose));
 }
 
-internal sealed class ActionBasedAppStartupHook : IXPlatApplicationStartupHook, IDisposable
+/// <summary>Shorthand for a hook at <see cref="XPlatApplicationPhase.Creating"/>.</summary>
+public static IServiceCollection AddXPlatApplicationStartupHook(
+	this IServiceCollection services,
+	Action<XPlatApplication> startupHookFunc,
+	Action? onDispose = null) =>
+	services.AddXPlatApplicationHook(XPlatApplicationPhase.Creating, startupHookFunc, onDispose);
+
+internal sealed class ActionBasedAppHook : IXPlatApplicationHook, IDisposable
 {
-	private readonly Action<XPlatApplication> _startupHookFunc;
+	private readonly XPlatApplicationPhase _phase;
+	private readonly Action<XPlatApplication> _hookFunc;
 	private readonly Action? _onDispose;
 
-	public ActionBasedAppStartupHook(Action<XPlatApplication> startupHookFunc, Action? onDispose)
+	public ActionBasedAppHook(
+		XPlatApplicationPhase phase, Action<XPlatApplication> hookFunc, Action? onDispose)
 	{
-		_startupHookFunc = startupHookFunc;
+		_phase = phase;
+		_hookFunc = hookFunc;
 		_onDispose = onDispose;
 	}
 
-	public void OnStartup(XPlatApplication application) => _startupHookFunc(application);
+	public void OnPhase(XPlatApplicationPhase phase, XPlatApplication application)
+	{
+		if (phase == _phase)
+		{
+			_hookFunc(application);
+		}
+	}
 
 	public void Dispose() => _onDispose?.Invoke();
 }
@@ -303,7 +337,7 @@ The container runs the teardown, and its order is the nesting order. A window ho
 its window's scope is disposed (`XPlatWindow.cs:390`). Application hooks are disposed when the root
 provider is disposed (`XPlatApplication.cs:740`), and every window is disposed first (`:732-735`),
 so window teardown always precedes application teardown. A hook that needs it the other way round
-says so in its own shutdown point rather than relying on `Dispose` ordering.
+says so in its own `Stopping` or `Stopped` callback rather than relying on `Dispose` ordering.
 
 The trim property that makes this work: `GetServices<T>()` on a service nobody registered returns an
 empty sequence, and the only thing retained is the interface itself. The concrete hook type is
@@ -316,11 +350,49 @@ process. There are two kinds of hook, with two lifetimes:
 
 | Kind | Lifetime | Resolved from | What it is for |
 |---|---|---|---|
-| Application hook | Singleton | The root provider | Process-wide platform initialisation that must precede any window (OLE initialisation, application-level pasteboard types), and process-wide teardown before the loop returns. |
+| Application hook | Singleton | The root provider | Process-wide platform initialisation that must precede any window (OLE initialisation, application-level pasteboard types), and process-wide teardown after the loop returns. |
 | Window hook | Window-scoped | `window.Services` | Per-window work: native registration once the handle exists (drop targets, extra pasteboard types, GTK controllers), and its teardown when the window closes. |
 
-Application points are startup and shutdown. Window points are phases of one lifecycle, and they are
-one interface rather than eight, because one scoped instance serves every phase for its window:
+Each kind is one interface taking a phase value rather than one interface per moment, because one
+instance serves every phase and a feature normally cares about more than one of them.
+
+#### Application phases
+
+| Phase | When it fires | Direction | Where |
+|---|---|---|---|
+| `Creating` | The container exists, the process services are installed, and no window exists yet. | Ascending | End of the `XPlatApplication` constructor, after `XPlatApplication.cs:100` |
+| `Created` | Every window shown before `Run()` is visible, and the loop is about to start. | Ascending | `XPlatApplication.cs:283-287` |
+| `Stopping` | The loop has returned. Every window, the backend and every service are still alive. | Descending | Start of `TearDown`, `XPlatApplication.cs:719` |
+| `Stopped` | Every window is gone, and the services are about to be. | Descending | `XPlatApplication.cs:739-740` |
+| `Disposed` | The container has disposed every hook, and the backend has shut down. | Descending | End of `TearDown`, `XPlatApplication.cs:747` |
+
+The splits are placed where they carry information:
+
+- **`Creating` before `Created`** is everything the application does between building its container
+  and entering its loop: creating windows, showing them, sizing the main one. Work that has to
+  precede the first window needs `Creating`. Work that wants the finished window tree needs
+  `Created`.
+- **`Stopping` before `Stopped`** is ordering rather than capability. `Stopping` is the first thing
+  that happens after the loop returns, so the whole application is still intact. `Stopped` is the
+  last moment at which a singleton service can be resolved.
+- **`Stopped` before `Disposed`** is a different world rather than a later one. By `Disposed` the
+  container has disposed every hook and the backend has shut down, so a hook can neither resolve a
+  service nor call into the platform. What `Disposed` still has is ordering: it is the point after
+  which nothing else will be called.
+
+That last point is the surprising one, so it is a rule as well as an explanation: **an application
+hook's `Disposed` callback runs after its own `Dispose`.** It is a notification that the application
+is finished, not an opportunity to use the hook or anything it was injected with. Work that needs a
+live service belongs in `Stopped`; work that frees something the hook owns belongs in `Dispose` or
+in the `onDispose` action.
+
+`Stopping` and `Stopped` are raised only when a loop ran, matching the guard `Exiting` already has
+(`XPlatApplication.cs:723`). A forwarded second instance returns from `Run()` without entering one
+(`:257-262`), so it sees `Creating` and `Disposed` and nothing in between. **`Creating` is therefore
+paired with `Dispose`, not with `Stopping`:** the two are not guaranteed to both happen, and the
+teardown action is the only one that is.
+
+#### Window phases
 
 ```csharp
 public enum XPlatWindowPhase
@@ -356,10 +428,12 @@ public interface IXPlatWindowHook
 property and no `Hide` method yet. Declaring them now costs one enum member and stops the hide and
 show feature from renumbering a public enum later.
 
-**Ascending phases run hooks in registration order; descending phases run them in reverse.** The two
-halves of the list are the two directions of a window's life, and reversing the teardown half is
-what makes a pair of hooks nest: if `A` registers before `B`, `A` sets up before `B` and tears down
-after `B`, whatever order the phases arrive in.
+**Ascending phases run hooks in registration order; descending phases run them in reverse.** In both
+lists the split is the turn of a lifecycle: the phases that bring something up ascend, and the
+phases that take it down descend. Reversing the teardown half is what makes a pair of hooks nest: if
+`A` registers before `B`, `A` sets up before `B` and tears down after `B`, whatever order the phases
+arrive in. The rule holds at application level as well, where the two hooks may not even live in the
+same assembly.
 
 The window lifetime already exists, so this costs nothing new. `XPlatWindow` creates an
 `IServiceScope` in its constructor (`XPlatWindow.cs:60`), exposes it as `Services` (`:115`), and
@@ -396,11 +470,12 @@ on the roadmap, and each added point is permanent cost in the seam.
 - **Explicit registration, never scanning.** Assembly scanning is the one common pattern that is not
   trimming-safe, and the codebase already forbids it for `ConfigureServices`. Hook discovery is
   registration order, full stop.
-- **Registration order is invocation order**, ascending in the phases that bring a window to life
+- **Registration order is invocation order**, ascending in the phases that bring something to life
   and reversed in the phases that take it away (§6.3). Features may rely on the nesting this gives
   them, which is why it is written down rather than left to chance.
-- **Runs on the UI thread.** Startup hooks run before the loop starts, on the thread that will own
-  it; window hooks run on the UI thread. Documented rather than assumed.
+- **Runs on the UI thread.** Application hooks run on the thread that constructs and runs the
+  application, before the loop starts and after it returns; window hooks run on the UI thread.
+  Documented rather than assumed.
 - **Per-window state lives on the hook instance.** A window hook is scoped, so each window gets its
   own instance and the created, shown, closing and closed callbacks share state without a table
   keyed by window. A hook that finds itself needing such a table is registered at the wrong
@@ -410,6 +485,9 @@ on the roadmap, and each added point is permanent cost in the seam.
 - **Resolve from the right provider.** Application hooks come from the root provider; window hooks
   come from `window.Services`. Resolving a scoped hook from the root is the trap: MEDI either throws
   under scope validation or hands back a single instance that outlives every window.
+- **Resolve once and keep the instances.** The application keeps its portable hooks from `Creating`,
+  and a backend keeps its typed ones from the same phase. By `Disposed` the container is gone, so a
+  hook looked up per phase cannot be found at the phase that has no alternative.
 - **Dependencies point one way.** A window hook may depend on application singletons normally. A
   singleton must never hold a window hook, because that would keep one window's instance alive for
   the life of the process.
@@ -418,13 +496,16 @@ on the roadmap, and each added point is permanent cost in the seam.
   portable hook that set it up.
 - **Typed hooks never derive from portable ones.** An `IXPlatWin32WindowHook` that also implemented
   `IXPlatWindowHook` would be found by both loops and invoked twice.
-- **A backend's phase entry point survives its own `Dispose`.** `Disposed` fires after
-  `Backend.Dispose()` (`XPlatWindow.cs:386`) and before the scope goes (`:390`), so
-  `RunWindowHooks` must touch nothing native by then and must not assume the backend is alive.
-- **`Dispose` is the last teardown point, not the first.** The container disposes a hook that is
-  `IDisposable`: a window hook with its scope, an application hook with the root provider. By then
-  the native window or the process-wide state may already be gone, so anything that has to run while
-  it still exists belongs in the closing or shutdown point.
+- **A backend's phase entry point survives its own teardown.** `RunWindowHooks` is called for
+  `Disposed` after `Backend.Dispose()` (`XPlatWindow.cs:386`), and `RunApplicationHooks` is called
+  for `Disposed` after `Backend.Shutdown()` (`XPlatApplication.cs:747`). Neither may touch anything
+  native by then, and both must be callable once the backend has released its resources.
+- **Know where `Dispose` sits relative to `Disposed`.** A window hook's `Dispose` runs last: its
+  scope is disposed after the `Disposed` phase (`XPlatWindow.cs:390`). An application hook's
+  `Dispose` runs first: the container disposes it at `XPlatApplication.cs:740` and the `Disposed`
+  phase follows at `:747`. So a window hook frees its own state in `Dispose`, while an application
+  hook frees it in `Dispose` and uses `Disposed` only to order itself against other hooks. Neither
+  point may assume the native window or the process-wide state still exists.
 
 ### 6.5 Platform-specific hooks
 
@@ -466,9 +547,10 @@ with a cast. Instead each backend declares its own hook interfaces, which name t
 concrete type:
 
 ```csharp
-public interface IXPlatWin32ApplicationStartupHook
+public interface IXPlatWin32ApplicationHook
 {
-	void OnStartup(XPlatApplication application, Win32ApplicationBackend backend);
+	void OnPhase(
+		XPlatApplicationPhase phase, XPlatApplication application, Win32ApplicationBackend backend);
 }
 
 public interface IXPlatWin32WindowHook
@@ -482,20 +564,24 @@ interfaces (§6.4). `XPlatApplication` runs the portable hooks and then hands th
 backend, which runs its own loop over its typed interface:
 
 ```csharp
-// IXPlatApplicationBackend, after the portable startup loop
-void RunStartupHooks(XPlatApplication application);
+// IXPlatApplicationBackend, after the portable hooks for the phase
+void RunApplicationHooks(XPlatApplicationPhase phase, XPlatApplication application);
 
 // IXPlatWindowBackend, after the portable hooks for the phase
 void RunWindowHooks(XPlatWindowPhase phase, XPlatWindow window);
 ```
+
+A backend keeps its typed instances from `Creating` for the same reason the application keeps its
+portable ones (§6.2): it resolves them from `application.Services`, and that container is disposed
+before the `Disposed` phase arrives.
 
 Two seam members with empty bodies in a backend that has no typed hooks, and an indirect call that
 disappears when it does nothing. In exchange no feature type is reachable from the backend, which is
 the property a conditional lookup in the window creation path would have destroyed.
 
 At application level the container already gets the layering right for free: it disposes singletons
-in reverse creation order, and the startup loop creates every portable hook before the backend
-creates any typed one, so typed application hooks are disposed first.
+in reverse creation order, and the `Creating` phase resolves every portable hook before the backend
+resolves any typed one, so typed application hooks are disposed first.
 
 **A platform that cannot support a feature still declares it.** The extension method exists
 everywhere so application code compiles, and the platform-neutral service reports `IsSupported` or
@@ -516,8 +602,8 @@ therefore get a size budget and a stability promise:
 - Named exception: the action wrappers from §6.2 are seam types, so they are retained whether or
   not anything calls the overload. One class and one method each is the price of not forcing a class
   on a one-line hook, and it is small enough to pay once.
-- Named exception: `RunStartupHooks` and `RunWindowHooks` (§6.5) exist only to keep features out of
-  the backends. Both are empty where nothing is registered, and both are what lets a platform
+- Named exception: `RunApplicationHooks` and `RunWindowHooks` (§6.5) exist only to keep features out
+  of the backends. Both are empty where nothing is registered, and both are what lets a platform
   feature be reachable from the opt-in alone. Two members is the cheapest form of that, so they
   stay.
 
@@ -583,12 +669,13 @@ against those numbers. Nothing else is meaningful until this exists.
 
 ### Phase 1: the seam
 
-- Add `IXPlatApplicationStartupHook` and invoke it in `XPlatApplication` after
-  `BuildServiceProvider`.
+- Add `IXPlatApplicationHook` and `XPlatApplicationPhase`, and raise the five phases from
+  `XPlatApplication`: `Creating` at the end of the constructor, `Created` immediately before
+  `Backend.Run()`, `Stopping` at the start of `TearDown`, `Stopped` immediately before
+  `_provider.Dispose()`, and `Disposed` at the end of `TearDown` after `Backend.Shutdown()`.
 - Add `IXPlatWindowHook` and `XPlatWindowPhase` around the window lifecycle, raising the six phases
-  the model can raise today, with the shutdown point alongside
-  `IXPlatApplicationBackend.Shutdown`.
-- Add the two typed-phase seam members, `IXPlatApplicationBackend.RunStartupHooks` and
+  the model can raise today.
+- Add the two typed-phase seam members, `IXPlatApplicationBackend.RunApplicationHooks` and
   `IXPlatWindowBackend.RunWindowHooks`, with empty bodies in every backend, so the platform half of
   §6.5 exists before any feature needs it.
 - Keep every hook implementation-free: the seam names no feature.
@@ -676,8 +763,8 @@ lower, and the measured cost for an application that does not use it.
   application. `application.Enable<T>()` cannot be the whole opt-in, because the container is built
   in the `XPlatApplication` constructor (`XPlatApplication.cs:89-97`) and there is no moment when an
   application exists and services can still be registered. The call site is a named
-  `services.AddX()` extension, and the `AddXPlatApplicationStartupHook(Action<XPlatApplication>)`
-  overload covers hooks that are one line. See §6.2.
+  `services.AddX()` extension, and the `AddXPlatApplicationHook` overload covers hooks that are one
+  line, with `AddXPlatApplicationStartupHook` as its `Creating` shorthand. See §6.2.
 - **Hook disposal.** Both registration helpers take an optional `onDispose`, and the wrapper
   forwards it, so a lambda hook can own a disposable without a class. Hooks that are `IDisposable`
   are disposed by the container, windows before the application. See §6.2 and §6.4.
@@ -688,6 +775,11 @@ lower, and the measured cost for an application that does not use it.
 - **Typed hooks.** Each backend declares its own application and window hook interfaces naming its
   backend by its concrete type, and runs them from its own loop after the portable hooks. The
   portable and typed interfaces are unrelated types. See §6.5.
+- **Application phases.** Creating, Created, Stopping, Stopped and Disposed, raised from the
+  constructor, the entry to the loop, and the three points inside `TearDown`. `Stopping` is split
+  from `Stopped` for ordering, `Stopped` from `Disposed` because by `Disposed` the hooks are
+  disposed and the backend is shut down, and `Creating` from `Created` so a feature can run before
+  the first window exists. See §6.3.
 - **Window phases.** Created, Showing, Shown, Hiding, Hidden, Closing, Closed and Disposed, with
   Hiding and Hidden reserved until `Visible` and `Hide` exist. Ascending phases run hooks in
   registration order and descending phases in reverse. See §6.3.
