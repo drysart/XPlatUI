@@ -94,6 +94,7 @@ public sealed class DemoUi
         };
 
         header.Controls.Add(BuildAppearanceButton());
+        header.Controls.Add(BuildOwnedWindowButton());
 
         header.Controls.Add(new XPlatLabel("XPlat UI")
         {
@@ -140,6 +141,25 @@ public sealed class DemoUi
                 ? "Dark palette applied - every control recoloured on the next frame."
                 : "Light palette applied - every control recoloured on the next frame.");
         };
+
+        return button;
+    }
+
+    /// <summary>
+    /// Opens a second window from the UI itself. Windows has no menu bar in this sample, so this is
+    /// the only way to reach ownership without a command-line flag there.
+    /// </summary>
+    private XPlatButton BuildOwnedWindowButton()
+    {
+        var button = new XPlatButton("Owned window")
+        {
+            Dock = XDock.Right,
+            Style = XPlatButtonStyle.Secondary,
+            AutoSize = true,
+            Margin = new XPlatThickness(8f, 20f, 8f, 0f),
+        };
+
+        button.Click += (_, _) => ShowOwnedWindow();
 
         return button;
     }
@@ -445,6 +465,42 @@ public sealed class DemoUi
 
     /// <summary>The window the demo is shown in, used to parent the dialogs.</summary>
     private XPlatWindow? OwnerWindow => _dialogAnchor.Window;
+
+    /// <summary>
+    /// Shows a small window owned by the window hosting the sample. Ownership is what makes a
+    /// window behave like a child of another: it stays above its owner, minimizes with it, and
+    /// closes when the owner closes.
+    /// </summary>
+    public void ShowOwnedWindow()
+    {
+        if (OwnerWindow is not { } owner)
+        {
+            return;
+        }
+
+        var panel = new XPlatPanel
+        {
+            Padding = new XPlatThickness(16f),
+        };
+
+        panel.Controls.Add(new XPlatLabel(
+            "This window is owned by the main window: it stays above it, minimizes with it, and "
+            + "closes when it closes.")
+        {
+            Dock = XDock.Fill,
+            WrapText = true,
+            TextAlign = XPlatContentAlignment.MiddleCenter,
+        });
+
+        var window = new XPlatWindow("Owned Window", panel)
+        {
+            ClientSize = new SKSize(440f, 170f),
+            MinimumClientSize = new SKSize(300f, 130f),
+        };
+
+        window.Show(owner);
+        SetStatus("Opened a window owned by this one - it stays above it and closes with it.");
+    }
 
     private XPlatPanel BuildSplitDemo()
     {

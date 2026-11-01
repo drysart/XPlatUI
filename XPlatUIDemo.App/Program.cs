@@ -142,7 +142,7 @@ internal static class Program
 
         if (Array.IndexOf(args, "--owned") >= 0)
         {
-            ShowOwnedWindow(window);
+            demo.ShowOwnedWindow();
         }
 
         return application.Run();
@@ -163,38 +163,7 @@ internal static class Program
                     ? "The window is now above every other window."
                     : "The window is back in the normal stacking order.");
             }),
-            new XPlatMenuItem("Owned Window", () => ShowOwnedWindow(window))));
-
-    /// <summary>
-    /// Shows a small window owned by <paramref name="owner"/>. Ownership is what makes a window
-    /// behave like a child of another: it stays above its owner, minimizes with it, and closes when
-    /// the owner closes. GTK4 is the odd one out on the first point - Wayland leaves stacking to the
-    /// compositor - but it still minimizes and closes with its owner.
-    /// </summary>
-    private static void ShowOwnedWindow(XPlatWindow owner)
-    {
-        var panel = new XPlatPanel
-        {
-            Padding = new XPlatThickness(16f),
-        };
-
-        panel.Controls.Add(new XPlatLabel(
-            "This window is owned by the main window: it stays above it, minimizes with it, and "
-            + "closes when it closes.")
-        {
-            Dock = DockStyle.Fill,
-            WrapText = true,
-            TextAlign = XPlatContentAlignment.MiddleCenter,
-        });
-
-        var window = new XPlatWindow("Owned Window", panel)
-        {
-            ClientSize = new SKSize(440f, 170f),
-            MinimumClientSize = new SKSize(300f, 130f),
-        };
-
-        window.Show(owner);
-    }
+            new XPlatMenuItem("Owned Window", demo.ShowOwnedWindow)));
 
     /// <summary>
     /// The title bar text. It names the backend on purpose: three builds of the same program are

@@ -494,9 +494,10 @@ assigning it on a visible window restacks the native window rather than throwing
 Wayland is also where ownership is weakest: `SetTransientFor` is a hint, so an owned window may not
 be stacked above its owner by the compositor. It still minimizes and closes with it.
 
-The demo exposes all three: **Window → Topmost** and **Window → Owned Window** on macOS and GTK, and
-the `--topmost` / `--owned` command-line flags everywhere (Windows has no menu bar yet), with the
-status line reporting activation changes.
+The demo exposes all three: the **Owned window** button in the header opens one from the UI on every
+platform, **Window → Topmost** and **Window → Owned Window** add the menu items on macOS and GTK, and
+the `--topmost` / `--owned` command-line flags work everywhere (Windows has no menu bar yet). The
+status line reports activation changes.
 
 ## Writing a backend
 
