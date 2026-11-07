@@ -50,6 +50,12 @@ public sealed class DemoUi
     private XPlatFontSelection? _fontDialogSelection;
     private readonly List<XPlatFont> _fontDialogFonts = [];
 
+    // The colour dialog page. The swatch is the current colour and the readout is the same value in
+    // text, so a cancelled dialog can be told apart from a chosen one at a glance.
+    private SKColor _colorDialogColor = new(0x33, 0x66, 0x99);
+    private XPlatPanel? _colorDialogSwatch;
+    private XPlatLabel? _colorDialogReadout;
+
     public DemoUi()
     {
         Root = BuildUi();
@@ -422,6 +428,7 @@ public sealed class DemoUi
         ("Animations", demo => Page(demo.BuildAnimationDemo())),
         ("Colour picker", demo => Page(demo.BuildColorPickerDemo())),
         ("Font dialog", demo => Page(demo.BuildFontDialogDemo())),
+        ("Colour dialog", demo => Page(demo.BuildColorDialogDemo())),
     };
 
     /// <summary>
@@ -5525,6 +5532,152 @@ public sealed class DemoUi
     private static string DescribeSelection(XPlatFontSelection selection) =>
         $"{selection.FamilyName}, {selection.Size:0.#} logical px, weight {selection.Weight}, " +
         (selection.Italic ? "italic" : "upright");
+
+    /// <summary>
+    /// The colour dialog page: the swatch the colour dialog returns, a readout of the same value,
+    /// and a button that opens the dialog modally on this window. The owner comes from
+    /// <see cref="OwnerWindow"/>, which is the root control's window, so the button works no matter
+    /// which page is showing.
+    /// </summary>
+    private XPlatPanel BuildColorDialogDemo()
+    {
+        var card = Card();
+        card.Controls.Add(Heading("Colour dialog"));
+
+        card.Controls.Add(new XPlatLabel(
+            "XPlatColorDialog is drawn by the library, not by the platform: it is an ordinary " +
+            "XPlatWindow holding XPlatColorPicker, with OK and Cancel, shown through the same modal " +
+            "path an application uses for its own dialogs. Enter accepts, Escape cancels, and Cancel " +
+            "returns null.")
+        {
+            Dock = XDock.Top,
+            AutoSize = false,
+            Height = 58f,
+            WrapText = true,
+            Font = XPlatTheme.CaptionFont,
+            ForeColorRole = XPlatThemeColor.MutedForeground,
+            TextAlign = XPlatContentAlignment.TopLeft,
+            Margin = new XPlatThickness(0f, 0f, 0f, 10f),
+        });
+
+        var swatch = new XPlatPanel
+        {
+            Dock = XDock.Top,
+            Height = 110f,
+            BorderWidth = 1f,
+            CornerRadius = 8f,
+            BackColor = _colorDialogColor,
+            Margin = new XPlatThickness(0f, 0f, 0f, 10f),
+        };
+        _colorDialogSwatch = swatch;
+        card.Controls.Add(swatch);
+
+        _colorDialogReadout = new XPlatLabel
+        {
+            Dock = XDock.Top,
+            AutoSize = false,
+            Height = 40f,
+            WrapText = true,
+            Font = XPlatTheme.CaptionFont,
+            ForeColorRole = XPlatThemeColor.Accent,
+            TextAlign = XPlatContentAlignment.TopLeft,
+            Selectable = true,
+            Margin = new XPlatThickness(0f, 0f, 0f, 8f),
+        };
+        card.Controls.Add(_colorDialogReadout);
+
+        var buttons = ButtonRow();
+
+        var choose = new XPlatButton("Choose colour...")
+        {
+            Dock = XDock.Left,
+            AutoSize = true,
+            Style = XPlatButtonStyle.Primary,
+            Margin = new XPlatThickness(0f, 0f, 8f, 0f),
+        };
+        choose.AddClickHandler(_ => ShowColorDialog());
+
+        var reset = new XPlatButton("Reset")
+        {
+            Dock = XDock.Left,
+            AutoSize = true,
+            Style = XPlatButtonStyle.Secondary,
+        };
+        reset.AddClickHandler(_ => ResetColorDialog());
+
+        buttons.Controls.Add(choose);
+        buttons.Controls.Add(reset);
+        card.Controls.Add(buttons);
+
+        card.Controls.Add(new XPlatLabel(
+            "The dialog is library-drawn on every platform, which is the difference from the font " +
+            "dialog next door: the picker already exists as a portable control, so a native colour " +
+            "chooser would replace tested code with three different answers. A font panel has no " +
+            "portable substitute, so that one is still the platform's own.")
+        {
+            Dock = XDock.Fill,
+            AutoSize = false,
+            WrapText = true,
+            Font = XPlatTheme.CaptionFont,
+            ForeColorRole = XPlatThemeColor.MutedForeground,
+            TextAlign = XPlatContentAlignment.TopLeft,
+            Margin = new XPlatThickness(0f, 10f, 0f, 0f),
+        });
+
+        UpdateColorDialogReadout();
+        return card;
+    }
+
+    private void ShowColorDialog()
+    {
+        if (OwnerWindow is not { } owner)
+        {
+            return;
+        }
+
+        var dialog = new XPlatColorDialog(new XPlatColorDialogOptions
+        {
+            Title = "Choose a colour",
+            InitialColor = _colorDialogColor,
+            ColorMode = XPlatColorMode.Rgb,
+        });
+
+        var chosen = dialog.Show(owner);
+        if (chosen is null)
+        {
+            SetStatus("Colour dialog cancelled; the swatch is unchanged.");
+            return;
+        }
+
+        _colorDialogColor = chosen.Value;
+        UpdateColorDialogReadout();
+        SetStatus($"Chose {DescribeColor(_colorDialogColor)}.");
+    }
+
+    private void ResetColorDialog()
+    {
+        _colorDialogColor = new SKColor(0x33, 0x66, 0x99);
+        UpdateColorDialogReadout();
+        SetStatus("The swatch is back to #336699.");
+    }
+
+    private void UpdateColorDialogReadout()
+    {
+        if (_colorDialogSwatch is not null)
+        {
+            _colorDialogSwatch.BackColor = _colorDialogColor;
+        }
+
+        if (_colorDialogReadout is not null)
+        {
+            _colorDialogReadout.Text =
+                $"Current colour: {DescribeColor(_colorDialogColor)}. Opening the dialog again " +
+                "starts from this value.";
+        }
+    }
+
+    private static string DescribeColor(SKColor color) =>
+        $"#{color.Red:X2}{color.Green:X2}{color.Blue:X2} (R {color.Red}, G {color.Green}, B {color.Blue})";
 
     /// <summary>
     /// A panel that draws the focus ring when it has the focus. A plain panel has no chrome of its

@@ -97,7 +97,6 @@ listing them is that a reviewer can say "this next" without re-deriving the gap.
 
 | Control | What is missing | Cost |
 | --- | --- | --- |
-| A colour dialog | `XPlatColorPicker` shipped, so an application can put a picker on a page, but `IXPlatDialogService` covers files and message boxes only and there is still no modal colour chooser. The dialog is one more seam in `XPlatUI/Platform`, implemented by all four backends. | Medium |
 | `XPlatSplitButton` / `XPlatDropDownButton` | `XPlatToolStrip` has buttons, labels, progress, separators and springs, but no button that is both a command and a menu. The popup layer and the menu system already do the hard part, so this is mostly composition. | Low |
 | `XPlatExpander` | `XPlatGroupBox` is static. Collapsible sections are the normal shape of a settings page, and there is nothing to collapse with. | Low |
 | A validation error provider | The error *icon*, the message, and the plumbing that maps a validation result onto a control. The span squiggles that shipped draw the underline; what is missing is the provider an application hands its validation rules to, in the shape WinForms' `ErrorProvider` has. | Low to medium |
@@ -141,6 +140,4 @@ Recorded so the decision is not re-litigated every time someone asks:
 2. **The small batch in Ã‚Â§4.1** - `XPlatSplitButton`, `XPlatExpander`, `XPlatWrapPanel`, the busy
    indicator and the toast. Five small controls, each independently shippable, none of them waiting
    on anything.
-3. **The colour dialog** - the picker shipped as `XPlatColorPicker`; the dialog is the last
-   obviously missing dialog in the platform seam.
-4. Then the rest of Ã‚Â§4.1 in the order listed, and Ã‚Â§4.3 only once one of them has a plan document.
+3. Then the rest of Ã‚Â§4.1 in the order listed, and Ã‚Â§4.3 only once one of them has a plan document.

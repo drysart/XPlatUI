@@ -113,6 +113,7 @@ has to read `--classic-menus` before it can build a backend.
 | `XPlatFont` | `Font` | A size plus a face: resolved by family name, or loaded from a file, stream or byte span, so a pinned `.ttf` measures identically on every platform |
 | `XPlatTheme.UseFont` | `Font` / `PrivateFontCollection` | One line makes a loaded face the application's font: the theme fonts are rebuilt from it at their own sizes |
 | `IXPlatDialogService.PickFont` | `FontDialog` | The platform's own font chooser: returns an `XPlatFontSelection` (family, size, weight, italic) or null when cancelled; the caller creates and owns the `XPlatFont` |
+| `XPlatColorDialog` | `ColorDialog` (the dialog half) | A modal window around `XPlatColorPicker` with OK and Cancel: library-drawn on every platform, returns the chosen `SKColor` or null, preserves the caller's alpha without offering an alpha control |
 | `XPlatSystemTheme` | `Application.ColorMode` | The seam a backend implements to report the OS appearance |
 | `IXPlatLauncher` | `Process.Start` with `UseShellExecute` | The seam a backend implements to open a URI: `ShellExecute`, `NSWorkspace.OpenUrl`, `Gtk.UriLauncher` |
 | `XPlatUI.Tests` | a test project | One portable `net10.0` MSTest assembly that drives the library through the headless backend, so a control is exercised with no display; a test that can only run on one platform carries a `Platform.*` category rather than being skipped by accident |
@@ -2403,6 +2404,80 @@ bytes (+4,608, 0.14%), contains the `comdlg32` import and publishes with
 `-p:TrimmerSingleWarn=false` reporting no IL2xxx or IL3xxx warning. Unlike a new always-registered
 service, the method added here sits behind `XPlatApplication.Dialogs`, which the fixture never
 calls, so the whole dialog service is trimmed in an application that does not use it.
+
+### Colour dialog
+
+`XPlatColorDialog` is the colour picker in its own modal window: the same `XPlatColorPicker` an
+application can put on a page, with OK and Cancel underneath it.
+
+```csharp
+var dialog = new XPlatColorDialog(new XPlatColorDialogOptions
+{
+    Title = "Choose a colour",
+    InitialColor = preview.BackColor ?? SKColors.Black,
+    ColorMode = XPlatColorMode.Hsv,
+});
+
+var chosen = dialog.Show(window);   // blocks until the dialog closes
+if (chosen is null)
+{
+    return;                          // Cancel, Escape or the window's close button
+}
+
+preview.BackColor = chosen.Value;
+```
+
+This one is **drawn by the library**, and the asymmetry with the native font dialog beside it is
+deliberate. A font chooser has no portable substitute: the installed families, the face list and
+the preview belong to the operating system, so the font dialog is three native implementations
+behind `IXPlatDialogService`. A colour chooser does have one, because `XPlatColorPicker` already
+implements the spectrum, the hue strip, the component fields and the hex field, and the suite
+already exercises it. A native colour chooser would replace that tested behaviour with three
+answers that look and behave differently, and the seam would grow for no new capability. The
+dialog is therefore an ordinary `XPlatWindow` built from public controls, on every platform, with
+no platform code and no change to `IXPlatDialogService`.
+
+Modality is the application model's rather than a loop of this class's own: `Show` calls
+`XPlatWindow.ShowDialog(owner)`, which disables the owner and re-enters the platform's loop on all
+three backends and returns `XPlatDialogResult`. The owner's content is also disabled for the
+duration and restored afterwards. That is redundant where the window manager already blocks the
+owner, but it means the guarantee holds on a backend with no window manager - the headless one -
+which is what lets the suite assert it. With `owner` null the dialog is not parented to anything
+and is centred on the primary screen.
+
+OK is the default button, so **Enter accepts**; **Escape cancels** wherever the focus is, including
+the picker's component and hex fields. Closing the window with its own close button is a cancel,
+like every other dialog, and the call returns null. The window is fixed at 300 by 372 logical
+pixels and is not resizable: the picker's field layout is designed for that size, and a colour
+dialog has one job. It centres on the owner's window - or on the primary screen when there is no
+owner - and is clamped inside that screen's working area with a 24 pixel margin, shrinking if the
+screen is smaller than the dialog, so it never lands partly off-screen.
+
+`InitialColor` reaches the picker exactly and comes back exactly if it is accepted untouched,
+including its alpha. **Alpha is not offered**: the picker edits RGB and has no alpha control, so
+neither does the dialog and there is no option to request one. The alpha the colour arrives with is
+preserved through every edit rather than being guessed at, so an opaque colour stays opaque.
+`ColorMode` selects which component fields the picker shows - `Rgb`, `Hsl` or `Hsv` - and, as on
+the control, changes only the representation, never the colour.
+
+The demo's **Colour dialog** page - index 38, appended after the colour picker's page 36 and the
+font dialog's page 37 - opens the dialog from a button, shows the chosen colour as a swatch and in
+a hex/RGB readout, and reopens from the current value. The owner is resolved from `Root.Window`, so
+the button works on whichever page is showing. `XPlatUI.Tests`' `ColorDialogTests` drives the
+dialog headlessly with the host's own input entry points: OK is clicked at the button's position,
+Enter and Escape go through `ProcessKeyDown`, the returned colour is compared, the owner's blocked
+state is asserted while the dialog is open, and the centring and clamping arithmetic is checked
+against the synthetic 1920 by 1080 screen. The one thing a headless test cannot show is the nested
+platform loop itself; that, and the real window positions, are verified on a real window on each
+backend.
+
+This is **rung 1** by construction: the dialog is a plain class built from public controls, it is
+not registered anywhere, and nothing in the library reaches it. The `XPlatUI.Minimal` fixture
+publishes at 8,660,480 bytes on `win-x64` both before and after the change - a delta of 0 - because
+an application that never names `XPlatColorDialog` keeps none of it. The use check - the same
+fixture with one `XPlatColorDialog.Show` call - publishes at 8,988,672 bytes (+328,192, 3.79%),
+which is the whole picker becoming reachable, and publishes with `-p:TrimmerSingleWarn=false`
+reporting no IL2xxx or IL3xxx warning.
 
 ### Opacity and transparency
 
