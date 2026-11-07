@@ -366,6 +366,11 @@ public sealed class AppKitWindowBackend : IXPlatWindowBackend
         }
 
         _window.MakeKeyAndOrderFront(null!);
+
+        // A modal session takes the first responder with it, so a window that comes back from one
+        // is key but types nowhere. Making the host view first responder is what "gives it focus"
+        // means here: key events arrive by way of the view.
+        _window.MakeFirstResponder(_view);
         NSApplication.SharedApplication.Activate();
     }
 
