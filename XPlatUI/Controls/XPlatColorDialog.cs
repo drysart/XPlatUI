@@ -183,6 +183,12 @@ public sealed class XPlatColorDialog
             Centre(owner);
             var result = _window.ShowDialog(owner);
 
+            // AppKit leaves the owner ordered behind a closed modal session without the keyboard,
+            // so keys would go nowhere until the user clicked it. Bringing the owner back after the
+            // session is what makes it the key window again; on Windows and GTK this is the
+            // foreground restore the platform would otherwise do by itself.
+            owner?.Activate();
+
             return result == XPlatDialogResult.Ok ? _picker.Color : null;
         }
         finally

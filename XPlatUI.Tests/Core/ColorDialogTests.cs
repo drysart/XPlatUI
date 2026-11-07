@@ -239,6 +239,26 @@ public sealed class ColorDialogTests : HeadlessTestBase
 
     [TestMethod]
     [TestCategory("Headless")]
+    public void ClosingGivesTheOwnerBackTheFocus()
+    {
+        using var app = NewApplication();
+        var owner = new XPlatWindow("owner", new XPlatPanel());
+        var dialog = new XPlatColorDialog();
+        var activated = 0;
+
+        owner.AddActivatedHandler(_ => activated++);
+        dialog.Window.AddShownHandler(_ => Click(dialog.Window, dialog.CancelButton));
+
+        dialog.Show(owner);
+
+        // The modal session took the keyboard; the owner has to be brought back afterwards or the
+        // application receives no keys until the user clicks into it. AppKit is the platform where
+        // that matters, and this is the model-level signal every backend raises.
+        Assert.AreEqual(1, activated, "the owner is activated once the dialog closes");
+    }
+
+    [TestMethod]
+    [TestCategory("Headless")]
     public void TheDialogShowsOnce()
     {
         using var app = NewApplication();
