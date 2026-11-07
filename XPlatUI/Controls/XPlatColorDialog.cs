@@ -130,9 +130,15 @@ public sealed class XPlatColorDialog
         };
 
         // The focus is set once the window is really up, which is when the platform can give the
-        // keyboard to the control. Enter then activates OK through the button's own key handling;
-        // there is no second Enter path to keep in step with it.
-        _window.AddShownHandler(_ => _accept.Focus());
+        // keyboard to the control. Activating first matters on Windows: creating an owned window
+        // does not necessarily make it the foreground window, and a window without the keyboard
+        // never sees the Enter or Escape this dialog promises. Enter then activates OK through the
+        // button's own key handling; there is no second Enter path to keep in step with it.
+        _window.AddShownHandler(_ =>
+        {
+            _window.Activate();
+            _accept.Focus();
+        });
 
         AttachEscapeHandler(root);
     }
