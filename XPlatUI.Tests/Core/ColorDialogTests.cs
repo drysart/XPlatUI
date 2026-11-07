@@ -259,6 +259,37 @@ public sealed class ColorDialogTests : HeadlessTestBase
 
     [TestMethod]
     [TestCategory("Headless")]
+    public void ClosingPutsTheKeyboardBackOnTheControlThatHadIt()
+    {
+        using var app = NewApplication();
+        var button = new XPlatButton { Text = "Choose" };
+        var owner = new XPlatWindow("owner", button);
+        owner.Show();
+        button.Focus();
+        Assert.IsTrue(button.IsFocused, "the owner's button starts with the keyboard");
+
+        var dialog = new XPlatColorDialog();
+        var focusedWhileOpen = true;
+
+        dialog.Window.AddShownHandler(_ =>
+        {
+            focusedWhileOpen = button.IsFocused;
+            Click(dialog.Window, dialog.CancelButton);
+        });
+
+        dialog.Show(owner);
+
+        // Disabling the owner's content is what blocks it, and it takes the keyboard off the
+        // control that held it. Nothing puts it back by itself, so the caller would be left with a
+        // window that answers to nothing until it was clicked - which is exactly what the demo did
+        // on macOS before this.
+        Assert.IsFalse(focusedWhileOpen, "the owner's button loses the keyboard while the dialog is open");
+        Assert.IsTrue(button.IsFocused, "and has it back once the dialog closes");
+        Assert.IsTrue(button.Enabled, "with the owner's content enabled again");
+    }
+
+    [TestMethod]
+    [TestCategory("Headless")]
     public void TheDialogShowsOnce()
     {
         using var app = NewApplication();
