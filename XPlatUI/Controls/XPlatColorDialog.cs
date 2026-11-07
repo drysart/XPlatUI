@@ -132,15 +132,15 @@ public sealed class XPlatColorDialog
         // The focus is set once the window is really up, which is when the platform can give the
         // keyboard to the control. Activating first matters on Windows: creating an owned window
         // does not necessarily make it the foreground window, and a window without the keyboard
-        // never sees the Enter or Escape this dialog promises. Enter then activates OK through the
-        // button's own key handling; there is no second Enter path to keep in step with it.
+        // never sees the Enter or Escape this dialog promises. OK then has the focus, so Enter
+        // accepts through the button; the handler on the picker covers the rest of the dialog.
         _window.AddShownHandler(_ =>
         {
             _window.Activate();
             _accept.Focus();
         });
 
-        AttachEscapeHandler(root);
+        AttachKeyHandlers(root);
     }
 
     /// <summary>The window the dialog is shown in, for a caller that needs to observe it.</summary>
@@ -237,26 +237,37 @@ public sealed class XPlatColorDialog
     }
 
     /// <summary>
-    /// Puts an Escape handler on every control in the dialog, so Escape cancels wherever the focus
-    /// happens to be. A parent does not see a child's key press in this model, so the handler has to
-    /// sit on each focusable descendant rather than on the root alone.
+    /// Puts Escape and Enter on every control in the dialog, so both work wherever the focus happens
+    /// to be. A parent does not see a child's key press in this model, so the handlers have to sit
+    /// on each descendant rather than on the root alone.
     /// </summary>
-    private void AttachEscapeHandler(XPlatControl control)
+    /// <remarks>
+    /// The two buttons are left out of the Enter handler, because a focused button presses itself:
+    /// Enter on OK accepts and Enter on Cancel cancels, which is what the platforms do with a
+    /// dialog's buttons. Enter anywhere else is the dialog's default button, so it accepts - a
+    /// colour picked with the mouse must not need a second trip to OK before Enter works.
+    /// </remarks>
+    private void AttachKeyHandlers(XPlatControl control)
     {
+        bool isButton = ReferenceEquals(control, _accept) || ReferenceEquals(control, _cancel);
+
         control.AddKeyDownHandler((_, e) =>
         {
-            if (e.Key != XPlatKey.Escape)
+            if (e.Key == XPlatKey.Escape)
             {
-                return;
+                e.Handled = true;
+                Cancel();
             }
-
-            e.Handled = true;
-            Cancel();
+            else if (e.Key == XPlatKey.Enter && !isButton)
+            {
+                e.Handled = true;
+                Accept();
+            }
         });
 
         foreach (var child in control.Controls)
         {
-            AttachEscapeHandler(child);
+            AttachKeyHandlers(child);
         }
     }
 

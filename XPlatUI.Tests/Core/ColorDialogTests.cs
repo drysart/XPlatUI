@@ -77,6 +77,31 @@ public sealed class ColorDialogTests : HeadlessTestBase
 
     [TestMethod]
     [TestCategory("Headless")]
+    public void EnterAcceptsFromAPickerField()
+    {
+        using var app = NewApplication();
+        var owner = new XPlatWindow("owner", new XPlatPanel());
+        var dialog = new XPlatColorDialog();
+        var field = dialog.Picker.Controls[2];
+
+        dialog.Window.AddShownHandler(_ =>
+        {
+            // Picking with the mouse leaves the focus in the picker, and the dialog promises that
+            // Enter accepts: the default button has to work from there too, not only from OK.
+            dialog.Picker.Color = new SKColor(0x40, 0x50, 0x60);
+            field.Focus();
+            Assert.IsTrue(field.IsFocused, "a picker field has the keyboard");
+
+            dialog.Window.Host.ProcessKeyDown(XPlatKey.Enter);
+            dialog.Window.Host.ProcessKeyUp(XPlatKey.Enter);
+        });
+
+        Assert.AreEqual(new SKColor(0x40, 0x50, 0x60), dialog.Show(owner));
+        Assert.IsTrue(dialog.Window.IsClosed);
+    }
+
+    [TestMethod]
+    [TestCategory("Headless")]
     public void EscapeCancelsFromAPickerField()
     {
         using var app = NewApplication();

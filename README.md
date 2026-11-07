@@ -2442,12 +2442,16 @@ Modality is the application model's rather than a loop of this class's own: `Sho
 three backends and returns `XPlatDialogResult`. The owner's content is also disabled for the
 duration and restored afterwards. That is redundant where the window manager already blocks the
 owner, but it means the guarantee holds on a backend with no window manager - the headless one -
-which is what lets the suite assert it. With `owner` null the dialog is not parented to anything
-and is centred on the primary screen.
+which is what lets the suite assert it. Disabling the content would otherwise leave the owner
+answering no keys at all, so the control that had the keyboard before the dialog opened is given
+it back when the dialog closes. With `owner` null the dialog is not parented to anything and is
+centred on the primary screen.
 
-OK is the default button, so **Enter accepts**; **Escape cancels** wherever the focus is, including
-the picker's component and hex fields. Closing the window with its own close button is a cancel,
-like every other dialog, and the call returns null. The window is fixed at 300 by 372 logical
+OK is the default button, so **Enter accepts** wherever the focus is, including the picker's
+component and hex fields - picking a colour with the mouse does not mean going back to OK before
+Enter works. A focused button presses itself instead, so Enter on Cancel cancels. **Escape
+cancels** wherever the focus is. Closing the window with its own close button is a cancel, like
+every other dialog, and the call returns null. The window is fixed at 300 by 372 logical
 pixels and is not resizable: the picker's field layout is designed for that size, and a colour
 dialog has one job. It centres on the owner's window - or on the primary screen when there is no
 owner - and is clamped inside that screen's working area with a 24 pixel margin, shrinking if the
